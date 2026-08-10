@@ -186,6 +186,19 @@ from gui.main_window import MainWindow
 from utils.torch_runtime import TorchInitRequest, register_main_thread_initializer
 
 
+def _apply_saved_provider_on_startup() -> None:
+    """启动时读取用户配置中的 provider，并把它作为当前会话的默认 LLM 路径。"""
+    try:
+        from config import get_api_config
+        cfg = get_api_config()
+        provider = str(cfg.get("provider", "deepseek") or "deepseek").strip()
+        if provider not in {"deepseek", "agnes", "local"}:
+            provider = "deepseek"
+        print(f"[启动] 当前 LLM provider: {provider}", flush=True)
+    except Exception as exc:
+        print(f"[启动] 读取 LLM provider 配置失败: {exc}", flush=True)
+
+
 # ── 第5条：跨平台多实例保护 ───────────────────────────────────
 from utils.platform_capabilities import SingleInstanceGuard
 
@@ -290,6 +303,8 @@ def main():
         _global_exception_handler(exc_type, exc_value, tb_obj)
         app.quit()
     sys.excepthook = _qt_exception_handler
+
+    _apply_saved_provider_on_startup()
 
     # 全局字体
     font = QFont("Microsoft YaHei UI", 10)
