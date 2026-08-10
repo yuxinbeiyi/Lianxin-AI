@@ -7,6 +7,8 @@ QQ 桥接音频工具：SILK ↔ WAV 转换、Whisper STT、Edge-TTS。
 import io
 import os
 import logging
+import shutil
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -21,6 +23,58 @@ SILK_SAMPLE_RATE = 24000  # QQ 语音固定采样率
 SILK_BITRATE = 20000      # QQ 语音码率
 SILK_CHANNELS = 1         # 单声道
 SILK_SAMPLE_WIDTH = 2     # 16-bit
+
+
+def _resolve_ffmpeg() -> Path:
+    """Resolve FFmpeg from configuration, the active environment, or PATH."""
+    candidates = []
+    try:
+        from config import get_tts_config
+        configured = str(get_tts_config().get("ffmpeg_path", "") or "").strip()
+        if configured:
+            candidates.append(Path(configured))
+    except Exception:
+        pass
+
+    env_root = Path(sys.prefix)
+    candidates.extend((
+        env_root / "Library" / "bin" / "ffmpeg.exe",
+        env_root / "Scripts" / "ffmpeg.exe",
+        env_root / "bin" / "ffmpeg",
+    ))
+    discovered = shutil.which("ffmpeg")
+    if discovered:
+        candidates.append(Path(discovered))
+
+    ffmpeg = next((path for path in candidates if path.is_file()), None)
+    if ffmpeg is None:
+        raise RuntimeError(
+            "未找到 FFmpeg：QQ 语音回复需要它将 Edge-TTS 音频转换为 SILK。"
+            "请将 ffmpeg 安装到当前 Python 环境，或在 TTS 配置中设置 ffmpeg_path。"
+        )
+    return ffmpeg
+
+
+def _configure_pydub_ffmpeg() -> str:
+    """Bind pydub to FFmpeg from the active Python environment.
+
+    Windows GUI launches do not always inherit the activated conda PATH. QQ
+    voice replies need FFmpeg to turn Edge-TTS MP3 output into WAV, so resolve
+    the binary explicitly instead of relying on the process PATH alone.
+    """
+    ffmpeg = _resolve_ffmpeg()
+    ffmpeg_dir = str(ffmpeg.parent)
+    path_value = os.environ.get("PATH", "")
+    if ffmpeg_dir not in path_value.split(os.pathsep):
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + path_value
+
+    from pydub import AudioSegment
+
+    AudioSegment.converter = str(ffmpeg)
+    ffprobe = ffmpeg.with_name("ffprobe.exe")
+    if ffprobe.is_file():
+        AudioSegment.ffprobe = str(ffprobe)
+    return str(ffmpeg)
 
 
 # ══════════════════════════════════════════════════════════
@@ -45,6 +99,8 @@ def wav_to_silk(wav_path: str, silk_path: str,
     """WAV 文件 → SILK 文件。自动重采样到 24000Hz（QQ 兼容）。末尾补 100ms 静音防截断。"""
     import pysilk
     from pydub import AudioSegment
+
+    _configure_pydub_ffmpeg()
 
     # 读取 WAV，检查采样率，如果不是 24000Hz 则重采样
     audio = AudioSegment.from_wav(wav_path)
@@ -343,6 +399,8 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
     import edge_tts
     from pydub import AudioSegment
 
+    _configure_pydub_ffmpeg()
+
     mp3_path = wav_path + ".mp3"
     try:
         asyncio.run(edge_tts.Communicate(text, edge_voice).save(mp3_path))
@@ -470,7 +528,10 @@ def convert_text_to_voice(text: str, silk_path: str, debug_log=None) -> bool:
     """完整链路：TTS → WAV → SILK。成功返回 True。"""
     wav_tmp = silk_path + ".wav"
     try:
-        tts_to_wav(text, wav_tmp)
+        # QQ replies must use the self-contained Edge-TTS route.  The desktop
+        # TtsEngine has its own GPT-SoVITS fallback path and previously bypassed
+        # the FFmpeg binding above when it was available.
+        tts_to_wav(text, wav_tmp, engine="edge_tts")
         if debug_log:
             debug_log(f"[音频] TTS 完成: {text[:50]}... -> {wav_tmp}")
         wav_to_silk(wav_tmp, silk_path)

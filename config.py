@@ -1300,6 +1300,7 @@ _TTS_DEFAULTS = {
     "top_p": 0.9,
     "sample_steps": 32,              # 推理步数
     "edge_tts_voice": "zh-CN-XiaoxiaoNeural",  # Edge-TTS 回退音色
+    "ffmpeg_path": "",                # 可选：FFmpeg 可执行文件绝对路径
     "tts_warmup": False,                        # 默认不占用启动时 GPU；需要时可手动预热
     "gpt_sovits_idle_timeout_seconds": 300,     # 空闲后关闭独立 worker；0=保持运行
     "gpt_sovits_min_free_vram_mb": 2048,        # 启动 worker 前的最低显存余量

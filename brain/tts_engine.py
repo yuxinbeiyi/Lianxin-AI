@@ -526,6 +526,9 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
     """Edge-TTS 语音合成（原 generate_audio.py 实现）。返回 bool。"""
     import asyncio
     import edge_tts
+    from brain.audio_utils import _configure_pydub_ffmpeg
+
+    _configure_pydub_ffmpeg()
     from pydub import AudioSegment
 
     mp3_path = output_path + ".mp3"
