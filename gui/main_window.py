@@ -109,6 +109,7 @@ _AUTOSTART_NET_MAX_ATTEMPTS = 30         # 最多等 15 分钟（30 × 30s）
 
 class MainWindow(QMainWindow):
     _route_ready = pyqtSignal(str, bool, object)
+    _route_failed = pyqtSignal(str)
     _auto_task_parsed_signal = pyqtSignal(bool, str, object)  # (success, message, task)
     _auto_task_done_signal = pyqtSignal(str, bool, str)       # (task_id, success, message)
     _duplex_voice_start_signal = pyqtSignal()                  # 跨线程：VAD 检测到语音 → UI 更新
@@ -264,6 +265,7 @@ class MainWindow(QMainWindow):
         brain_tools.set_note_refresh_callback(self.refresh_note_dialog_content)
         brain_tools.set_proactive_toggle_callback(self._proactive_scheduler.reload_settings)
         self._route_ready.connect(self._on_route_ready)
+        self._route_failed.connect(self._on_route_failed)
         self._duplex_voice_start_signal.connect(
             lambda: self._input_panel._input.setPlaceholderText("🎤 聆听中...")
         )
@@ -484,6 +486,13 @@ class MainWindow(QMainWindow):
         self._agent_worker.start()
         self._agent_watchdog.start(180_000)  # 3 分钟看门狗
         self._input_panel.show_interrupt_bar(self._agent_worker)
+
+    def _on_route_failed(self, err: str):
+        """显示辅助消息入口的异步路由错误。"""
+        self._chat_widget.add_system_tip(f"消息处理失败：{err}")
+        if self._galgame_visible and self._galgame_dialog:
+            self._galgame_dialog.set_status("处理失败")
+        self._set_idle_state()
 
     def _handle_music_info(self, query_type: str) -> str:
         if query_type == "playlist":
@@ -3540,15 +3549,25 @@ class MainWindow(QMainWindow):
         self._proactive_scheduler.notify_user_active()
         self._duty_scheduler.on_user_message()
         self._set_thinking_state()
+
+        # 辅助入口（图片、Galgame）不经过 _on_user_message，必须在本地
+        # 解析请求上下文，避免引用内容参与路由。
+        from brain.request_context import parse_request_context
+        request_context = parse_request_context(text)
+        routing_text = request_context.routing_text
         
         from threading import Thread
-        def route_and_start():
-            from brain.intent_router import get_router
-            route_result = get_router().route(active_text)
-            is_chat = route_result.route == "chat"
-            self._route_ready.emit(text, is_chat, route_result)
+        def route_and_start(route_text: str, display_text: str):
+            try:
+                from brain.intent_router import get_router
+                route_result = get_router().route(route_text)
+                is_chat = route_result.route == "chat"
+            except Exception as exc:
+                self._route_failed.emit(str(exc))
+                return
+            self._route_ready.emit(display_text, is_chat, route_result)
         
-        Thread(target=route_and_start, daemon=True).start()
+        Thread(target=route_and_start, args=(routing_text, text), daemon=True).start()
 
 
 

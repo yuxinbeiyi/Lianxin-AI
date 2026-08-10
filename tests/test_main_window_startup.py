@@ -107,6 +107,30 @@ class MainWindowStartupTests(unittest.TestCase):
         self.assertIn("from gui.time_capsule.web_window import TimeCapsuleWindow", diary_source)
         self.assertIn("from gui.study_room import StudyRoomWebWindow", study_source)
 
+    def test_auxiliary_message_route_uses_its_own_request_context(self):
+        method_source = ast.get_source_segment(
+            self.source, self._method("_send_user_text_to_agent")
+        )
+
+        self.assertIn(
+            "from brain.request_context import parse_request_context", method_source
+        )
+        self.assertIn("routing_text = request_context.routing_text", method_source)
+        self.assertIn("args=(routing_text, text)", method_source)
+        self.assertNotIn("route(active_text)", method_source)
+
+    def test_auxiliary_message_route_reports_background_failures_to_ui(self):
+        method_source = ast.get_source_segment(
+            self.source, self._method("_send_user_text_to_agent")
+        )
+        failure_source = ast.get_source_segment(
+            self.source, self._method("_on_route_failed")
+        )
+
+        self.assertIn("self._route_failed.emit(str(exc))", method_source)
+        self.assertIn("self._chat_widget.add_system_tip", failure_source)
+        self.assertIn("self._set_idle_state()", failure_source)
+
 
 if __name__ == "__main__":
     unittest.main()
