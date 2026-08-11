@@ -1,39 +1,27 @@
-# GitHub MCP (Lianxin)
+# GitHub Skill
 
-这是莲心的 GitHub Micro-Controller Provider（MCP）模块，提供一个轻量的 Python 客户端
-用以访问 GitHub REST API，满足常见的助手需求：搜索仓库、查看 README、读取代码文件、
-列出提交记录和创建 issue。
+The first release gives Lianxin read-only GitHub access through four tools:
 
-快速开始
+- search public repositories
+- read a repository README preview
+- read a UTF-8 text-file preview
+- list recent commits
 
-1. 配置 Personal Access Token（仅在需要写操作时）：
+All repository text is external, untrusted content and is marked as such before it reaches the model. File previews default to 4,000 characters and never exceed 6,000 characters.
 
-   - 在环境变量中设置：
-     - Windows (PowerShell): $env:LIANXIN_GITHUB_TOKEN = "ghp_xxx"
-     - Linux/macOS (bash): export LIANXIN_GITHUB_TOKEN=ghp_xxx
+## Configuration
 
-   - 或者把 token 放入文件 `%USERPROFILE%/.lianxin/user_config.json`：
+Public repositories can be read without authentication. To increase GitHub API limits or access a repository you explicitly authorize, set a fine-grained, minimum-permission token locally:
 
-     {
-       "github": { "token": "ghp_xxx" }
-     }
+```powershell
+$env:LIANXIN_GITHUB_TOKEN = "github_pat_..."
+```
 
-2. 在 Python 中测试：
+The environment variable takes precedence over the local Lianxin configuration. Never commit a token. `github_create_issue` remains a future, separately authorized feature and is not exposed to the model in this release.
 
-   ```python
-   from skills.github_mcp.github_mcp import GitHubMCP
-   m = GitHubMCP()
-   print(m.search_repos('Lianxin', per_page=5))
-   print(m.get_readme('yuxinbeiyi', 'Lianxin')['content'][:400])
-   ```
+## Verification
 
-集成建议
-
-- 将技能注册为 Lianxin 的 tool/function，允许模型通过 function calling 语义直接触发。
-- 对于大文件或目录读取，先用 `get_file` 获取文件列表或目录内容，再按需读取具体文件。
-- 注意速率限制：未经认证的请求每小时限制较低；推荐在设置中显式提示用户配置 token。
-
-安全与权限
-
-- 不要将 token 提交到版本库；将 token 存放在本地并加入忽略。
-- 当仅需公共仓库读取时，可不配置 token，但会更容易遇到速率限制。
+```powershell
+python -m unittest tests.test_github_mcp -v
+python -c "import brain.skill_manager as sm; print(sm.activate_skill('GitHub'))"
+```

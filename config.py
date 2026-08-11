@@ -29,6 +29,12 @@ _AGNES_DEFAULTS = {
     "model":    "agnes-2.0-flash",
 }
 
+# ── GitHub Skill 默认值 ───────────────────────────────────
+_GITHUB_DEFAULTS = {
+    "token": "",
+    "content_preview_chars": 4000,
+}
+
 # ── Agnes 图片生成默认值 ───────────────────────────────────
 _IMAGE_GEN_DEFAULTS = {
     "enabled":        True,
@@ -179,6 +185,22 @@ def save_agnes_config(config: dict):
     """保存 Agnes AI 配置（仅更新 agnes 部分）。"""
     full = _load_full_config()
     full["agnes"] = config
+    _save_full_config(full)
+
+
+def get_github_config() -> dict:
+    """读取 GitHub Skill 配置，缺失字段用默认值补全。"""
+    full = _load_full_config()
+    github = full.get("github", {})
+    result = _GITHUB_DEFAULTS.copy()
+    result.update(github)
+    return result
+
+
+def save_github_config(config: dict):
+    """保存 GitHub Skill 配置。"""
+    full = _load_full_config()
+    full["github"] = config
     _save_full_config(full)
 
 
