@@ -4253,6 +4253,7 @@ class MainWindow(QMainWindow):
         if result == QDialog.Accepted:
             if self._bridge_controller.reload_qq_timing_config():
                 self._chat_widget.add_system_tip("✅ QQ 聊天参数已更新（即时生效）")
+            self._bridge_controller.reload_qq_bridge_config()
 
        # ── 微信桥接 ─────────────────────────────────────────────
 

@@ -61,6 +61,7 @@ _QQ_BRIDGE_DEFAULTS = {
     "owner_qq":   "",
     "owner_name": "主人",
     "voice_reply_enabled": True,
+    "segmented_reply_enabled": True,
 }
 
 

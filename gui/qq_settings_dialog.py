@@ -75,6 +75,10 @@ class QqSettingsDialog(QDialog):
         self._fast_reply_cb.toggled.connect(self._on_fast_reply_toggled)
         layout.addWidget(self._fast_reply_cb)
 
+        self._segmented_reply_cb = QCheckBox("分段发送回复")
+        self._segmented_reply_cb.setToolTip("开启时按语义分段发送长回复；关闭时每次发送完整回复")
+        layout.addWidget(self._segmented_reply_cb)
+
         # ── 回复速度 ────────────────────────────────────────
         grp_reply = QGroupBox("回复速度")
         grp_layout = QVBoxLayout(grp_reply)
@@ -223,6 +227,7 @@ class QqSettingsDialog(QDialog):
         from config import get_qq_bridge_config
         bridge_cfg = get_qq_bridge_config()
         self._voice_cb.setChecked(bridge_cfg.get("voice_reply_enabled", True))
+        self._segmented_reply_cb.setChecked(bridge_cfg.get("segmented_reply_enabled", True))
 
     def _collect_config(self) -> dict:
         """从控件收集当前值并返回配置字典。"""
@@ -250,6 +255,7 @@ class QqSettingsDialog(QDialog):
         self._config = dict(_QQ_TIMING_DEFAULTS)
         self._load_config()
         self._voice_cb.setChecked(True)  # 语音回复默认开启
+        self._segmented_reply_cb.setChecked(True)
 
     def _on_apply(self):
         """保存配置并关闭对话框。"""
@@ -260,6 +266,7 @@ class QqSettingsDialog(QDialog):
         from config import get_qq_bridge_config, save_qq_bridge_config
         bridge_cfg = get_qq_bridge_config()
         bridge_cfg["voice_reply_enabled"] = self._voice_cb.isChecked()
+        bridge_cfg["segmented_reply_enabled"] = self._segmented_reply_cb.isChecked()
         save_qq_bridge_config(bridge_cfg)
 
         self._config = config

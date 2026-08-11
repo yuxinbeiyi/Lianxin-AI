@@ -3069,18 +3069,23 @@ class AgentCore:
                 except Exception:
                     _workflow_model_step = 0
                 print("  [等待] 正在等待 API 响应...", flush=True)
-                stream = litellm.completion(
-                    model=self._model,
-                    max_tokens=self._max_tokens,
-                    tools=all_tools if all_tools else None,
-                    tool_choice=tool_choice,
-                    messages=_system_first_messages(messages),
-                    api_key=self._api_key,
-                    api_base=self._api_base,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    timeout=120,
-                )
+                # OpenAI-compatible providers may reject tool_choice when no
+                # tools are supplied. DeepSeek tolerates this, while Agnes
+                # correctly returns HTTP 400, so omit the field for plain chat.
+                completion_kwargs = {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "tools": all_tools if all_tools else None,
+                    "messages": _system_first_messages(messages),
+                    "api_key": self._api_key,
+                    "api_base": self._api_base,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                    "timeout": 120,
+                }
+                if all_tools:
+                    completion_kwargs["tool_choice"] = tool_choice
+                stream = litellm.completion(**completion_kwargs)
                 content, reasoning, stream_tool_calls, finish = self._collect_stream(
                     # 主回复的流式 token 只用于最终气泡合并，不应复用插话进度信号；
                     # 否则每个累计片段都会被界面当成一条新的“插话回复”。

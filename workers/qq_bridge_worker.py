@@ -315,6 +315,7 @@ class QQBridgeWorker(QThread):
         self._owner_qq = cfg.get("owner_qq", "") or ""
         self._owner_name = cfg.get("owner_name", "主人") or "主人"
         self._voice_reply_enabled = cfg.get("voice_reply_enabled", True)
+        self._segmented_reply_enabled = cfg.get("segmented_reply_enabled", True)
 
         # ── QQ 端表情包状态 ──
         self._pending_emotion_q = None      # 待发送的表情包情绪
@@ -826,7 +827,7 @@ class QQBridgeWorker(QThread):
 
         if not voice_handled:
             # ── 分段处理回复（文字）─────────────────────────
-            segments = self._split_response(response)
+            segments = self._split_response(response) if self._segmented_reply_enabled else [response]
             if not segments:
                 self._log(f"[回复] [{session_key}] 空回复，跳过发送")
                 return
@@ -1873,7 +1874,7 @@ class QQBridgeWorker(QThread):
 
         if not voice_handled:
             # ── 分段发送回复（文字）─────────────────────────
-            segments = self._split_response(response)
+            segments = self._split_response(response) if self._segmented_reply_enabled else [response]
             if not segments:
                 self._log(f"[回复] [{session_key}] 空回复，跳过发送")
                 self._after_pending_flush()
@@ -1972,6 +1973,7 @@ class QQBridgeWorker(QThread):
         self._owner_qq = cfg.get("owner_qq", "") or ""
         self._owner_name = cfg.get("owner_name", "主人") or "主人"
         self._voice_reply_enabled = cfg.get("voice_reply_enabled", True)
+        self._segmented_reply_enabled = cfg.get("segmented_reply_enabled", True)
         self._log("[*] 桥接参数已从配置重新加载")
 
     # ── OneBot API 调用 ─────────────────────────────────
