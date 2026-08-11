@@ -31,6 +31,12 @@ The project is inspired by the Endless Library setting from *Anomaly Handler*. I
 - [Highlights](#highlights)
 - [Architecture](#architecture)
 - [Core Systems](#core-systems)
+- [Persona Control Hub](#persona-control-hub)
+- [Proactive consciousness](#proactive-consciousness)
+- [Study Room](#study-room)
+- [Time Capsule and Data Tide](#time-capsule-and-data-tide)
+- [Tools, vision, and voice](#tools-vision-and-voice)
+- [Skills and MCP](#skills-and-mcp)
 - [Optional Integrations](#optional-integrations)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -111,6 +117,126 @@ Lianxin can initiate contact under explicit schedule, cooldown, and pause contro
 ### Study Room and Time Capsule
 
 The Study Room provides a focused independent workspace built with PyQtWebEngine and QWebChannel. Time Capsule adds shared records, a timeline, private messages, collections, and links to local long-term memory. Both keep their data locally.
+
+### Memory flow and safeguards
+
+```text
+User message
+    -> candidate facts and current-state updates
+    -> provenance, category, confidence, and time-scope checks
+    -> local fact store / knowledge graph / working-memory summary
+    -> retrieval only when it is relevant to a later request
+```
+
+Memory is not treated as an instruction authority. Persona identity, privacy, permissions, and runtime safety rules remain authoritative even when historical conversation data conflicts with them. Entries can be traced back to their source messages and reviewed instead of being silently rewritten.
+
+### The five emotional axes
+
+![Ripple emotion system](assets/预览图/涟漪情感系统.jpg)
+
+The Ripple model records five slowly varying dimensions: positive affect, arousal, security, connection need, and pride. Appraisal evaluates the event and its context; dynamics smooth the change over time; tone generation stays within the active persona's boundaries. Emotional state can inform expression and proactive behavior, but it cannot claim unverified facts, bypass a permission check, or alter the persona's identity.
+
+![Five-axis state view](assets/预览图/五轴状态界面.jpg)
+
+### Star Maps
+
+The application contains two interactive, read-only visualizations.
+
+- **Memory Star Map** shows memory objects, relations, source messages, timelines, and detail panels.
+- **Ripple Star Map** shows current emotional state, important events, relationship signals, and historical snapshots.
+
+Both are rendered with PyQt WebEngine and QWebChannel. A node can request a snapshot or open its source record, but browser-side views cannot directly modify memory.
+
+![Memory Star Map](assets/预览图/星图系统1.jpg)
+
+![Ripple Star Map](assets/预览图/星图系统2.jpg)
+
+### Persona Control Hub
+
+Persona Control Hub separates *identity* from *state*. A profile describes Lianxin's name, user form of address, style, relationship framing, and non-negotiable behavioral boundaries. Memory and emotion are maintained independently at runtime.
+
+Profiles support creation, editing, validation, preview, and hot activation. Switching a profile changes the active persona snapshot for future turns; it does not erase factual history or grant new tool permissions. Conflicting legacy character descriptions are ignored unless the user explicitly requests an audit.
+
+### Proactive consciousness
+
+Proactive features are scheduled independently from ordinary chat and are designed to remain interruptible.
+
+| Activity | Behavior |
+|---|---|
+| Proactive chat | Starts a context-aware conversation within configured time windows, probability, cooldown, and deduplication rules |
+| Playful observation | Can use explicitly enabled desktop or camera observations as structured signals, not as unrestricted surveillance |
+| Bilibili browsing | Uses configured history and browser capabilities to propose relevant content |
+| Idle activity | Performs lightweight, scheduled activities when the user has been inactive |
+| Duty center | Coordinates heartbeats, reminders, tasks, memory maintenance, and narrative consolidation |
+
+User messages take precedence. Pause controls, cooldowns, rate limits, and cancellation paths prevent background behavior from competing with an active conversation.
+
+### Study Room
+
+![Lianxin Study Room](assets/预览图/莲心自习室界面.jpg)
+
+Lianxin Study Room is a separate focus space with a task list, Pomodoro-style timer, immersive focus mode, growth records, annual heatmaps, wallpapers, and messages. Its Python services communicate with the embedded HTML/CSS/JavaScript frontend through QWebChannel.
+
+- Focus sessions are maintained by an explicit state machine rather than a UI-only counter.
+- Tasks, focus records, and growth information are stored in a dedicated local SQLite database.
+- The room provides time review and personal-space views without mixing these records into the main conversation database.
+- PyQtWebEngine is part of the core dependency profile; a PyQt5-only installation cannot load this interface.
+
+### Time Capsule and Data Tide
+
+![Time Capsule: Today](assets/预览图/时间胶囊-今天.jpg)
+
+Time Capsule offers paired journal pages, a time corridor, a private tree-hole space, collections, legacy-diary migration, and explicit links to long-term memory. It is designed for local, reviewable records rather than an opaque archive.
+
+![Time Capsule: Timeline](assets/预览图/时间胶囊-时间长廊.jpg)
+
+![Time Capsule: Tree Hole](assets/预览图/时间胶囊-树洞.jpg)
+
+Data Tide presents local interaction and growth history in a coastal overview and achievement list. These views are product-facing representations of local records; they do not change the privacy boundary or upload personal data.
+
+![Data Tide overview](assets/预览图/数据潮汐-海岸概览.jpg)
+
+![Achievements](assets/预览图/数据潮汐-成就列表.jpg)
+
+### Tools, vision, and voice
+
+The tool layer includes weather, system information, files, browser actions, music control, notes, reminders, tasks, and Time Capsule operations. Calls pass through capability discovery, request policy, permission boundaries, execution logging, result handling, retries, and loop breakers.
+
+Visual capabilities can include screenshots, camera input, OCR, image description, image generation, and local visual-event recognition such as presence, smiles, and simple gestures. Local event recognition can feed character animation, emotion, or proactive behavior without sending every video frame to a model.
+
+Voice capabilities can include speech-to-text, full-duplex listening, interruption, Edge-TTS, and GPT-SoVITS. Install the matching dependency profile and configure required external services. QQ voice delivery may require FFmpeg to convert generated audio to SILK.
+
+### Companion modes and hardware
+
+![Galgame mode, vision, and browsing](assets/预览图/Galgame模式+视觉理解+网页浏览.jpg)
+
+Optional modes include a Galgame presentation, desktop companion window states, standby voice companionship, shoulder-mounted camera control, human tracking, and visual-event inputs. Hardware and browser capabilities remain opt-in and are constrained by the same permission and safety layers as other tools.
+
+### Skills and MCP
+
+Skills are pluggable capability packages. A skill normally contains a `SKILL.md` describing its knowledge and use boundaries together with tool definitions. The runtime discovers, registers, enables, disables, and progressively injects relevant skills so unrelated tool descriptions do not consume every request context.
+
+MCP services can expose additional tools through the same controlled workflow. Service availability, tool authorization, errors, and results remain visible to the request loop rather than becoming hidden model-side actions.
+
+### Resource guidance and lightweight use
+
+The base desktop profile is intended to run without a dedicated GPU when using a cloud text model. Install RAG, vision, voice, browser, and bridge packages only when needed. Local embedding models and local LLMs can increase memory, disk, CPU, and first-use download costs considerably.
+
+For a stable lightweight setup:
+
+1. Install `requirements-core.txt` first.
+2. Use a configured cloud provider for the main conversation model.
+3. Keep local vector retrieval, camera processing, and voice engines disabled until required.
+4. Enable one optional profile at a time and verify startup, chat, and logs before enabling another.
+
+### Headless Docker simulation
+
+The repository also provides a Docker-oriented, no-GUI simulator path for experimentation. It is not a replacement for the Windows desktop application. Simulator state is intentionally ephemeral unless a separate persistent volume and authentication design are introduced.
+
+```powershell
+docker compose up --build
+docker compose down
+```
 
 ## Optional Integrations
 
