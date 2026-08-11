@@ -28,6 +28,17 @@ class GitHubSkillTests(unittest.TestCase):
         with patch.dict("os.environ", {"LIANXIN_GITHUB_TOKEN": "env-token"}), patch("skills.github_mcp.github_mcp.get_github_config", return_value={"token": "config-token"}):
             self.assertEqual("env-token", GitHubMCP().token)
 
+    def test_directory_result_is_compact_and_truncated(self):
+        entries = [
+            {"name": f"file_{index}.py", "path": f"src/file_{index}.py", "type": "file", "size": 1, "html_url": "https://example.test"}
+            for index in range(101)
+        ]
+        with patch.object(GitHubMCP, "_contents", return_value=entries):
+            result = GitHubMCP().list_directory("octo", "repo", "src")
+        self.assertEqual("directory", result["kind"])
+        self.assertEqual(100, len(result["items"]))
+        self.assertTrue(result["truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()

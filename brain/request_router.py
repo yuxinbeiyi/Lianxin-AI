@@ -24,6 +24,10 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "time": {"get_current_time"},
     "web_search": {"web_search"},
     "web_fetch": {"fetch_webpage"},
+    "github": {
+        "github_search_repositories", "github_get_readme",
+        "github_get_file", "github_list_directory", "github_list_commits",
+    },
     # 复合网页任务不是新的网络工具，而是把“搜索证据”和“后续交接”
     # 绑定成一条有顺序的工作流。执行层会先强制 web_search，再根据
     # 用户意图交给 fetch_webpage 或浏览器工具。
@@ -61,6 +65,7 @@ CAPABILITY_DESCRIPTIONS = {
     "time": "查询精确日期、时间、农历或节日",
     "web_search": "搜索实时网络资料",
     "web_fetch": "读取指定网页正文",
+    "github": "使用 GitHub 专用接口搜索仓库、读取 README/源码和查看提交记录",
     "web_research": "先搜索并核验来源，再读取网页或交给浏览器继续操作",
     "browser": "使用浏览器打开网页并进行点击、输入、滚动或截图",
     "file_read": "查找并读取本地文件",
@@ -77,6 +82,36 @@ CAPABILITY_DESCRIPTIONS = {
 }
 
 _URL_RE = re.compile(r"https?://\S+", re.I)
+_GITHUB_REPO_RE = re.compile(r"https?://(?:www\.)?github\.com/[^/\s]+/[^/\s#?]+", re.I)
+_GITHUB_SLUG_RE = re.compile(r"(?<![\w-])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?![\w-])")
+_GITHUB_RECENT_RE = re.compile(
+    r"(?:最近|最新).{0,10}(?:更新|提交|commit)|(?:更新|提交).{0,10}(?:仓库|项目)|"
+    r"(?:recent|latest).{0,12}(?:commits?|updates?)",
+    re.I,
+)
+_GITHUB_FILE_RE = re.compile(
+    r"(?:读取|查看|打开|分析|解释|读).{0,30}(?:文件|源码|代码)|"
+    r"(?:read|open|inspect|analy[sz]e).{0,30}(?:file|source|code)|"
+    r"\b(?:requirements(?:-[\w]+)?\.txt|pyproject\.toml|package\.json|[\w./-]+\.(?:py|js|ts|go|java|json|yaml|yml|md))\b",
+    re.I,
+)
+_GITHUB_NEGATED_FILE_RE = re.compile(
+    r"(?:不需要|不要|无需|不必).{0,24}(?:源码|代码|文件|source|code|file)",
+    re.I,
+)
+_GITHUB_DIRECTORY_RE = re.compile(
+    r"(?:列出|查看|浏览).{0,80}(?:目录|文件树|项目结构)|"
+    r"(?:list|show|browse).{0,80}(?:directory|tree|structure)",
+    re.I,
+)
+_GITHUB_SEARCH_RE = re.compile(
+    r"(?:搜索|搜|找|比较|推荐).{0,30}(?:github|仓库|项目)|"
+    r"(?:github|仓库|repo|repository).{0,30}(?:搜索|搜|找|比较|推荐)|"
+    r"(?:github|repositories?|repos?).{0,30}(?:search|compare|find|recommend)|"
+    r"(?:按|根据).{0,10}(?:star|stars|星标)",
+    re.I,
+)
+_GITHUB_README_RE = re.compile(r"(?:readme|README|项目说明|说明文档)", re.I)
 _WINDOWS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\n\r\t]+")
 _FILE_EXT_RE = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|md|txt|csv|json|py|js|ts|html|log)\b", re.I)
 _CONTINUATION_RE = re.compile(r"^(?:那就|就按|继续|接着|再试|换一个|第二个|用它|开始吧|执行吧|试试)")
@@ -202,6 +237,11 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
     available = set(available_tool_names)
     request_text = parse_request_context(request_text).routing_text
 
+    if "github" in route.capabilities:
+        github_tool = _github_primary_tool(request_text)
+        if github_tool in available:
+            return github_tool
+
     # 复合任务的第一步永远是搜索。后续步骤由 WebResearchTaskState
     # 根据搜索结果和目标模式切换，不在这里提前固定浏览器动作。
     if "web_research" in route.capabilities and "web_search" in available:
@@ -228,6 +268,21 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
         if capability in route.capabilities and tool_name in available:
             return tool_name
     return None
+
+
+def _github_primary_tool(text: str) -> str:
+    """Choose the deterministic first GitHub operation for an explicit task."""
+    if _GITHUB_DIRECTORY_RE.search(text):
+        return "github_list_directory"
+    if _GITHUB_SEARCH_RE.search(text) and not _GITHUB_FILE_RE.search(text):
+        return "github_search_repositories"
+    if _GITHUB_RECENT_RE.search(text):
+        return "github_list_commits"
+    if _GITHUB_FILE_RE.search(text):
+        return "github_get_file"
+    if _GITHUB_README_RE.search(text):
+        return "github_get_readme"
+    return "github_get_readme"
 
 
 def _looks_like_action(text: str) -> bool:
@@ -320,7 +375,25 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if _BROWSER_INTERACTION_RE.search(text):
         capabilities.add("browser")
         reasons.append("用户明确要求浏览器交互")
-    if _URL_RE.search(text):
+    github_url = bool(_GITHUB_REPO_RE.search(text))
+    github_reference = github_url or bool(
+        re.search(r"(?:github|仓库|repo|repository)", text, re.I)
+        or _GITHUB_SLUG_RE.search(text)
+    )
+    github_specific_task = github_reference and bool(
+        _GITHUB_RECENT_RE.search(text)
+        or _GITHUB_DIRECTORY_RE.search(text)
+        or (_GITHUB_FILE_RE.search(text) and not _GITHUB_NEGATED_FILE_RE.search(text))
+        or _GITHUB_SEARCH_RE.search(text)
+        or _GITHUB_README_RE.search(text)
+    )
+    if github_specific_task:
+        capabilities.add("github")
+        reasons.append("明确要求 GitHub 仓库数据或文件内容")
+        # A specific GitHub API task must not be diverted to generic webpage
+        # extraction. Bare repository explanations retain fetch_webpage below.
+        capabilities.discard("web_fetch")
+    if _URL_RE.search(text) and not github_specific_task:
         capabilities.add("web_fetch")
         reasons.append("包含 URL")
     if _WINDOWS_PATH_RE.search(text) or _FILE_EXT_RE.search(text):

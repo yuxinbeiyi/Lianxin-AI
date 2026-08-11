@@ -77,12 +77,14 @@ class GitHubMCP:
     def search_repos(self, query: str, per_page: int = 8) -> dict:
         return self._request("GET", "/search/repositories", params={"q": query, "per_page": max(1, min(int(per_page), 30))})
 
-    def _contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> Any:
+    def _contents(self, owner: str, repo: str, path: str = "", ref: str | None = None) -> Any:
         owner, repo = _safe_part(owner, "owner"), _safe_part(repo, "repo")
-        if len(path) > 500 or not path or path.startswith("/") or ".." in path.split("/"):
+        path = str(path or "").strip()
+        if len(path) > 500 or path.startswith("/") or ".." in path.split("/"):
             raise ValueError("path 格式无效")
         params = {"ref": ref} if ref else None
-        return self._request("GET", f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/contents/{quote(path, safe='/')}", params=params)
+        suffix = f"/{quote(path, safe='/')}" if path else ""
+        return self._request("GET", f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/contents{suffix}", params=params)
 
     @staticmethod
     def _text_file(data: dict) -> dict:
@@ -107,6 +109,23 @@ class GitHubMCP:
     def get_file(self, owner: str, repo: str, path: str, ref: str | None = None) -> dict:
         data = self._contents(owner, repo, path, ref)
         return self._text_file(data) if isinstance(data, dict) else {"kind": "directory", "items": data}
+
+    def list_directory(self, owner: str, repo: str, path: str = "", ref: str | None = None) -> dict:
+        data = self._contents(owner, repo, path, ref)
+        if not isinstance(data, list):
+            return {"kind": "not_directory", "path": data.get("path"), "html_url": data.get("html_url")}
+        items = [
+            {
+                "name": item.get("name"), "path": item.get("path"),
+                "type": item.get("type"), "size": item.get("size"),
+                "html_url": item.get("html_url"),
+            }
+            for item in data[:100]
+        ]
+        return {
+            "kind": "directory", "path": path or "/", "items": items,
+            "truncated": len(data) > len(items),
+        }
 
     def list_commits(self, owner: str, repo: str, per_page: int = 20, page: int = 1) -> list[dict]:
         owner, repo = _safe_part(owner, "owner"), _safe_part(repo, "repo")

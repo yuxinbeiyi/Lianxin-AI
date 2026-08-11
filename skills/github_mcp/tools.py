@@ -20,6 +20,7 @@ TOOL_DEFINITIONS = [
     _definition("github_search_repositories", "搜索 GitHub 公开仓库。", {"query": {"type": "string", "minLength": 1, "maxLength": 300}, "per_page": {"type": "integer", "minimum": 1, "maximum": 30}}, ["query"]),
     _definition("github_get_readme", "读取仓库 README 的受限预览。", {"owner": _REPO, "repo": _REPO, "ref": _REF, "preview_chars": {"type": "integer", "minimum": 100, "maximum": 6000}}, ["owner", "repo"]),
     _definition("github_get_file", "读取仓库文本文件的受限预览。", {"owner": _REPO, "repo": _REPO, "path": {"type": "string", "minLength": 1, "maxLength": 500}, "ref": _REF, "preview_chars": {"type": "integer", "minimum": 100, "maximum": 6000}}, ["owner", "repo", "path"]),
+    _definition("github_list_directory", "列出仓库目录内容，用于定位 README、配置和源码文件。", {"owner": _REPO, "repo": _REPO, "path": {"type": "string", "maxLength": 500}, "ref": _REF}, ["owner", "repo"]),
     _definition("github_list_commits", "列出仓库最近提交。", {"owner": _REPO, "repo": _REPO, "per_page": {"type": "integer", "minimum": 1, "maximum": 50}, "page": {"type": "integer", "minimum": 1, "maximum": 10}}, ["owner", "repo"]),
 ]
 
@@ -60,6 +61,16 @@ def github_get_file(args: dict) -> str:
     except Exception as exc: return _error(exc)
 
 
+def github_list_directory(args: dict) -> str:
+    try:
+        path = str(args.get("path") or "")
+        if len(path) > 500 or path.startswith("/") or ".." in path.split("/"):
+            raise ValueError("path 格式无效")
+        data = get_mcp().list_directory(args.get("owner"), args.get("repo"), path, args.get("ref"))
+        return json.dumps({"note": _NOTICE, **data}, ensure_ascii=False)
+    except Exception as exc: return _error(exc)
+
+
 def github_list_commits(args: dict) -> str:
     try:
         commits = get_mcp().list_commits(args.get("owner"), args.get("repo"), args.get("per_page", 10), args.get("page", 1))
@@ -70,5 +81,6 @@ def github_list_commits(args: dict) -> str:
 
 TOOL_EXECUTORS: dict[str, Callable[[dict], str]] = {name: fn for name, fn in {
     "github_search_repositories": github_search_repositories, "github_get_readme": github_get_readme,
-    "github_get_file": github_get_file, "github_list_commits": github_list_commits,
+    "github_get_file": github_get_file, "github_list_directory": github_list_directory,
+    "github_list_commits": github_list_commits,
 }.items()}

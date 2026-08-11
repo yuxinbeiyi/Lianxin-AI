@@ -160,6 +160,7 @@ tests/**
 !tests/test_physical_service.py
 !tests/test_main_window_startup.py
 !tests/test_tool_execution_contract.py
+!tests/test_github_routing.py
 
 # 阿里云语音 SDK（用户自行安装）
 alibabacloud-nls-python-sdk/

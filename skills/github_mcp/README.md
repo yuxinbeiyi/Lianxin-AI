@@ -1,10 +1,11 @@
 # GitHub Skill
 
-The first release gives Lianxin read-only GitHub access through four tools:
+The first release gives Lianxin read-only GitHub access through five tools:
 
 - search public repositories
 - read a repository README preview
 - read a UTF-8 text-file preview
+- list a repository directory to locate README, configuration, and source files
 - list recent commits
 
 All repository text is external, untrusted content and is marked as such before it reaches the model. File previews default to 4,000 characters and never exceed 6,000 characters.

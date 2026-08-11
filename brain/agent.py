@@ -75,6 +75,7 @@ _COMPACT_MEMORY_POLICY = """【回忆规则】
 # 跨端设备切换标记
 _SIDE_MARKER_PATH = Path(__file__).parent.parent / "memory" / "last_active_side.json"
 _side_lock = threading.Lock()
+_SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="context-summary")
 
 # 主动行为的来源标签只用于界面/诊断，不应成为模型可模仿的对话内容。
 _INTERNAL_HISTORY_PREFIX_RE = re.compile(
@@ -447,6 +448,9 @@ class AgentCore:
         self._conversation_summary = ""
         self._summarized_history_idx = 0
         self._last_input_tokens = 0
+        self._summary_future = None
+        self._summary_future_meta = None
+        self._pending_summary_job = None
         self._restore_context_snapshot()
 
         # ── 用户上下文：让 AI 知道当前在跟谁说话 ───────────────
@@ -535,6 +539,7 @@ class AgentCore:
             interrupt_queue=None,
             on_interrupt=None,
             on_progress=None,
+            on_activity=None,
             response_guard=None,
             on_tool_enable_request=None,
             on_browser_confirmation=None) -> str:
@@ -548,6 +553,8 @@ class AgentCore:
             on_progress:       callable(text)，报告进度回复的回调。
             response_guard:    callable() -> bool，False 时丢弃已过期回复且不写入历史。
         """
+        if on_activity:
+            on_activity("request_started")
         # AgentCore 会在桌面端跨请求复用。中途插话的“停止”只应作用于
         # 当前请求，不能把取消事件带到下一轮对话。
         self._cancel_event.clear()
@@ -722,12 +729,15 @@ class AgentCore:
 
         effective_disable = disable_tools or self._disable_tools or self._use_local
         try:
+            if on_activity:
+                on_activity("agent_loop_started")
             response_text = self._function_calling_loop(on_tool_call, on_tool_result, forced_tool,
                                                           preferred_tool, effective_disable, interrupt_queue,
                                                           on_interrupt, on_progress, user_message,
                                                           on_round_start=on_round_start,
                                                           persona_snapshot=persona_snapshot,
                                                           persona_transition=persona_transition,
+                                                          on_activity=on_activity,
                                                           on_tool_enable_request=on_tool_enable_request,
                                                           on_browser_confirmation=on_browser_confirmation)
         except Exception as exc:
@@ -864,6 +874,8 @@ class AgentCore:
             )
         self._active_workflow_run_id = 0
         self._prepared_document_context = ""
+        # 主回复已完成后才启动摘要，避免摘要模型调用抢占当前请求。
+        self._launch_deferred_summary()
         return display_response  # 返回干净文本，不含标签和 emoji
 
     def _trigger_checklist_extraction(self):
@@ -904,6 +916,9 @@ class AgentCore:
         self._conversation_summary = ""
         self._summarized_history_idx = 0
         self._last_input_tokens = 0
+        self._summary_future = None
+        self._summary_future_meta = None
+        self._pending_summary_job = None
         self._last_persona_key = None
         self._persona_transition_remaining = 0
     def remove_message_by_content(self, content: str) -> bool:
@@ -1631,7 +1646,7 @@ class AgentCore:
                         on_tool_result(name, web_denial, True, 0.0)
                     continue
 
-            if name == "web_search":
+            if name in {"web_search", "github_search_repositories"}:
                 remaining = getattr(self, "_remaining_search_calls", None)
                 if remaining is not None and remaining <= 0:
                     result = "本轮搜索预算已用完。请基于已有的不同来源整理最终回答，不要继续搜索。"
@@ -2067,10 +2082,67 @@ class AgentCore:
         except Exception as exc:
             logger.warning("恢复上下文快照失败，使用完整历史: %s", exc)
 
+    def _save_summary_snapshot(self, covered: int, persona_snapshot=None, trigger: str = "background"):
+        """在摘要已完成后保存快照；数据库写入失败不影响当前会话。"""
+        try:
+            profile = getattr(persona_snapshot, "profile", None)
+            snapshot_id = self._history_mgr.save_compression_snapshot(
+                self._session_id, self._conversation_summary, covered,
+                covered_user_turns=sum(1 for m in self.history[:covered] if m.get("role") == "user"),
+                model=self._model, persona_id=getattr(profile, "id", ""),
+                persona_revision=getattr(persona_snapshot, "revision", 0),
+                trigger=trigger, input_tokens=getattr(self, "_last_input_tokens", 0),
+            )
+            print(f"[上下文快照] 已保存: id={snapshot_id}, 覆盖{covered}条, "
+                  f"摘要{len(self._conversation_summary)}字, 触发={trigger}", flush=True)
+        except Exception as exc:
+            logger.warning("保存后台上下文快照失败: %s", exc)
+
+    def _consume_background_summary(self, persona_snapshot=None):
+        future = getattr(self, "_summary_future", None)
+        if future is None or not future.done():
+            return
+        meta = self._summary_future_meta or {}
+        self._summary_future = None
+        self._summary_future_meta = None
+        try:
+            chunk_summary = future.result()
+        except Exception as exc:
+            logger.warning("后台历史摘要失败，保留旧摘要: %s", exc)
+            print(f"[上下文摘要] 后台生成失败，保留旧摘要: {exc}", flush=True)
+            return
+        if not chunk_summary:
+            return
+        target = min(int(meta.get("target", 0)), len(self.history))
+        if target <= self._summarized_history_idx:
+            return
+        max_chars = get_memory_config().get("context_summary_max_chars", 4_000)
+        if self._conversation_summary:
+            self._conversation_summary = merge_summaries_bounded(
+                self._conversation_summary, chunk_summary, max_chars
+            )
+        else:
+            self._conversation_summary = compact_summary_text(chunk_summary, max_chars)
+        self._summarized_history_idx = target
+        self._save_summary_snapshot(target, persona_snapshot, meta.get("trigger", "background"))
+        print(f"[上下文摘要] 后台摘要已应用: {target}条 -> {len(self._conversation_summary)}字", flush=True)
+
+    def _launch_deferred_summary(self):
+        job = getattr(self, "_pending_summary_job", None)
+        if not job or getattr(self, "_summary_future", None) is not None:
+            return
+        self._pending_summary_job = None
+        self._summary_future_meta = job
+        self._summary_future = _SUMMARY_EXECUTOR.submit(
+            self._generate_history_summary, list(job["messages"])
+        )
+        print(f"[上下文摘要] 已转入后台: {len(job['messages'])}条历史", flush=True)
+
     def _apply_history_window(self, persona_snapshot=None):
         """应用完整 turn 边界、实际 token 触发和可恢复的增量摘要。"""
         cfg = get_memory_config()
         history = self.history
+        self._consume_background_summary(persona_snapshot)
         if not cfg.get("enable_conversation_summary", True):
             return None, list(history)
 
@@ -2093,6 +2165,22 @@ class AgentCore:
         pending = history[covered:target_covered]
         batch_size = max(1, int(cfg.get("context_summary_batch_messages", 6)))
         summary_max_chars = cfg.get("context_summary_max_chars", 4_000)
+
+        if cfg.get("context_summary_async", False) and len(pending) >= batch_size:
+            if (getattr(self, "_summary_future", None) is None
+                    and getattr(self, "_pending_summary_job", None) is None):
+                self._pending_summary_job = {
+                    "messages": list(pending), "target": target_covered,
+                    "trigger": selection.trigger,
+                }
+                print(f"[上下文摘要] 已排队后台摘要: {len(pending)}条历史", flush=True)
+            summary = None
+            if self._conversation_summary:
+                summary = (
+                    f"【对话历史摘要】此前 {covered} 条消息已压缩。\n"
+                    f"{self._conversation_summary}"
+                )
+            return summary, list(history[covered:])
 
         # 未积累到安全批次时不推进游标，原消息继续进入 prompt。
         if len(pending) >= batch_size:
@@ -2253,6 +2341,7 @@ class AgentCore:
                                on_progress=None, user_message: str = "",
                                on_round_start=None, persona_snapshot=None,
                                persona_transition: str = "",
+                               on_activity=None,
                                on_tool_enable_request=None,
                                on_browser_confirmation=None) -> str:
 
@@ -2291,6 +2380,8 @@ class AgentCore:
             forced_tool=forced_tool or preferred_tool,
             session_state=self._tool_session_state,
         )
+        if on_activity:
+            on_activity(f"route:{route.mode.value}")
         if self._use_local:
             # Ollama is deliberately a pure-chat provider. Keep the route light
             # so task prompts, memory retrieval, and tool contracts never reach
@@ -2625,7 +2716,11 @@ class AgentCore:
         elif self._use_local:
             messages.extend(_history_for_prompt(self.history[-20:]))
         else:
+            if on_activity:
+                on_activity("history_window_started")
             summary_text, recent_history = self._apply_history_window(persona_snapshot)
+            if on_activity:
+                on_activity("history_window_finished")
             if summary_text:
                 messages.append({"role": "system", "content": summary_text})
             messages.extend(_history_for_prompt(recent_history))
@@ -2635,6 +2730,8 @@ class AgentCore:
             all_tools = []
             loaded_categories = set()
         else:
+            if on_activity:
+                on_activity("tool_catalog_started")
             skill_tools = get_active_tool_definitions()
             mcp_tools = get_all_mcp_tool_definitions()
 
@@ -2655,6 +2752,8 @@ class AgentCore:
                 if definition.get("function", {}).get("name", "") in route.tool_names
             ]
             all_tools = [] if route.is_light else filtered_builtin + selected_skill_tools + contextual_mcp_tools
+            if on_activity:
+                on_activity("tool_catalog_finished")
 
             # 用户禁用的工具过滤
             from config import get_builtin_tool_config
@@ -2925,7 +3024,9 @@ class AgentCore:
 
         _search_fatigue_count = 0            # 连续搜索轮计数
         # 搜索摘要通常一次可返回多个来源；续接请求限制为两次，防止模型为凑数无限换词。
-        self._remaining_search_calls = 2 if "web_search" in route.capabilities else None
+        self._remaining_search_calls = (
+            2 if {"web_search", "github"} & set(route.capabilities) else None
+        )
         self._search_budget_exhausted = False
         _evidence_signatures: set[tuple[int, str]] = set()
         _no_new_evidence_count = 0
@@ -2935,6 +3036,8 @@ class AgentCore:
             "search_code", "glob_files", "list_directory",
             "read_file", "read_file_chunk", "read_file_lines",
             "get_file_info_everything", "grep_file", "web_search",
+            "github_search_repositories", "github_get_readme", "github_get_file",
+            "github_list_directory", "github_list_commits",
         }
 
         # ── 复杂度判断：用户消息超过80字视为复杂任务 ──
@@ -3044,6 +3147,8 @@ class AgentCore:
             _tool_count = len(all_tools)
             print(f"[诊断] 第{iteration}轮 prompt 构建: {_t1 - _prompt_build_started:.1f}s, "
                   f"{len(messages)}条消息, {_total_chars}字符, {_tool_count}个工具", flush=True)
+            if on_activity:
+                on_activity(f"prompt_ready:{iteration}")
 
             # ── Prompt 调试转储 ──
             try:
@@ -3069,6 +3174,8 @@ class AgentCore:
                 except Exception:
                     _workflow_model_step = 0
                 print("  [等待] 正在等待 API 响应...", flush=True)
+                if on_activity:
+                    on_activity(f"model_started:{iteration}")
                 # OpenAI-compatible providers may reject tool_choice when no
                 # tools are supplied. DeepSeek tolerates this, while Agnes
                 # correctly returns HTTP 400, so omit the field for plain chat.
@@ -3096,6 +3203,8 @@ class AgentCore:
                 _content_len = len(content) if content else 0
                 print(f"[诊断] 第{iteration}轮 API 完成: {_api_elapsed:.1f}s, "
                       f"回复{_content_len}字, finish={finish}", flush=True)
+                if on_activity:
+                    on_activity(f"model_finished:{iteration}")
                 if _workflow_model_step:
                     get_workflow_store().finish_step(
                         _workflow_model_step, status="success",
@@ -3392,7 +3501,7 @@ class AgentCore:
                     messages.append({
                         "role": "system",
                         "content": (
-                            "本轮联网搜索预算已经用完。下一轮禁止继续调用 web_search；"
+                            "本轮搜索预算已经用完。下一轮禁止继续调用 web_search 或 github_search_repositories；"
                             "请去重已有来源、说明证据边界，并直接给出最终回答。"
                         ),
                     })

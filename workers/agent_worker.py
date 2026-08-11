@@ -29,6 +29,7 @@ _INTERRUPT_SYSTEM = """【用户中途插话】
 class AgentWorker(QThread):
     response_ready = pyqtSignal(str)
     progress_update = pyqtSignal(str)   # 插话进度回复（仅追加文字，不改动画状态）
+    activity = pyqtSignal(str)           # 内部阶段心跳，只用于请求看门狗续期
     tool_round_start = pyqtSignal(int)                          # round_num
     tool_called    = pyqtSignal(str, str, int)                  # name, args_json, round_num
     tool_result    = pyqtSignal(str, str, bool, int, float)     # name, preview, is_error, round_num, elapsed_ms
@@ -84,6 +85,7 @@ class AgentWorker(QThread):
 
             def on_round_start(round_num):
                 current_round[0] = round_num
+                self.activity.emit(f"round:{round_num}")
                 self.tool_round_start.emit(round_num)
 
             # 设置待办提取回调
@@ -96,6 +98,7 @@ class AgentWorker(QThread):
             self.agent._checklist_callback = on_checklist_extracted
 
             def on_tool_call(name, args):
+                self.activity.emit(f"tool_start:{name}")
                 safe_args = args or {}
                 if str(name or "").startswith("browser_"):
                     try:
@@ -107,6 +110,7 @@ class AgentWorker(QThread):
                 self.tool_called.emit(name, args_json, current_round[0])
 
             def on_tool_result(name, result, is_error=False, elapsed_ms=0):
+                self.activity.emit(f"tool_end:{name}")
                 preview = (result or "")[:80].replace("\n", " ")
                 preview += ("…" if len(result or "") > 80 else "")
                 self.tool_result.emit(name, preview, is_error, current_round[0], elapsed_ms)
@@ -157,6 +161,7 @@ class AgentWorker(QThread):
                 interrupt_queue=self.interrupt_queue,
                 on_interrupt=self._process_interrupt,
                 on_progress=lambda text: self.progress_update.emit(text),
+                on_activity=lambda stage: self.activity.emit(str(stage)),
             )
             self.response_ready.emit(response)
         except Exception as e:

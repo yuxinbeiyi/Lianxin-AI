@@ -824,6 +824,7 @@ _MEMORY_DEFAULTS = {
     "context_summary_token_threshold": 80000,  # 上次请求输入 token 达到该值时提前压缩
     "context_summary_batch_messages": 6,       # 至少累计 N 条新消息才推进摘要游标
     "context_summary_max_chars": 4000,         # 滚动摘要硬字符预算，防止降级拼接膨胀
+    "context_summary_async": True,             # 摘要在主回复结束后后台维护，避免阻塞当前消息
     "tool_result_max_chars": 12000,     # 最近工具结果注入模型的最大字符数
     "stale_tool_result_max_chars": 2400,  # 较早工具结果的最大字符数
     "tool_result_keep_recent": 4,       # 保持较完整的最近工具结果数量

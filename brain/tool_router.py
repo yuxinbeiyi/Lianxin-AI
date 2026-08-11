@@ -54,6 +54,10 @@ CATEGORY_TOOLS: Dict[str, Set[str]] = {
         "fetch_webpage_via_api", "fetch_webpage_stealth",
         "configure_network_tools",
     },
+    "github": {
+        "github_search_repositories", "github_get_readme",
+        "github_get_file", "github_list_directory", "github_list_commits",
+    },
     "bilibili": {
         "bilibili_search", "bilibili_add_tag", "bilibili_list_tags",
     },
@@ -96,6 +100,10 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
         "搜索", "网页", "网络", "上网", "查一下", "百度", "谷歌",
         "fetch", "抓取", "链接", "网址", "http://", "https://",
         "帮我搜", "查查", "最新", "新闻", "search", "web", "internet",
+    ],
+    "github": [
+        "github", "github.com", "repository", "repo", "readme",
+        "commit", "requirements.txt", "pyproject.toml",
     ],
     "bilibili": [
         "bilibili", "b站", "哔哩哔哩", "b站标签", "b站视频",

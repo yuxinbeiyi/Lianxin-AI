@@ -19,6 +19,10 @@ NETWORK_READ_TOOLS = {
     "fetch_webpage_stealth", "fetch_webpage_browser",
 }
 URL_FETCH_TOOLS = {"fetch_webpage"}
+GITHUB_READ_TOOLS = {
+    "github_search_repositories", "github_get_readme", "github_get_file",
+    "github_list_directory", "github_list_commits",
+}
 BROWSER_TOOLS = {
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_fill", "browser_press", "browser_scroll",
@@ -96,10 +100,11 @@ def _event_succeeded(event: dict, name: str | None = None) -> bool:
         return False
     if event.get("is_error") or event.get("authorized") is False:
         return False
-    result = str(event.get("result", "")).lower()
-    return not any(token in result for token in (
-        "失败", "不可用", "被阻止", "没有返回", "error", "failed", "timeout",
-    ))
+    # 工具结果可能是网页、README 或源码正文；其中出现 “error”/“failed”
+    # 是正常内容，不能据此否定已成功完成的抓取。统一复用工具层的前缀式
+    # 状态分类，避免 GitHub 页面正文触发误判和无意义的强制重试。
+    from brain.tool_usage import classify_tool_result
+    return classify_tool_result(event.get("result", "")) in {"success", "cached"}
 
 
 def has_successful_tool_call(audit: Iterable[dict] | None, names: set[str]) -> bool:
@@ -140,6 +145,15 @@ def request_tool_allowlist(text: str) -> set[str] | None:
     """URL 请求使用严格读取白名单；普通请求返回 ``None``。"""
     normalized = _normalized_request_text(text)
     if extract_urls(normalized):
+        # A GitHub repository URL can represent either a generic webpage to
+        # summarize or an explicit repository API task. Keep the former on the
+        # fast fetch path while allowing the latter through the GitHub Skill.
+        try:
+            from brain.request_router import classify_request
+            if "github" in classify_request(normalized).capabilities:
+                return set(GITHUB_READ_TOOLS) | {"get_current_time"}
+        except Exception:
+            pass
         allowed = set(URL_FETCH_TOOLS) | {"get_current_time"}
         # 明确的浏览器交互不能被普通 URL 阅读策略降级掉。
         if _BROWSER_INTERACTION_RE.search(normalized):

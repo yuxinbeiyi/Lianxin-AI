@@ -474,6 +474,7 @@ class MainWindow(QMainWindow):
         self._last_route_result = route_result
         self._agent_worker.response_ready.connect(self._on_ai_response)
         self._agent_worker.progress_update.connect(self._on_progress_update)
+        self._agent_worker.activity.connect(self._on_agent_activity)
         self._agent_worker.tool_round_start.connect(self._chat_widget.start_tool_round)
         self._agent_worker.tool_called.connect(self._on_tool_called)
         self._agent_worker.tool_result.connect(self._on_tool_result)
@@ -1347,6 +1348,7 @@ class MainWindow(QMainWindow):
             )
             self._agent_worker.response_ready.connect(self._on_ai_response)
             self._agent_worker.progress_update.connect(self._on_progress_update)
+            self._agent_worker.activity.connect(self._on_agent_activity)
             self._agent_worker.tool_round_start.connect(self._chat_widget.start_tool_round)
             self._agent_worker.tool_called.connect(self._on_tool_called)
             self._agent_worker.tool_result.connect(self._on_tool_result)
@@ -1433,6 +1435,7 @@ class MainWindow(QMainWindow):
         )
         self._agent_worker.response_ready.connect(self._on_ai_response)
         self._agent_worker.progress_update.connect(self._on_progress_update)
+        self._agent_worker.activity.connect(self._on_agent_activity)
         self._agent_worker.tool_round_start.connect(self._chat_widget.start_tool_round)
         self._agent_worker.tool_called.connect(self._on_tool_called)
         self._agent_worker.tool_result.connect(self._on_tool_result)
@@ -1533,11 +1536,20 @@ class MainWindow(QMainWindow):
 
     def _on_progress_update(self, text: str):
         """显示插话回复；它是当前任务的旁路信息，不冒充最终答案。"""
+        self._on_agent_activity("interrupt_progress")
         text = str(text or "").strip()
         if not text:
             return
         self._chat_widget.add_system_tip(f"插话回复：{text}")
         self._task_progress.set_subtitle(f"插话已回复：{text[:80]}")
+
+    def _on_agent_activity(self, stage: str):
+        """收到 Worker 的真实执行阶段，延长当前请求的兜底看门狗。"""
+        worker = getattr(self, "_agent_worker", None)
+        if not worker or not worker.isRunning():
+            return
+        self._agent_watchdog.start(180_000)
+        print(f"[请求进度] {str(stage or 'active')[:120]}", flush=True)
 
 
     def _on_error(self, err: str):

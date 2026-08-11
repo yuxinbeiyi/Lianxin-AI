@@ -12,6 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ToolExecutionContractTests(unittest.TestCase):
+    def test_web_content_with_error_word_is_still_successful(self):
+        from brain.request_tool_policy import has_successful_tool_call
+
+        audit = [{
+            "name": "fetch_webpage", "authorized": True, "is_error": False,
+            "result": "README: Error handling and failed-job recovery are documented here.",
+        }]
+        self.assertTrue(has_successful_tool_call(audit, {"fetch_webpage"}))
+
     def test_explicit_web_search_phrases_open_and_force_search(self):
         samples = (
             "帮我上网搜一下 Kimi V3 的体验页面和 API 服务",
