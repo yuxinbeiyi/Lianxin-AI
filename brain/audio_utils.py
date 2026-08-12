@@ -36,6 +36,14 @@ def _resolve_ffmpeg() -> Path:
     except Exception:
         pass
 
+    try:
+        from config import get_tts_config
+        gs_path = str(get_tts_config().get("gpt_sovits_path", "") or "").strip()
+        if gs_path:
+            candidates.append(Path(gs_path) / "runtime" / "ffmpeg.exe")
+    except Exception:
+        pass
+
     env_root = Path(sys.prefix)
     candidates.extend((
         env_root / "Library" / "bin" / "ffmpeg.exe",

@@ -51,7 +51,7 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
                mood_hint: str = None, sample_steps: int = 16,
                temperature: float = 0.3, top_k: int = 5, top_p: float = 0.9,
                how_to_cut: str = "不切", pause_second: float = 0.3,
-               speed: float = 1.0) -> dict:
+               speed: float = 1.0, ref_text: str = "", ref_lang: str = "中文") -> dict:
     """执行一次 GPT-SoVITS 合成，返回 {"success": bool, "output": str, "error": str}。"""
     # 重定向 stdout → stderr，避免 GPT-SoVITS 日志污染 JSON 输出
     _orig_stdout = sys.stdout
@@ -81,17 +81,28 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
 
     text_lang = _detect_language(text)
 
+    # v3/v4 的 S2（Diffusion）不支持 ref_free，必须提供参考音频文本
+    version = os.environ.get("GPT_SOVITS_VERSION", "").strip()
+    is_v3v4 = version in ("v3", "v4")
+    prompt_text = ref_text.strip() if is_v3v4 else ""
+    if is_v3v4 and not prompt_text:
+        prompt_text = "你好，我是莲心。"
+        sys.stderr.write(
+            "[worker] 警告：v3/v4 需要参考音频文本（ref_wavs/config.json 的 text 字段），"
+            "未配置时使用默认文本，音色相似度可能下降。\n"
+        )
+
     params = {
         "ref_wav_path": ref_path,
-        "prompt_text": "",
-        "prompt_language": "中文",
+        "prompt_text": prompt_text,
+        "prompt_language": ref_lang if prompt_text else "中文",
         "text": text,
         "text_language": text_lang,
         "how_to_cut": how_to_cut,
         "top_k": top_k,
         "top_p": top_p,
         "temperature": temperature,
-        "ref_free": True,
+        "ref_free": not is_v3v4,
         "speed": speed,
         "if_freeze": False,
         "inp_refs": None,
@@ -119,6 +130,32 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
         return {"success": False, "error": "GPT-SoVITS 未生成音频"}
 
 
+def _setup_model_version(gs_path: str) -> str:
+    """根据 GPT_SOVITS_VERSION 环境变量设置 GPT-SoVITS 模型版本。
+
+    必须在首次 import GPT_SoVITS.inference_webui 之前调用：
+    设置 version / gpt_path / sovits_path 环境变量，让 inference_webui
+    在 import 时自动加载指定版本的预训练权重。返回解析后的版本名（空=未指定）。
+    """
+    version = os.environ.get("GPT_SOVITS_VERSION", "").strip()
+    if not version:
+        return ""
+    os.environ["version"] = version
+    try:
+        # 使用 GPT-SoVITS 自带的版本→权重路径映射（相对 gs_path 解析）
+        from config import pretrained_sovits_name, pretrained_gpt_name
+        sovits_path = pretrained_sovits_name.get(version)
+        gpt_path = pretrained_gpt_name.get(version)
+        if sovits_path:
+            os.environ["sovits_path"] = sovits_path
+        if gpt_path:
+            os.environ["gpt_path"] = gpt_path
+        sys.stderr.write(f"[worker] 模型版本 {version}: sovits={sovits_path}, gpt={gpt_path}\n")
+    except Exception as e:
+        sys.stderr.write(f"[worker] 设置版本 {version} 权重路径失败（将使用默认权重）: {e}\n")
+    return version
+
+
 def main():
     gs_path = os.environ.get("GPT_SOVITS_PATH", "")
     if not gs_path:
@@ -131,6 +168,9 @@ def main():
     sovits_dir = os.path.join(gs_path, "GPT_SoVITS")
     if os.path.isdir(sovits_dir):
         sys.path.insert(0, sovits_dir)
+
+    # 设置模型版本（必须在首次 import inference_webui 之前）
+    _setup_model_version(gs_path)
 
     is_persistent = "--persistent" in sys.argv
 
@@ -159,6 +199,8 @@ def main():
                         how_to_cut=req.get("how_to_cut", "不切"),
                         pause_second=req.get("pause_second", 0.3),
                         speed=req.get("speed", 1.0),
+                        ref_text=req.get("ref_text", ""),
+                        ref_lang=req.get("ref_lang", "中文"),
                     )
             except Exception as e:
                 result = {"success": False, "error": str(e)}

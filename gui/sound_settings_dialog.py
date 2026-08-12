@@ -187,6 +187,26 @@ class SoundSettingsDialog(QDialog):
         gs_row.addWidget(gs_browse_btn)
         gs_vbox.addLayout(gs_row)
 
+        version_row = QHBoxLayout()
+        version_label = QLabel("模型版本")
+        version_label.setStyleSheet("font-size: 12px;")
+        version_row.addWidget(version_label)
+        self._tts_version_combo = QComboBox()
+        self._tts_version_combo.addItem("v2Pro（默认，声音稳定）", "v2Pro")
+        self._tts_version_combo.addItem("v3（情感更丰富，24kHz）", "v3")
+        self._tts_version_combo.addItem("v4（v3 改进版，48kHz 防闷）", "v4")
+        version_row.addWidget(self._tts_version_combo, 1)
+        gs_vbox.addLayout(version_row)
+
+        version_desc = QLabel(
+            "切换版本后会自动重启 GPT-SoVITS 进程重新加载模型。\n"
+            "v3/v4 需要参考音频文本，莲心会用 FunASR 自动转录参考音频内容；\n"
+            "也可在 ref_wavs/config.json 中手动修改「text」字段覆盖。"
+        )
+        version_desc.setWordWrap(True)
+        version_desc.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
+        gs_vbox.addWidget(version_desc)
+
         self._tts_gs_status = QLabel()
         self._tts_gs_status.setStyleSheet("font-size: 12px; padding: 2px 0;")
         gs_vbox.addWidget(self._tts_gs_status)
@@ -216,6 +236,19 @@ class SoundSettingsDialog(QDialog):
         browse_btn.clicked.connect(self._browse_ref_wav)
         ref_row.addWidget(browse_btn)
         ref_vbox.addLayout(ref_row)
+
+        transcribe_row = QHBoxLayout()
+        transcribe_btn = QPushButton("🎙 重新转录参考音频")
+        transcribe_btn.setToolTip(
+            "用 FunASR 重新转录所有参考音频的内容并写入 config.json。\n"
+            "v3/v4 需要参考文本与音频内容一致，新增音频后建议点此转录。"
+        )
+        transcribe_btn.clicked.connect(self._on_re_transcribe_refs)
+        transcribe_row.addWidget(transcribe_btn)
+        self._transcribe_status = QLabel("")
+        self._transcribe_status.setStyleSheet("color: #888; font-size: 12px;")
+        transcribe_row.addWidget(self._transcribe_status, 1)
+        ref_vbox.addLayout(transcribe_row)
 
         ref_desc = QLabel(
             "选择后莲心将固定使用该音色，不随情绪自动切换。\n"
@@ -531,6 +564,10 @@ class SoundSettingsDialog(QDialog):
         self._tts_engine_combo.setCurrentIndex(idx)
         self._tts_gs_path_edit.setText(self._tts_cfg.get("gpt_sovits_path", ""))
 
+        version = self._tts_cfg.get("gpt_sovits_version", "v2Pro") or "v2Pro"
+        version_idx = self._tts_version_combo.findData(version)
+        self._tts_version_combo.setCurrentIndex(max(0, version_idx))
+
         def_mood = self._tts_cfg.get("default_mood", "auto")
         for i in range(self._tts_mood_combo.count()):
             if self._tts_mood_combo.itemData(i) == def_mood:
@@ -647,6 +684,38 @@ class SoundSettingsDialog(QDialog):
         self._ref_wav_combo.insertItem(1, f"📁 {fname}", path)
         self._ref_wav_combo.setCurrentIndex(1)
 
+    def _on_re_transcribe_refs(self):
+        """用 FunASR 重新转录所有参考音频（force=True），后台执行避免卡 UI。"""
+        from brain.ref_transcriber import get_ref_transcripts
+        from brain.tts_engine import _get_ref_wavs_dir, reset_gpt_sovits_cache
+
+        ref_dir = _get_ref_wavs_dir()
+        if not ref_dir:
+            self._transcribe_status.setText("未找到参考音频目录")
+            return
+
+        self._transcribe_status.setText("正在转录（首次需加载 FunASR 模型，请稍候）…")
+        self._ref_wav_combo.setEnabled(False)
+
+        def _work():
+            try:
+                cache = get_ref_transcripts(ref_dir, force=True)
+                done = sum(1 for v in cache.values() if (v.get("text") or "").strip())
+                total = len(cache)
+                # 让 tts_engine 的 ref 缓存失效，下次合成读新转录
+                reset_gpt_sovits_cache()
+                self._transcribe_status.setText(
+                    f"转录完成：{done}/{total} 个参考音频已配置文本"
+                    if total else "未找到参考音频"
+                )
+            except Exception as e:
+                self._transcribe_status.setText(f"转录失败：{e}")
+            finally:
+                self._ref_wav_combo.setEnabled(True)
+
+        import threading
+        threading.Thread(target=_work, daemon=True).start()
+
     def _on_tts_speed_changed(self, value: int):
         speed = value / 100.0
         self._tts_speed_value.setText(f"{speed:.1f}x")
@@ -678,6 +747,7 @@ class SoundSettingsDialog(QDialog):
         save_tts_config({
             "engine": engine,
             "gpt_sovits_path": gs_path,
+            "gpt_sovits_version": self._tts_version_combo.currentData(),
             "default_mood": mood,
             "speed": speed_val,
             "temperature": adv["temperature"],
@@ -747,6 +817,7 @@ class SoundSettingsDialog(QDialog):
         save_tts_config({
             "engine": engine,
             "gpt_sovits_path": gs_path,
+            "gpt_sovits_version": self._tts_version_combo.currentData(),
             "default_mood": mood,
             "speed": speed,
             "temperature": adv["temperature"],

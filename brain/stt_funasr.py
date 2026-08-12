@@ -6,8 +6,9 @@ stt_funasr.py — FunASR SenseVoice-Small 语音识别封装
 import os
 import sys
 import logging
+import re
 import tempfile
-from typing import Optional
+from typing import Optional, Tuple
 
 # ── 必须在 import funasr 之前设置 ──
 os.environ.setdefault("TQDM_DISABLE", "1")
@@ -104,6 +105,11 @@ def _load_model_locked():
             trust_remote_code=True,
         )
         logger.info(f"✅ FunASR 模型加载完成 ({dev})")
+        # 模型已驻留显存，推理不再需要 lease。立即释放，否则 FunASR 会永久
+        # 独占 GPU admission，导致 GPT-SoVITS 每次申请都被拒、永远回退 Edge-TTS。
+        if gpu_lease:
+            from utils.model_resource_manager import get_model_resource_manager
+            get_model_resource_manager().release("funasr")
     except ImportError:
         logger.warning("⚠️ FunASR 未安装，跳过 (pip install funasr)")
     except Exception as e:
@@ -184,6 +190,48 @@ def transcribe(wav_bytes: bytes, language: str = "zh") -> str:
             pass
 
     return ""
+
+
+def transcribe_with_lang(wav_bytes: bytes, language: str = "auto") -> Tuple[str, str]:
+    """转录 WAV 字节并返回 (text, lang_code)。
+
+    与 transcribe() 的区别：language 默认 "auto"（自动检测语言），
+    返回 (纯净文本, SenseVoice 语言码如 zh/en/ja/ko/yue)。
+    失败时返回 ("", "")。
+    """
+    model = _load_model()
+    if model is None:
+        return "", ""
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    try:
+        tmp.write(wav_bytes)
+        tmp.close()
+        result = model.generate(
+            input=tmp.name,
+            language=language,
+            use_itn=True,
+            ban_emo_unk=True,
+        )
+        if result and len(result) > 0:
+            raw = result[0].get("text", "").strip()
+            lang_code = ""
+            m = re.match(r"<\|([^|>]+)\|>", raw)
+            if m:
+                lang_code = m.group(1)
+                raw = re.sub(r"<\|[^|>]+\|>", "", raw).strip()
+            # 仅剩标点/单字 = 静音或噪音
+            if not raw or len(raw) <= 1:
+                return "", lang_code
+            return raw, lang_code
+    except Exception as e:
+        logger.warning(f"FunASR 转录失败: {e}")
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    return "", ""
 
 
 def is_available() -> bool:

@@ -1317,6 +1317,7 @@ def save_proxy_config(config: dict):
 _TTS_DEFAULTS = {
     "engine": "auto",                # "auto" | "edge_tts" | "gpt_sovits"
     "gpt_sovits_path": "",           # GPT-SoVITS 安装目录路径
+    "gpt_sovits_version": "v2Pro",   # GPT-SoVITS 模型版本: v2Pro | v3 | v4（切换后 worker 重启生效）
     "default_mood": "auto",          # "auto" | "casual" | "tsundere" | "romantic" | "long"
     "speed": 1.0,                    # 语速 0.5-2.0
     "temperature": 0.7,              # GPT-SoVITS 温度（0.1-1.0）

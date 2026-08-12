@@ -132,6 +132,7 @@ _stderr_thread: Optional[threading.Thread] = None
 _worker_lock = threading.Lock()  # 保护 worker stdin/stdout 不被多线程并发读写（桌面+QQ同时用GPT-SoVITS时）
 _worker_idle_timer: Optional[threading.Timer] = None
 _worker_last_used = 0.0
+_worker_version: Optional[str] = None  # 当前 worker 加载的 GPT-SoVITS 模型版本
 
 
 def _get_runtime_python(gs_path: str) -> Optional[str]:
@@ -207,12 +208,21 @@ def _drain_stderr(proc: subprocess.Popen):
 
 def _ensure_worker() -> subprocess.Popen:
     """确保持久 worker 进程在运行。模型只在此处加载一次。"""
-    global _worker_process, _stderr_thread
-    if _worker_process is not None and _worker_process.poll() is None:
-        return _worker_process
+    global _worker_process, _stderr_thread, _worker_version
 
     from config import get_tts_config
     cfg = get_tts_config()
+
+    # 模型版本（v2Pro/v3/v4）——变更时需重启 worker 重新加载对应模型
+    version = (cfg.get("gpt_sovits_version") or "v2Pro").strip() or "v2Pro"
+    if (_worker_process is not None and _worker_process.poll() is None
+            and _worker_version != version):
+        logger.info(f"GPT-SoVITS 模型版本变更 {_worker_version} → {version}，重启 worker")
+        _close_worker()
+
+    if _worker_process is not None and _worker_process.poll() is None:
+        return _worker_process
+
     gs_path = cfg.get("gpt_sovits_path", "").strip()
     runtime_python = _get_runtime_python(gs_path)
 
@@ -227,6 +237,7 @@ def _ensure_worker() -> subprocess.Popen:
 
     env = os.environ.copy()
     env["GPT_SOVITS_PATH"] = gs_path
+    env["GPT_SOVITS_VERSION"] = version
 
     minimum_vram = int(cfg.get("gpt_sovits_min_free_vram_mb", 2048) or 0)
     from utils.model_resource_manager import get_model_resource_manager
@@ -240,7 +251,7 @@ def _ensure_worker() -> subprocess.Popen:
         )
 
     try:
-        logger.info("启动 GPT-SoVITS 持久 worker（模型加载中，首次约 5-15 秒）")
+        logger.info(f"启动 GPT-SoVITS 持久 worker（版本 {version}，模型加载中，首次约 5-15 秒）")
         _worker_process = subprocess.Popen(
             [runtime_python, worker_script, "--persistent"],
             stdin=subprocess.PIPE,
@@ -250,6 +261,7 @@ def _ensure_worker() -> subprocess.Popen:
             env=env,
             cwd=gs_path,
         )
+        _worker_version = version
     except Exception:
         resource_manager.release("gpt_sovits")
         raise
@@ -264,7 +276,7 @@ def _ensure_worker() -> subprocess.Popen:
 
 def _close_worker():
     """关闭持久 worker 进程。"""
-    global _worker_process, _worker_idle_timer, _worker_last_used
+    global _worker_process, _worker_idle_timer, _worker_last_used, _worker_version
     if _worker_idle_timer is not None:
         _worker_idle_timer.cancel()
         _worker_idle_timer = None
@@ -279,6 +291,7 @@ def _close_worker():
                 pass
         _worker_process = None
         _worker_last_used = 0.0
+        _worker_version = None
         logger.info("GPT-SoVITS worker 已关闭")
     from utils.model_resource_manager import get_model_resource_manager
     get_model_resource_manager().release("gpt_sovits")
@@ -407,7 +420,13 @@ def _scan_ref_wavs(ref_dir: str) -> dict:
         romantic/ *.wav
         long/     *.wav
         或直接放在 ref_wavs/ 下
+
+    参考文本用 FunASR 自动转录（缓存于 config.json），v3/v4 依赖它；
+    v2Pro 的 ref_free 模式会忽略文本。
     """
+    from brain.ref_transcriber import get_ref_transcripts
+    transcripts = get_ref_transcripts(ref_dir)  # {相对路径: {text, lang}}
+
     result = {}
     supported = ("casual", "tsundere", "romantic", "long")
 
@@ -418,13 +437,12 @@ def _scan_ref_wavs(ref_dir: str) -> dict:
             entries = []
             for fname in sorted(os.listdir(mood_dir)):
                 if fname.lower().endswith(".wav"):
-                    path = os.path.join(mood_dir, fname)
-                    # 从文件名提取提示文本（去掉序号和情绪标签）
-                    text = re.sub(r'ref_\d+_\w+_', '', os.path.splitext(fname)[0])
+                    rel = f"{mood}/{fname}"
+                    info = transcripts.get(rel, {})
                     entries.append({
-                        "path": path,
-                        "text": text,
-                        "lang": "中文",
+                        "path": os.path.join(mood_dir, fname),
+                        "text": info.get("text", ""),
+                        "lang": info.get("lang", "中文"),
                         "mood": mood,
                     })
             if entries:
@@ -435,11 +453,11 @@ def _scan_ref_wavs(ref_dir: str) -> dict:
         entries = []
         for fname in sorted(os.listdir(ref_dir)):
             if fname.lower().endswith(".wav") and fname != "config.json":
-                path = os.path.join(ref_dir, fname)
+                info = transcripts.get(fname, {})
                 entries.append({
-                    "path": path,
-                    "text": os.path.splitext(fname)[0],
-                    "lang": "中文",
+                    "path": os.path.join(ref_dir, fname),
+                    "text": info.get("text", ""),
+                    "lang": info.get("lang", "中文"),
                     "mood": "casual",
                 })
         if entries:
@@ -485,7 +503,9 @@ def _pick_ref(text: str, mood_hint: Optional[str] = None) -> Optional[dict]:
     cfg = get_tts_config()
     override = cfg.get("ref_wav_override", "").strip()
     if override and os.path.isfile(override):
-        return {"path": override, "text": "", "lang": "中文"}
+        from brain.ref_transcriber import get_transcript
+        text, lang = get_transcript(override)
+        return {"path": override, "text": text, "lang": lang}
 
     refs = _get_refs()
     if not refs:
@@ -528,11 +548,10 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
     import edge_tts
     from brain.audio_utils import _configure_pydub_ffmpeg
 
-    _configure_pydub_ffmpeg()
-    from pydub import AudioSegment
-
     mp3_path = output_path + ".mp3"
     try:
+        _configure_pydub_ffmpeg()
+        from pydub import AudioSegment
         asyncio.run(edge_tts.Communicate(text, voice).save(mp3_path))
         audio = AudioSegment.from_mp3(mp3_path)
         audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)
@@ -741,6 +760,8 @@ class TtsEngine:
         request = json.dumps({
             "text": text,
             "ref_wav": ref["path"],
+            "ref_text": ref.get("text", ""),
+            "ref_lang": ref.get("lang", "中文"),
             "output_path": output_path,
             "mood": detected_mood,
             "sample_steps": cfg.get("sample_steps", 32),

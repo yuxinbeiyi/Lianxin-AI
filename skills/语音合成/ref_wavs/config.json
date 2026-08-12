@@ -7,6 +7,63 @@
     "long": "长句稳定发音（较长文本）"
   },
   "_文件命名": "ref_序号_情绪标签_内容描述.wav（例如 ref_01_casual_你好.wav）",
+  "_v3v4提示": "GPT-SoVITS v3/v4 的 S2 不支持无参考文本模式，参考文本（text）需与参考音频内容一致。本 config.json 由「参考音频转录」自动生成（用 FunASR 识别音频内容并自动检测语言），用户也可手动覆盖 text/lang；新增参考音频后点声音设置里的「重新转录参考音频」即可。v2Pro 走无参考文本模式，不受影响。",
+  "_示例": {
+    "ref_01_casual_你好.wav": {
+      "mood": "casual",
+      "text": "你好，很高兴见到你。",
+      "lang": "中文"
+    }
+  },
   "_提示": "如果不配置参考音频，GPT-SoVITS 将不可用，系统自动使用 Edge-TTS 标准发音",
-  "ref_wavs": {}
+  "ref_wavs": {
+    "助手.wav": {
+      "text": "仮説としてはね、できれば客観的データが欲しいところだけど、それはさすがに無理だし。",
+      "lang": "日文"
+    },
+    "助手2.wav": {
+      "text": "諸生術にはたけてるのよ。甘く見ないで。",
+      "lang": "日文"
+    },
+    "收音机.wav": {
+      "text": "We have our backs to the past, our feet in the present, and lead people to the future. What a wonderful story.",
+      "lang": "英文"
+    },
+    "森林主播.wav": {
+      "text": "你醒了再睡会儿吧，我会轻一点的。",
+      "lang": "中文"
+    },
+    "森林主播无缝8秒.wav": {
+      "text": "你醒了再睡会儿吧，我会轻一点的你醒了再睡会儿吧，我会轻一点的。你醒了再睡会儿吧，我会轻一点的，你醒了再睡会儿吧，我会轻一点的。",
+      "lang": "中文"
+    },
+    "槲寄生.wav": {
+      "text": "The green eyes are inherited for my mother, although I did not grow into a lady of the upper class, as she wished, I thank my mother for everything she left.",
+      "lang": "英文"
+    },
+    "温.wav": {
+      "text": "You're such a brilliant young lady. Would you mind being my apprentice? Are you allergic to seafood.",
+      "lang": "英文"
+    },
+    "牙仙.wav": {
+      "text": "The soil has become crumbly, suitable for a plantation, conducive for the dry body to regenerate.",
+      "lang": "英文"
+    },
+    "莲心声线.wav": {
+      "text": "姜太公都掉了好几年，这才钓半天，吊不上来，也在情理之中绝对不是人的问题。",
+      "lang": "中文"
+    },
+    "霓虹歌姬.wav": {
+      "text": "そして 今夜、俺 は お前 を ねじ ふせ て やる の が。",
+      "lang": "日文"
+    },
+    "露西.wav": {
+      "text": "A hand operated spinning wheel half drenched in water. This indicates a low level of technological development here.",
+      "lang": "英文"
+    },
+    "森林主播8秒尾部静音.wav": {
+      "text": "你醒了再睡会儿吧，我会轻一点的你醒了再睡会儿吧，我会轻一点的，你醒了再睡会儿吧，我会轻一点的。",
+      "lang": "中文"
+    }
+  }
 }
