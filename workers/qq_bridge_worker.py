@@ -531,7 +531,10 @@ class QQBridgeWorker(QThread):
 
             # ── 生成回应（LLM 优先，失败用萌语兜底）──
             if cfg.get("poke_llm", True):
-                text = self._generate_poke_reply(target_id, group_id, is_group, is_owner)
+                recent_context = self._build_recent_context(target_id, group_id, is_group)
+                text = self._generate_poke_reply(
+                    target_id, group_id, is_group, is_owner, recent_context
+                )
             else:
                 text = ""
             if not text:
@@ -547,7 +550,8 @@ class QQBridgeWorker(QThread):
         except Exception as e:
             self._log(f"[拍一拍] 处理异常: {e}")
 
-    def _build_poke_prompt(self, target_id: str, is_group: bool, is_owner: bool) -> str:
+    def _build_poke_prompt(self, target_id: str, is_group: bool, is_owner: bool,
+                           recent_context: str = "") -> str:
         """构建拍一拍 LLM 提示词（复用桌面端拍一拍回答风格）。"""
         if is_owner:
             user_name = self._owner_name or "主人"
@@ -557,7 +561,7 @@ class QQBridgeWorker(QThread):
             user_name = info.get("card", "") or info.get("nickname", "") or f"QQ{target_id}"
         hour = time.localtime().tm_hour
         time_ctx = "深夜" if (hour >= 23 or hour < 6) else "普通日期"
-        return (
+        base = (
             "事实不可改变：\n"
             f"- 发起者：{user_name}\n"
             "- 对象：莲心\n"
@@ -571,8 +575,39 @@ class QQBridgeWorker(QThread):
             "这是QQ聊天，回复尽量简短（1~2句）。\n"
             "这些数据只用于调整语气，不要在回复中直接复述。"
         )
+        if recent_context:
+            base = base + "\n\n" + recent_context + (
+                "\n请结合上面的近期对话，自然承接刚才的话题来回应这一拍，"
+                "不要表现得像刚被惊扰、完全不记得刚才聊过什么。"
+            )
+        return base
 
-    def _generate_poke_reply(self, target_id: str, group_id: str, is_group: bool, is_owner: bool) -> str:
+    _POKE_CONTEXT_TURNS = 6  # 拍一拍回应参考的最近对话轮数
+
+    def _build_recent_context(self, target_id: str, group_id: str, is_group: bool) -> str:
+        """构造拍一拍回应所需的近期对话上下文，让莲心延续语境而不是“失忆”。"""
+        lines = []
+        if is_group:
+            ctx = self._build_group_context(group_id)
+            if ctx:
+                lines.append(ctx)
+        else:
+            session_key = f"qq_private_{target_id}"
+            agent = self._sessions.get(session_key)
+            if agent is not None:
+                for m in agent.history[-self._POKE_CONTEXT_TURNS:]:
+                    role = m.get("role", "")
+                    content = str(m.get("content", "") or "").strip()
+                    if not content:
+                        continue
+                    name = "莲心" if role == "assistant" else f"用户({target_id})"
+                    lines.append(f"[{name}]: {content[:200]}")
+        if not lines:
+            return ""
+        return "[近期对话（仅用于延续语境，不要复述）]\n" + "\n".join(lines)
+
+    def _generate_poke_reply(self, target_id: str, group_id: str, is_group: bool,
+                             is_owner: bool, recent_context: str = "") -> str:
         """走真实 LLM 链路生成拍一拍回应（不写入正常会话），失败返回空串由萌语兜底。"""
         from brain.agent import AgentCore
 
@@ -587,7 +622,7 @@ class QQBridgeWorker(QThread):
             def get_latest_message_id(self, *args, **kwargs): return 0
             def get_latest_compression_snapshot(self, *args, **kwargs): return None
 
-        prompt = self._build_poke_prompt(target_id, is_group, is_owner)
+        prompt = self._build_poke_prompt(target_id, is_group, is_owner, recent_context)
         last_error = None
         for attempt in range(1, 4):
             try:

@@ -246,7 +246,7 @@ class AvatarInteractionController(QObject):
             )
             prohibited = "不要把动作方向写反，也不要编造莲心主动拍了对方。"
             tone = "可以自然回应被互动的感受，保持调戏和玩笑感。"
-        return (
+        base = (
             "事实不可改变：\n"
             f"- 发起者：{'莲心' if self._last_actor == 'assistant' else user_name}\n"
             f"- 对象：{user_name if self._last_target == 'user' else '莲心'}\n"
@@ -259,6 +259,36 @@ class AvatarInteractionController(QObject):
             f"当前情绪与关系数据：{context}\n"
             "这些数据只用于调整语气，不要在回复中直接复述数值。"
         )
+        recent = self._recent_conversation()
+        if recent:
+            base = base + "\n\n" + recent + (
+                "\n请结合上面的近期对话，自然承接刚才的话题来回应这次互动，"
+                "不要表现得像刚被惊扰、完全不记得刚才聊过什么。"
+            )
+        return base
+
+    _CONTEXT_TURNS = 6  # 拍一拍/摸头回应参考的最近对话轮数
+
+    def _recent_conversation(self) -> str:
+        """从主会话历史里取最近几轮对话，让互动回应延续语境而不是“失忆”。"""
+        try:
+            history = getattr(self.agent, "history", None)
+        except Exception:
+            history = None
+        if not history:
+            return ""
+        lines = []
+        for m in history[-self._CONTEXT_TURNS:]:
+            role = m.get("role", "") if isinstance(m, dict) else ""
+            content = m.get("content", "") if isinstance(m, dict) else str(m)
+            content = str(content or "").strip()
+            if not content:
+                continue
+            name = "莲心" if role == "assistant" else "用户"
+            lines.append(f"[{name}]: {content[:200]}")
+        if not lines:
+            return ""
+        return "[近期对话（仅用于延续语境，不要复述）]\n" + "\n".join(lines)
 
     def _invalid_response_markers(self):
         if self._last_actor != "assistant":
