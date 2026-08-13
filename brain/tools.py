@@ -1670,7 +1670,8 @@ TOOL_DEFINITIONS = [
                 "查询指定城市的实时天气和天气预报。支持实时(current)、逐小时(hourly)、"
                 "逐天(daily)、完整(full)四种模式。当用户问天气、气温、多少度、冷不冷、"
                 "热不热、下雨、刮风、下雪等天气相关问题时调用。"
-                "如果用户没有说城市名，先尝试从记忆中查找用户所在城市，找不到再反问用户。"
+                "如果用户没有说城市名，莲心会先使用配置里设置的默认城市（如广州）；"
+                "若未设置默认城市，再从记忆中查找，仍找不到再反问用户。"
                 "获取天气后会附带出行建议（带伞/加衣/防晒等）。"
             ),
             "parameters": {
@@ -1678,7 +1679,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "城市名称，如'北京'、'上海'、'广州'。如果用户没有说城市，请先检查记忆中是否有记录"
+                        "description": "城市名称，如'北京'、'上海'、'广州'。如果用户没有说城市名，此参数可留空，莲心会使用配置里的默认城市（如广州），或从记忆里读取。"
                     },
                     "forecast_type": {
                         "type": "string",
@@ -5052,11 +5053,13 @@ def _get_weather_tool(city: str, forecast_type: str = "full") -> str:
 
     city = city.strip()
     if not city:
+        city = (cfg.get("default_city") or "").strip()
+    if not city:
         city = get_user_city_from_memory()
         if not city:
             return (
-                "我还不知道你在哪个城市呢~ 你可以告诉我'我在XX'，"
-                "或者直接说'查询北京的天气'这样~"
+                "我还不知道你在哪个城市呢~ 你可以在和风天气 API 配置里设置默认城市（如广州），"
+                "或者告诉我'我在XX'，或者直接说'查询北京的天气'这样~"
             )
 
     try:

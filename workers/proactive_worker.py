@@ -289,7 +289,9 @@ class ProactiveWorker(QThread):
             qw_cfg = get_qweather_config()
             api_key = qw_cfg.get("api_key", "").strip()
             if api_key:
-                city = get_user_city_from_memory()
+                city = (qw_cfg.get("default_city") or "").strip()
+                if not city:
+                    city = get_user_city_from_memory()
                 t0 = time.monotonic()
                 if city:
                     weather_text = get_full_weather(city, api_key=api_key)

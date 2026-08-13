@@ -915,6 +915,13 @@ class ApiConfigDialog(QDialog):
         self._apply_field_style(self._qw_dev_id_edit)
         form.addRow("开发者 ID:", self._qw_dev_id_edit)
 
+        # 默认城市（用户未指定城市时使用）
+        self._qw_city_edit = QLineEdit()
+        self._qw_city_edit.setPlaceholderText("广州（选填，不填则询问或读取记忆）")
+        self._qw_city_edit.setFont(QFont("Microsoft YaHei UI", 10))
+        self._apply_field_style(self._qw_city_edit)
+        form.addRow("默认城市:", self._qw_city_edit)
+
         # 主动天气提醒开关
         self._qw_auto_remind = QCheckBox("开启主动天气提醒")
         self._qw_auto_remind.setFont(QFont("Microsoft YaHei UI", 9))
@@ -1248,6 +1255,7 @@ class ApiConfigDialog(QDialog):
         self._qw_auto_remind.setChecked(qw_cfg.get("auto_remind", True))
         self._qw_host_edit.setText(qw_cfg.get("api_host", ""))
         self._qw_dev_id_edit.setText(qw_cfg.get("dev_id", ""))
+        self._qw_city_edit.setText(qw_cfg.get("default_city", ""))
 
         # 图片生成配置
         from config import get_image_gen_config
@@ -1353,6 +1361,7 @@ class ApiConfigDialog(QDialog):
             "api_key":     self._qw_key_edit.text().strip(),
             "api_host":    self._qw_host_edit.text().strip(),
             "dev_id":      self._qw_dev_id_edit.text().strip(),
+            "default_city": self._qw_city_edit.text().strip(),
             "auto_remind": self._qw_auto_remind.isChecked(),
             "remind_time": self._qw_remind_time.currentText(),
         }

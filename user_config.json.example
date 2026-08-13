@@ -72,6 +72,14 @@
     "base_url": "https://api.siliconflow.cn/v1",
     "vision_model": "Qwen/Qwen3-VL-30B-A3B-Instruct"
   },
+  "qweather": {
+    "api_key": "",
+    "api_host": "",
+    "dev_id": "",
+    "default_city": "广州",
+    "auto_remind": true,
+    "remind_time": "07:00"
+  },
   "memory": {
     "auto_extract": true,
     "extract_interval": 15,

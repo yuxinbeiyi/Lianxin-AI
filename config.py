@@ -591,6 +591,7 @@ _QWEATHER_DEFAULTS = {
     "api_key":       "",
     "api_host":      "",
     "dev_id":        "",
+    "default_city":  "",
     "auto_remind":   True,
     "remind_time":   "07:00",
 }
