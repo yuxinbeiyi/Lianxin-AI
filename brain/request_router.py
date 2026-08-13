@@ -21,6 +21,7 @@ class RequestMode(str, Enum):
 CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "memory_read": {"search_graph_memory", "search_conversation_history", "search_cross_session"},
     "memory_write": {"save_memory", "update_memory", "delete_memory", "review_memory_conflict"},
+    "contacts": {"query_recent_contacts", "query_qq_friend_list"},
     "time": {"get_current_time"},
     "web_search": {"web_search"},
     "web_fetch": {"fetch_webpage"},
@@ -62,6 +63,7 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
 CAPABILITY_DESCRIPTIONS = {
     "memory_read": "读取已确认的长期记忆或历史会话",
     "memory_write": "按用户明确要求写入或修改长期记忆",
+    "contacts": "回顾近期与莲心互动过的联系人或查询 QQ 好友列表（仅主人可见）",
     "time": "查询精确日期、时间、农历或节日",
     "web_search": "搜索实时网络资料",
     "web_fetch": "读取指定网页正文",
@@ -119,6 +121,16 @@ _NEGATED_SEARCH_RE = re.compile(r"(?:不想|不用|不要|别|停止|取消).{0,
 _SOCIAL_RE = re.compile(
     r"^(?:早安|早上好|上午好|中午好|下午好|晚上好|晚安|你好|嗨|哈喽|莲心|在吗|"
     r"谢谢|辛苦了|抱抱|想你了|我回来了|你怎么样|今天心情怎么样)[呀啊哦呢嘛吗~～！!。,.， ]*$"
+)
+
+# 主人询问近期互动联系人或 QQ 好友列表（社交回顾类问题）。这类问题必须
+# 进入 TASK 路由并注入联系人工具，否则模型手中无工具只能凭记忆/幻觉回答。
+_CONTACTS_INQUIRY_RE = re.compile(
+    r"(?:"
+    r"最近.{0,12}(?:谁|什么人|有人|哪些人|几个人).{0,12}(?:找过?|聊过?|说过话|找过你|跟你聊)"
+    r"|(?:谁|哪些人|什么人).{0,10}(?:找你|跟你|和你|找过你).{0,10}(?:聊天|说话|聊过)"
+    r"|(?:我|你|莲心).{0,6}(?:的)?(?:QQ|qq)?好友(?:列表|名单|都有谁|有哪些|有几个|多少人|多少位)?[？?。，,、.\s]*$"
+    r")",
 )
 
 # 用户直接点名工具或其服务提供方时，不应再退回到模糊能力发现。
@@ -445,6 +457,10 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         capabilities.add("embodied")
         reasons.append("虚拟世界具身任务")
 
+    if _CONTACTS_INQUIRY_RE.search(text):
+        capabilities.add("contacts")
+        reasons.append("主人询问近期互动联系人或QQ好友列表")
+
     if capabilities:
         return RequestRoute(RequestMode.TASK_DIRECT, frozenset(capabilities), "；".join(reasons))
     if _SOCIAL_RE.fullmatch(text) or (len(text) <= 18 and not _looks_like_action(text)):
@@ -452,6 +468,11 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if _looks_like_action(text) and not _NEGATED_SEARCH_RE.search(text):
         return RequestRoute(RequestMode.TASK_DISCOVERY, frozenset(), "存在操作意图但领域不确定")
     return RequestRoute(RequestMode.CHAT_LIGHT, frozenset(), "无外部能力强信号，先按纯文本交流")
+
+
+def is_contacts_inquiry(text: str) -> bool:
+    """判断消息是否属于主人询问近期互动联系人或 QQ 好友列表的社交回顾类问题。"""
+    return bool(_CONTACTS_INQUIRY_RE.search(str(text or "").strip()))
 
 
 def normalize_capabilities(values: Iterable[str]) -> list[str]:

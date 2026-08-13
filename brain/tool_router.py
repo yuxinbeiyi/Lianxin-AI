@@ -1,15 +1,13 @@
 """
 工具路由器：按需注入工具定义，减少 token 消耗。
 
-三层设计：
-  L1 核心工具（12个）— 始终注入完整定义，覆盖记忆/时间/文件等高频操作
-  L2 领域工具（52个）— 按用户消息关键词匹配，命中才注入完整定义
-  L3 工具目录（~300 token）— 始终注入，列出所有工具名+一句话描述，
-      让模型知道"我有哪些武器"，需要时可主动申请激活
-
-激活流程：
-  用户消息 → 关键词匹配领域 → 核心+命中领域(完整定义) + 目录(全部)
-  若模型回复中暗示需要未激活的工具 → 自动重试，全量注入
+实际注入策略（与代码一致）：
+  内置工具按请求路由注入：只有 route.tool_names（来自能力映射 CAPABILITY_TO_TOOLS）
+  命中的工具才进入本轮定义，闲聊路由（CHAT_LIGHT）默认零工具。
+  CORE_TOOLS 仅作为“高频工具参考集”，用于工具目录/激活/统计等场景，
+  并不直接决定路由注入（filter_builtin_tools_for_route 以 route.tool_names 为准）。
+  工具目录 build_tool_catalog 只在模型已尝试请求工具后的激活重试路径生成，
+  平时不常驻注入。
 """
 
 from typing import List, Dict, Set, Tuple
@@ -30,6 +28,7 @@ CORE_TOOLS: Set[str] = {
     "list_skills", "activate_skill", "deactivate_skill",
     # 跨端搜索
     "search_conversation_history", "search_cross_session", "query_recent_contacts",
+    "query_qq_friend_list",
     # 文件操作（最高频入口，始终可用避免模型绕弯路）
     "search_files_everything", "read_file",
     "read_diary", "write_diary",
@@ -187,6 +186,7 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "get_weather": "查询天气",
     "set_user_city": "设置用户城市",
     "query_recent_contacts": "回顾近期找过你的其他用户及其聊天内容",
+    "query_qq_friend_list": "查询QQ好友列表（仅主人可见）",
 }
 
 # ── 领域中文名 ──────────────────────────────────────────

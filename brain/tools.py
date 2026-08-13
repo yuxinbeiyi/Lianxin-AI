@@ -1194,6 +1194,26 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "query_qq_friend_list",
+            "description": (
+                "查询莲心绑定 QQ 账号的好友列表（昵称、QQ号、备注），供主人回顾。"
+                "当主人问『你有哪些QQ好友/你有几个好友/我的QQ好友都有谁』时必须使用。"
+                "默认使用最近缓存；传 refresh=true 可强制向 QQ 重新拉取最新列表。"
+                "此工具仅对主人会话开放，其它用户无法调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "refresh": {"type": "boolean", "description": "是否强制刷新最新好友列表，默认 false 使用缓存"},
+                    "keyword": {"type": "string", "description": "按昵称/备注/QQ号关键词筛选，可省略"}
+                },
+                "additionalProperties": False
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "configure_network_tools",
             "description": (
                 "查看或调整联网搜索/网页读取工具的启停状态和优先顺序。"
@@ -4597,6 +4617,19 @@ def send_file_to_qq(path: str, name: str = "") -> str:
         return "发送失败：QQ 桥接未启动。请先在 GUI 中开启 QQ 聊天功能。"
     return _qq_bridge_worker.send_file_to_qq(path, name)
 
+
+def query_qq_friend_list(refresh: bool = False, keyword: str = "") -> str:
+    """查询莲心绑定 QQ 账号的好友列表（仅主人会话可调用）。"""
+    global _qq_bridge_worker
+    if _qq_bridge_worker is None:
+        return "获取 QQ 好友列表失败：QQ 桥接未启动。请先在 GUI 中开启 QQ 聊天功能。"
+    try:
+        return _qq_bridge_worker.get_qq_friend_list(
+            refresh=bool(refresh), keyword=str(keyword or "")
+        )
+    except Exception as e:
+        return f"获取 QQ 好友列表失败：{e}"
+
 def capture_from_camera():
     from brain.observation import capture_camera, analyze_observation
     path = capture_camera()
@@ -5804,6 +5837,9 @@ TOOL_EXECUTORS = {
     "search_cross_session": lambda inp: search_cross_session(inp["keyword"], inp.get("limit", 5)),
     "query_recent_contacts": lambda inp: query_recent_contacts(
         inp.get("days", 7), inp.get("per_contact_limit", 3), inp.get("max_contacts", 10)
+    ),
+    "query_qq_friend_list": lambda inp: query_qq_friend_list(
+        bool(inp.get("refresh", False)), inp.get("keyword", "")
     ),
     "toggle_proactive_chat": lambda inp: toggle_proactive_chat(inp["action"]),
     "list_skills":   lambda inp: _list_skills(),

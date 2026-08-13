@@ -334,6 +334,11 @@ class QQBridgeWorker(QThread):
         # ── 群聊上下文旁听缓存（group_id -> [{"name", "text"}]）──
         self._group_context = {}
 
+        # ── QQ 好友列表缓存（get_friend_list，供主人查询） ──
+        self._friend_list_cache = None      # list[dict] 或 None
+        self._friend_list_cache_time = 0.0  # time.time()
+        self._friend_list_lock = Lock()
+
     @property
     def _user_display_name(self) -> str:
         """获取统一用户称呼（全局设置优先，回退到 QQ 配置）。"""
@@ -2170,6 +2175,48 @@ class QQBridgeWorker(QThread):
             "file": normalized_path,
             "name": display_name,
         })
+
+    def get_qq_friend_list(self, refresh: bool = False, keyword: str = "") -> str:
+        """获取主人绑定 QQ 的好友列表（OneBot get_friend_list）。
+
+        返回格式化文本，供工具函数返回给 AI。默认使用最近缓存，refresh=True 强制刷新。
+        """
+        now = time.time()
+        with self._friend_list_lock:
+            cache_valid = (
+                self._friend_list_cache is not None
+                and now - self._friend_list_cache_time < 60
+            )
+            if refresh or not cache_valid:
+                data = self._call_onebot_api("get_friend_list", {}, timeout=10.0)
+                if not isinstance(data, list):
+                    return "获取 QQ 好友列表失败：NapCat 未连接或返回异常，请稍后重试。"
+                self._friend_list_cache = list(data)
+                self._friend_list_cache_time = now
+            friends = list(self._friend_list_cache)
+
+        kw = str(keyword or "").strip()
+        if kw:
+            friends = [
+                f for f in friends
+                if kw.lower() in str(f.get("nickname", "") or "").lower()
+                or kw.lower() in str(f.get("remark", "") or "").lower()
+                or kw.lower() in str(f.get("user_id", "") or "")
+            ]
+        if not friends:
+            if kw:
+                return f"没有找到昵称、备注或 QQ 号包含「{kw}」的好友。"
+            return "QQ 好友列表为空。"
+
+        lines = [f"你绑定的 QQ 共有 {len(friends)} 位好友："]
+        for f in sorted(friends, key=lambda x: str(x.get("nickname", "") or "")):
+            uid = f.get("user_id", "")
+            nick = f.get("nickname", "") or ""
+            remark = f.get("remark", "") or ""
+            tag = f"（备注：{remark}）" if remark and remark != nick else ""
+            lines.append(f"- {nick}（{uid}）{tag}")
+        lines.append("请如实转述；好友较多时可按需列出主要几位并说明总数。")
+        return "\n".join(lines)
 
     def _send_msg(self, params: dict) -> bool:
         """发送消息，等待 NapCat 确认送达。返回 True 表示成功，False 表示失败。"""

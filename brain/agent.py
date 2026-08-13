@@ -30,7 +30,7 @@ from brain.tool_router import (
 )
 from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
-    classify_request, format_capability_result, normalize_capabilities, required_execution_tool,
+    classify_request, format_capability_result, is_contacts_inquiry, normalize_capabilities, required_execution_tool,
 )
 from brain.request_context import (
     format_quote_for_prompt,
@@ -188,7 +188,7 @@ _OWNER_MEMORY_TOOLS = {
     "discover_connections", "query_connected_entities",
     "delete_graph_entity", "add_graph_edge", "remove_graph_edge",
     "search_cross_session", "search_conversation_history",
-    "query_recent_contacts",
+    "query_recent_contacts", "query_qq_friend_list",
     "read_diary", "write_diary",
 }
 
@@ -2756,13 +2756,25 @@ class AgentCore:
             all_tools = [] if route.is_light else filtered_builtin + selected_skill_tools + contextual_mcp_tools
             # 「对话过程中自动保存记忆」开启时，闲聊路由也要注入保存/去重工具，
             # 否则 CHAT_LIGHT 下模型手里没有 save_memory，自动保存永远无法触发。
-            if route.is_light and _auto_save_memory \
-                    and not getattr(self, "_request_memory_writes_blocked", False):
-                _auto_mem_names = {"save_memory", "review_memory_conflict"}
-                all_tools = [
-                    t for t in TOOL_DEFINITIONS
-                    if t.get("function", {}).get("name", "") in _auto_mem_names
-                ]
+            if route.is_light:
+                _light_tools: list = []
+                if _auto_save_memory \
+                        and not getattr(self, "_request_memory_writes_blocked", False):
+                    _auto_mem_names = {"save_memory", "review_memory_conflict"}
+                    _light_tools += [
+                        t for t in TOOL_DEFINITIONS
+                        if t.get("function", {}).get("name", "") in _auto_mem_names
+                    ]
+                # 兜底：即使分类漏判，主人询问近期互动/QQ好友时也要在闲聊路由
+                # 注入联系人工具（owner-only；非主人会话会在下方 runtime_disabled 过滤掉）。
+                if getattr(self, "_owner_scope", True) \
+                        and is_contacts_inquiry(_msg_for_match):
+                    _contacts_names = {"query_recent_contacts", "query_qq_friend_list"}
+                    _light_tools += [
+                        t for t in TOOL_DEFINITIONS
+                        if t.get("function", {}).get("name", "") in _contacts_names
+                    ]
+                all_tools = _light_tools
             if on_activity:
                 on_activity("tool_catalog_finished")
 
@@ -3048,7 +3060,7 @@ class AgentCore:
         _no_new_evidence_count = 0
         _SEARCH_READ_TOOLS = {
             "search_files_everything", "search_graph_memory", "search_conversation_history",
-            "search_cross_session", "query_recent_contacts",
+            "search_cross_session", "query_recent_contacts", "query_qq_friend_list",
             "search_code", "glob_files", "list_directory",
             "read_file", "read_file_chunk", "read_file_lines",
             "get_file_info_everything", "grep_file", "web_search",
