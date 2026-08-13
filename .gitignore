@@ -151,16 +151,9 @@ GPT-SoVITS-v2pro/
 # 测试工作区
 test_workspace/
 
-# 公开仓库仅提交已完成脱敏与离线验证的回归测试；其余测试保留本地迭代。
-tests/**
-!tests/test_physical_audit.py
-!tests/test_physical_controller.py
-!tests/test_physical_planner.py
-!tests/test_physical_runtime.py
-!tests/test_physical_service.py
-!tests/test_main_window_startup.py
-!tests/test_tool_execution_contract.py
-!tests/test_github_routing.py
+# 测试文件仅保留本地，不提交到远程仓库（Gitee/GitHub 均不含 tests/）
+test/
+tests/
 
 # 阿里云语音 SDK（用户自行安装）
 alibabacloud-nls-python-sdk/
