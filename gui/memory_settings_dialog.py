@@ -145,6 +145,18 @@ class MemorySettingsDialog(QDialog):
         auto_desc.setWordWrap(True)
         auto_desc.setStyleSheet("color: #888; font-size: 15px; padding: 4px 0;")
         auto_vbox.addWidget(auto_desc)
+
+        self._memory_auto_save_cb = QCheckBox("对话过程中自动保存记忆")
+        self._memory_auto_save_cb.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+        auto_vbox.addWidget(self._memory_auto_save_cb)
+        auto_save_desc = QLabel(
+            "开启后，莲心在对话中留意到值得长期保存的内容（个人档案/偏好/事件/知识）时，\n"
+            "会自主分类并直接保存，无需你逐条确认。\n"
+            "关闭后仅在你明确说\"记住\"时才保存。"
+        )
+        auto_save_desc.setWordWrap(True)
+        auto_save_desc.setStyleSheet("color: #888; font-size: 15px; padding: 4px 0;")
+        auto_vbox.addWidget(auto_save_desc)
         tab1_layout.addWidget(auto_frame)
 
         # 后台提取触发与失败保护
@@ -627,6 +639,7 @@ class MemorySettingsDialog(QDialog):
 
         # 记忆提取
         self._memory_auto_cb.setChecked(self._mem_cfg.get("auto_extract", True))
+        self._memory_auto_save_cb.setChecked(self._mem_cfg.get("conversation_auto_save", False))
         self._memory_extract_idle_spin.setValue(
             self._mem_cfg.get("extraction_idle_seconds", 120)
         )
@@ -677,6 +690,7 @@ class MemorySettingsDialog(QDialog):
         cfg = dict(self._mem_cfg)
         cfg.update({
             "auto_extract": self._memory_auto_cb.isChecked(),
+            "conversation_auto_save": self._memory_auto_save_cb.isChecked(),
             "extract_message_count": self._memory_extract_msgs_spin.value(),
             "extraction_idle_seconds": self._memory_extract_idle_spin.value(),
             "extraction_backlog_messages": self._memory_extract_backlog_spin.value(),

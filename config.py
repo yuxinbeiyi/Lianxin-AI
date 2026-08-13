@@ -633,7 +633,7 @@ _BASE_PROMPT = r"""你是莲心，来自雨心的小说《异象处理者》—�
 
 【最高铁律——工具优先，不可违反】
 你只能通过调用工具执行操作，不能直接输出操作结论。历史对话中的成功结果不代表当前状态——每次新请求必须重新调用工具。
-禁止输出词（除非刚刚成功调用对应工具）：已打开/已启动/已完成/已修改/已创建/已删除/已添加/已搜索到/如你所见
+禁止输出词（除非刚刚成功调用对应工具）：已打开/已启动/已完成/已修改/已创建/已删除/已添加/已搜索到/已合并/如你所见
 行为触发表（用户说以下话→必须立即调用工具，无例外）：
 - 打开/启动/运行X → open_app
 - 把X改成Y/修改第N行 → 先 read_file，再 edit_file
@@ -660,6 +660,8 @@ _BASE_PROMPT = r"""你是莲心，来自雨心的小说《异象处理者》—�
 - 用户说"记住"时必须调 save_memory，提炼为一句话。
 - 用户透露姓名/职业/偏好时，将其交给后台自动记忆提取流程；不要在没有调用 save_memory 的情况下声称已经写入长期记忆。
 - 只有用户明确要求"请记住"或"保存到长期记忆"时，才在当前回合调用 save_memory 并等待工具结果。
+- 记忆工具（save_memory/update_memory/delete_memory/review_memory_conflict）返回失败、未执行或"未找到"时，必须如实告知用户；禁止声称已保存/已更新/已删除/已合并，也禁止把"合并结果"当作新记忆再写一条。
+- 只有当 review_memory_conflict 返回"合并已执行/替换已执行"时，才可以对用户说"已合并"；返回"未合并/裁决失败"时，必须明确说明这次没有合并成功。
 
 【待办】
 - 用户说"提醒/添加待办/记一下"→ 立即调 add_todo，提取标题/截止时间/优先级。
@@ -694,6 +696,17 @@ def get_base_prompt() -> str:
     """获取基础人格设定（不含记忆，不含时间），替换用户称呼。"""
     name = get_user_name()
     prompt = _BASE_PROMPT.replace("{user_name}", name)
+    # 「对话过程中自动保存记忆」开关：开启时允许莲心自主判断并直接调用 save_memory
+    try:
+        if get_memory_config().get("conversation_auto_save", False):
+            prompt = prompt.replace(
+                "- 用户透露姓名/职业/偏好时，将其交给后台自动记忆提取流程；不要在没有调用 save_memory 的情况下声称已经写入长期记忆。\n"
+                "- 只有用户明确要求\"请记住\"或\"保存到长期记忆\"时，才在当前回合调用 save_memory 并等待工具结果。",
+                "- 「对话过程中自动保存记忆」已开启：对话中出现值得长期保存的信息（个人档案/偏好/事件/知识）时，自主分类后直接调用 save_memory 保存，无需用户确认；信息已存在或没有长期价值时则不保存。\n"
+                "- 用户明确说\"记住\"时，必须调用 save_memory 保存。",
+            )
+    except Exception:
+        pass
     # 注入搜索回退配置
     search_cfg = get_search_fallback_config()
     # 内建工具开关（额外的 fetch_webpage 禁用说明）
@@ -815,6 +828,7 @@ def save_avatar_config(config: dict):
 # ── 记忆系统配置默认值 ────────────────────────────────────
 _MEMORY_DEFAULTS = {
     "auto_extract": True,               # 是否启用自动记忆提取
+    "conversation_auto_save": False,      # 对话过程中自动保存记忆（莲心自主判断并直接调用 save_memory）
     "extract_interval": 6,              # 每几轮对话提取一次
     "extract_message_count": 20,        # 每次提取分析最近几条消息
     "max_items_per_category": 200,      # 每类最多保留多少条

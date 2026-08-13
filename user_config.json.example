@@ -82,6 +82,7 @@
   },
   "memory": {
     "auto_extract": true,
+    "conversation_auto_save": false,
     "extract_interval": 15,
     "extract_message_count": 15,
     "max_items_per_category": 200,

@@ -1438,6 +1438,7 @@ TOOL_DEFINITIONS = [
                 "duplicate（重复）、complements（补充）、contradicts（矛盾但不能确定谁取代谁）、"
                 "supersedes（新事实明确取代旧事实）或 unrelated（无关）。"
                 "只有语义和时间关系明确时才能选择 supersedes。"
+                "工具返回会以【合并已执行】/【替换已执行】/【未合并·未执行】/【裁决失败·未执行】/【裁决已记录·未删除】标明真实状态，请严格按返回状态向用户汇报；未执行或失败时不得声称已合并。"
             ),
             "parameters": {
                 "type": "object",
@@ -2567,7 +2568,12 @@ def review_memory_conflict(
     confidence: float | None = None,
     rationale: str = "",
 ) -> str:
-    """Model-facing adapter for audited semantic fact reconciliation."""
+    """Model-facing adapter for audited semantic fact reconciliation.
+
+    回显与诚实约束：任何分支都必须明确告诉模型「执行了 / 未执行」。
+    未执行时，模型必须如实告知用户，禁止声称合并成功，也禁止把
+    “合并结果”当作新记忆再写一条。
+    """
     from brain.memory_conflicts import (
         format_candidate_list,
         list_conflict_candidates,
@@ -2593,16 +2599,40 @@ def review_memory_conflict(
             source_message_ids=provenance["source_message_ids"],
             persona_id=provenance["persona_id"],
         )
-    except (TypeError, ValueError) as exc:
-        return f"记忆冲突裁决失败：{exc}"
+    except Exception as exc:
+        return (
+            f"【裁决失败·未执行】候选#{candidate_id} 的 {decision} 裁决未写入数据库，"
+            f"异常类型 {type(exc).__name__}：{exc}。没有修改或删除任何记忆。"
+            "你必须如实告知用户这次合并/裁决失败，禁止声称已完成。"
+        )
     if not result["applied"]:
         return (
-            f"候选#{candidate_id} 的 {decision} 判断置信度不足，"
-            "已标记为需要用户确认，没有修改任何事实。"
+            f"【未合并·未执行】候选#{candidate_id} 的 {decision} 判断置信度不足，"
+            f"已标记为需要用户确认（needs_confirmation），没有修改或删除任何事实。"
+            "你必须如实告知用户：这次合并没有执行，等用户确认后再处理；"
+            "禁止把合并结果当作新记忆再写一条。"
+        )
+    if decision == "duplicate":
+        return (
+            f"【合并已执行】候选#{candidate_id}："
+            f"旧记忆#{result['existing_fact_id']} 保留并吸收新记忆强度，"
+            f"当前状态 {result.get('existing_status')}；"
+            f"新记忆#{result['new_fact_id']} 已标记为 {result.get('new_status')}（不再独立生效）。"
+            "已写入合并关系。请基于以上真实事实向用户确认，不要自行编造其他细节。"
+        )
+    if decision == "supersedes":
+        return (
+            f"【替换已执行】候选#{candidate_id}："
+            f"旧记忆#{result['existing_fact_id']} 已标记为 {result.get('existing_status')}（不再独立生效）；"
+            f"新记忆#{result['new_fact_id']} 保持 {result.get('new_status')} 并继承时间。"
+            "请基于以上真实状态向用户说明。"
         )
     return (
-        f"已完成候选#{candidate_id} 的语义裁决：{decision}。"
-        f"旧记忆#{result['existing_fact_id']}，新记忆#{result['new_fact_id']}。"
+        f"【裁决已记录·未删除】候选#{candidate_id} 判定为 {decision}（置信度 "
+        f"{float(confidence):.0%}）：两条事实均保持 active"
+        f"（旧#{result['existing_fact_id']}、新#{result['new_fact_id']}），"
+        "仅写入语义关系，未删除或覆盖任何记忆。"
+        "请如实向用户说明：这次没有删除/合并，只是记录了语义关系。"
     )
 
 
