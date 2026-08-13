@@ -452,28 +452,63 @@ class QQBridgeWorker(QThread):
     def _handle_notice(self, payload: dict):
         """处理 OneBot notice 事件，目前仅处理「拍一拍」。"""
         try:
+            # 无论是否为拍一拍，都先打印原始 notice 载荷，便于排查 NapCat 上报格式
+            self._log(f"[拍一拍] notice payload: {json.dumps(payload, ensure_ascii=False)}")
             if payload.get("notice_type") == "notify" and payload.get("sub_type") == "poke":
                 self._handle_poke(payload)
         except Exception as e:
             self._log(f"[拍一拍] notice 处理异常: {e}")
 
     def _handle_poke(self, payload: dict):
-        """处理「拍一拍」：回应（LLM 优先/萌语兜底）+ 概率反拍。"""
+        """处理「拍一拍」：回应（LLM 优先/萌语兜底）+ 概率反拍。
+
+        字段约定兼容两种 NapCat/OneBot 实现：
+        - 约定A（OneBot v11 标准）：user_id=被拍者(机器人)，target_id=拍的人
+        - 约定B（NapCat/AstrBot 实测）：user_id=拍的人，target_id=被拍者(机器人)
+        通过 self_id 判断机器人身份，再在两种约定间解析出真正的「拍的人」。
+        """
         try:
-            # OneBot v11: user_id=被拍者(机器人)，target_id=发起者
-            target_id = str(payload.get("target_id", "") or "")
-            self_id = str(payload.get("user_id", "") or "")
             group_id = str(payload.get("group_id", "") or "")
-            if not target_id or not self_id:
+            # self_id 是 OneBot 标准里恒为机器人自身的字段，最可靠
+            self_id = str(payload.get("self_id", "") or payload.get("user_id", "") or "")
+            raw_target = str(payload.get("target_id", "") or "")
+            raw_user = str(payload.get("user_id", "") or "")
+
+            self._log(
+                f"[拍一拍] 解析 原payload: self_id={self_id!r} user_id={raw_user!r} "
+                f"target_id={raw_target!r} bot_qq={self._bot_qq!r} group_id={group_id!r}"
+            )
+
+            # 先按 self_id 判断机器人身份（最可靠）
+            if self_id and self_id != self._bot_qq:
+                self._log(f"[拍一拍] 忽略：self_id={self_id} 不是本机 bot={self._bot_qq}")
                 return
-            if self_id != self._bot_qq:
-                # 不是拍莲心，忽略
+            # 若 self_id 为空（部分实现不上报），退回用 user_id/target_id 判断
+            if not self_id:
+                # 约定B下 user_id=拍的人、target_id=机器人；约定A下 user_id=机器人、target_id=拍的人
+                if raw_user == self._bot_qq:
+                    # 约定A：user_id=机器人
+                    self_id = raw_user
+                elif raw_target == self._bot_qq:
+                    # 约定B：target_id=机器人
+                    self_id = raw_target
+                else:
+                    self._log(f"[拍一拍] 忽略：无法识别本机身份 user_id={raw_user} target_id={raw_target}")
+                    return
+
+            # 现在确定「拍的人」：优先 target_id，其次 user_id（都排除机器人自身）
+            initiator = raw_target or raw_user
+            if initiator == self._bot_qq:
+                # 约定的 target_id=机器人时，拍的人应在 user_id
+                initiator = raw_user
+            if not initiator or initiator == self._bot_qq:
+                self._log(f"[拍一拍] 忽略：无法确定拍的人 initiator={initiator!r}")
                 return
-            if target_id == self._bot_qq:
-                return
+            target_id = initiator
 
             cfg = get_qq_bridge_config()
             if not cfg.get("poke_enabled", True):
+                self._log("[拍一拍] 拍一拍回应已关闭，忽略")
                 return
 
             # ── 冷却保护，防刷屏 ──
@@ -509,25 +544,8 @@ class QQBridgeWorker(QThread):
                 "group_id": int(group_id) if group_id else None,
             }
             self._send_quick_reply(synthetic, text)
-
-            # ── 概率反拍（默认 60%，用户拍后延迟 X 秒）──
-            probability = float(cfg.get("poke_poke_back_probability", 0.6) or 0.6)
-            if random.random() < probability:
-                delay = float(cfg.get("poke_poke_back_delay_seconds", 2.0) or 2.0)
-                Timer(delay, self._poke_back, args=(target_id, group_id)).start()
         except Exception as e:
             self._log(f"[拍一拍] 处理异常: {e}")
-
-    def _poke_back(self, target_id: str, group_id: str):
-        """反拍回去（由延迟线程调用）。"""
-        try:
-            params = {"user_id": int(target_id)}
-            if group_id:
-                params["group_id"] = int(group_id)
-            result = self._send_onebot_action("send_poke", params, timeout=5.0)
-            self._log(f"[拍一拍] 反拍 {target_id}: {result}")
-        except Exception as e:
-            self._log(f"[拍一拍] 反拍失败: {e}")
 
     def _build_poke_prompt(self, target_id: str, is_group: bool, is_owner: bool) -> str:
         """构建拍一拍 LLM 提示词（复用桌面端拍一拍回答风格）。"""

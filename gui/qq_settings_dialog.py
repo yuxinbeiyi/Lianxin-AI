@@ -192,36 +192,12 @@ class QqSettingsDialog(QDialog):
         poke_layout = QVBoxLayout(grp_poke)
 
         self._poke_enabled_cb = QCheckBox("开启拍一拍回应")
-        self._poke_enabled_cb.setToolTip("有人拍一拍莲心的QQ头像时，莲心会回应并可能反拍回去")
+        self._poke_enabled_cb.setToolTip("有人拍一拍莲心的QQ头像时，莲心会给出回应")
         poke_layout.addWidget(self._poke_enabled_cb)
 
         self._poke_llm_cb = QCheckBox("LLM 生成回应（失败时自动用萌语兜底）")
         self._poke_llm_cb.setToolTip("开启时走真实 LLM 链路生成个性化回应；关闭则直接使用固定萌语")
         poke_layout.addWidget(self._poke_llm_cb)
-
-        rowp1 = QHBoxLayout()
-        rowp1.addWidget(QLabel("反拍概率"))
-        self._poke_prob = QDoubleSpinBox()
-        self._poke_prob.setRange(0.0, 1.0)
-        self._poke_prob.setSingleStep(0.05)
-        self._poke_prob.setDecimals(2)
-        self._poke_prob.setToolTip("被拍一拍后反拍回去的概率，默认 60%")
-        rowp1.addWidget(self._poke_prob)
-        rowp1.addWidget(QLabel("（0=不反拍，1=每次）"))
-        rowp1.addStretch()
-        poke_layout.addLayout(rowp1)
-
-        rowp2 = QHBoxLayout()
-        rowp2.addWidget(QLabel("反拍延迟"))
-        self._poke_delay = QDoubleSpinBox()
-        self._poke_delay.setRange(0.0, 10.0)
-        self._poke_delay.setSingleStep(0.5)
-        self._poke_delay.setDecimals(1)
-        self._poke_delay.setSuffix(" 秒")
-        self._poke_delay.setToolTip("用户拍完后多少秒莲心再反拍，默认 2 秒")
-        rowp2.addWidget(self._poke_delay)
-        rowp2.addStretch()
-        poke_layout.addLayout(rowp2)
 
         rowp3 = QHBoxLayout()
         rowp3.addWidget(QLabel("冷却时间"))
@@ -287,8 +263,7 @@ class QqSettingsDialog(QDialog):
         # 拍一拍回应
         self._poke_enabled_cb.setChecked(bridge_cfg.get("poke_enabled", True))
         self._poke_llm_cb.setChecked(bridge_cfg.get("poke_llm", True))
-        self._poke_prob.setValue(float(bridge_cfg.get("poke_poke_back_probability", 0.6)))
-        self._poke_delay.setValue(float(bridge_cfg.get("poke_poke_back_delay_seconds", 2.0)))
+
         self._poke_cooldown.setValue(int(bridge_cfg.get("poke_cooldown_seconds", 30)))
 
     def _collect_config(self) -> dict:
@@ -322,8 +297,7 @@ class QqSettingsDialog(QDialog):
         # 拍一拍默认值
         self._poke_enabled_cb.setChecked(True)
         self._poke_llm_cb.setChecked(True)
-        self._poke_prob.setValue(0.6)
-        self._poke_delay.setValue(2.0)
+
         self._poke_cooldown.setValue(30)
 
     def _on_apply(self):
@@ -339,8 +313,7 @@ class QqSettingsDialog(QDialog):
         # 拍一拍回应
         bridge_cfg["poke_enabled"] = self._poke_enabled_cb.isChecked()
         bridge_cfg["poke_llm"] = self._poke_llm_cb.isChecked()
-        bridge_cfg["poke_poke_back_probability"] = float(self._poke_prob.value())
-        bridge_cfg["poke_poke_back_delay_seconds"] = float(self._poke_delay.value())
+
         bridge_cfg["poke_cooldown_seconds"] = int(self._poke_cooldown.value())
         save_qq_bridge_config(bridge_cfg)
 
