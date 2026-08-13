@@ -2725,6 +2725,7 @@ class AgentCore:
                 messages.append({"role": "system", "content": summary_text})
             messages.extend(_history_for_prompt(recent_history))
 
+        _auto_save_memory = bool(get_memory_config().get("conversation_auto_save", False))
         # ── 工具按需注入：强信号直达；模糊任务仅先暴露能力代理 ──
         if self._use_local:
             all_tools = []
@@ -2752,6 +2753,15 @@ class AgentCore:
                 if definition.get("function", {}).get("name", "") in route.tool_names
             ]
             all_tools = [] if route.is_light else filtered_builtin + selected_skill_tools + contextual_mcp_tools
+            # 「对话过程中自动保存记忆」开启时，闲聊路由也要注入保存/去重工具，
+            # 否则 CHAT_LIGHT 下模型手里没有 save_memory，自动保存永远无法触发。
+            if route.is_light and _auto_save_memory \
+                    and not getattr(self, "_request_memory_writes_blocked", False):
+                _auto_mem_names = {"save_memory", "review_memory_conflict"}
+                all_tools = [
+                    t for t in TOOL_DEFINITIONS
+                    if t.get("function", {}).get("name", "") in _auto_mem_names
+                ]
             if on_activity:
                 on_activity("tool_catalog_finished")
 
@@ -2871,7 +2881,12 @@ class AgentCore:
                     "可以正常使用当前会话上下文回答。"
                 ),
             })
-        elif not route.is_light:
+        elif (not route.is_light) or _auto_save_memory:
+            _memory_write_guide = (
+                "用户自然透露姓名、职业、偏好或长期事实时，不要直接调用 save_memory，也不要声称已经写入；由后台自动记忆提取流程在空闲时处理。"
+                if not _auto_save_memory
+                else "「对话过程中自动保存记忆」已开启：对话中出现值得长期保存的信息（个人档案/偏好/事件/知识）时，自主分类后直接调用 save_memory 保存，无需用户确认；信息已存在或没有长期价值时则不保存。"
+            )
             messages.append({
                 "role": "system",
                 "content": (
@@ -2879,7 +2894,7 @@ class AgentCore:
                     "相关记忆已自动注入上方消息中，你无需主动搜索。\n"
                     "仅在用户明确说\"你还记得XXX吗\"\"我之前说过XXX\"\"帮我查一下记忆\"时才调用 search_graph_memory。\n"
                     "用户明确说\"记住XXX\"或要求保存到长期记忆时调用 save_memory 保存；工具成功后才能确认已经写入。"
-                    "用户自然透露姓名、职业、偏好或长期事实时，不要直接调用 save_memory，也不要声称已经写入；由后台自动记忆提取流程在空闲时处理。"
+                    + _memory_write_guide +
                     "用户描述生病、情绪、所在地、短期项目或计划等会变化的信息时，"
                     "调用 update_current_state 保存为带有效期的当前状态，不要混入永久记忆。"
                     "save_memory 返回冲突候选时，必须继续调用 review_memory_conflict；"

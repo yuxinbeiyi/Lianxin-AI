@@ -50,6 +50,7 @@ _NETWORK_CODE_RE = re.compile(
 _EXPLICIT_CHANGE_WORDS = (
     "添加", "新增", "删除", "移除", "修改", "更新", "设置", "配置",
     "启用", "开启", "禁用", "停用", "关闭", "取消使用", "调整", "排序", "恢复默认",
+    "合并", "清理", "整理", "保存",
     "add", "delete", "remove", "change", "enable", "disable", "reset",
 )
 
@@ -62,6 +63,15 @@ _MEMORY_BACKGROUND_MARKERS = (
     "我叫", "我的名字", "我喜欢", "我偏好", "我习惯", "我是", "我在",
     "我从事", "我的职业", "我的工作", "我的项目", "我目前使用",
 )
+
+
+def _auto_save_enabled() -> bool:
+    """「对话过程中自动保存记忆」开关：开启时允许莲心自主判断保存与去重。"""
+    try:
+        from config import get_memory_config
+        return bool(get_memory_config().get("conversation_auto_save", False))
+    except Exception:
+        return False
 
 
 def classify_memory_write_intent(text: str) -> str:
@@ -238,6 +248,8 @@ def authorize_tool_call(name: str, args: dict, request_text: str,
             return False, "修改联网工具配置需要用户在本轮明确提出启停、排序或恢复默认。"
 
     if name == "save_memory":
+        if _auto_save_enabled():
+            return True, ""
         intent = classify_memory_write_intent(request)
         if intent != "explicit":
             if intent == "background":
@@ -245,6 +257,9 @@ def authorize_tool_call(name: str, args: dict, request_text: str,
             return False, "立即写入长期记忆需要用户明确说“请记住”或“保存到长期记忆”。"
 
     if name in {"update_memory", "delete_memory", "review_memory_conflict"}:
+        # 自动保存开启时，允许保存后自主去重/合并（只放行裁决工具，不改写工具）。
+        if name == "review_memory_conflict" and _auto_save_enabled():
+            return True, ""
         has_memory_context = "记忆" in lowered
         has_change_intent = any(token in lowered for token in _EXPLICIT_CHANGE_WORDS)
         if not (has_memory_context and has_change_intent):
