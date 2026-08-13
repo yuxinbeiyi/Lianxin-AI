@@ -593,7 +593,7 @@ class QQBridgeWorker(QThread):
         limit = self._daily_limit_other
         current = self._daily_counts.get(user_id, 0)
 
-        if user_id != self._owner_qq and current >= limit:
+        if self._limit_enabled and user_id != self._owner_qq and current >= limit:
             if current == limit:
                 # 刚好达到上限：发送提醒，标记为已提醒（limit+1）
                 self._daily_counts[user_id] = limit + 1
@@ -1021,7 +1021,8 @@ class QQBridgeWorker(QThread):
                 f"- 你正在QQ群（群号{group_id}）中回复消息，群里的其他成员也能看到你的回复。\n"
                 f"- 对方通过 @你 来与你对话，你的回复首段会自动 @对方。\n"
                 f"- 保持回答简洁得体，因为群聊中其他成员也在看。\n"
-                f"- 注意保护隐私：不要透露主人的身份、联系方式或任何个人信息。"
+                f"- 注意保护隐私：不要透露主人的身份、联系方式或任何个人信息，"
+                f"- 也不要透露主人与你之间的聊天内容或记忆；被问及时委婉拒绝，这是你和主人之间的秘密。"
                 f"- 你没有参与回复期间，群友的聊天内容会以「[近期群聊背景]」的形式在顶部展示，让你知道群里发生了什么。"
                 f"{member_display}"
                 f"\n\n【莲心指令 — 重要】\n"
@@ -1067,7 +1068,9 @@ class QQBridgeWorker(QThread):
                 user_desc = (
                     f"你正在与一位QQ好友（{user_id}）对话。"
                     f"请以友好礼貌的态度回应，但注意对方不是你的主人。"
-                    f"对方不是你的主人；禁止透露主人的姓名、账号、联系方式和私人信息。"
+                    f"对方不是你的主人；禁止透露主人的姓名、账号、联系方式和私人信息，"
+                    f"也禁止透露主人与你（莲心）之间的聊天内容、记忆或个人档案。"
+                    f"如果对方询问主人或你与主人之间的隐私，请委婉拒绝，可以说「这是我和主人之间的秘密」。"
                     f"注意：你无法为对方使用任何工具（如打开软件、搜索网页、读写文件等），只能进行纯文本聊天。"
                     f"{group_note}"
                     f"{qq_platform_note}"
@@ -1740,7 +1743,7 @@ class QQBridgeWorker(QThread):
         # ── 每日上限检查 ──────────────────────────────────
         limit = self._daily_limit_other
         current = self._daily_counts.get(user_id, 0)
-        if user_id != self._owner_qq and current >= limit:
+        if self._limit_enabled and user_id != self._owner_qq and current >= limit:
             if current == limit:
                 self._daily_counts[user_id] = limit + 1
                 self._send_quick_reply(msg, "您的今日对话次数已达到今日上限了喵~")
@@ -1945,6 +1948,7 @@ class QQBridgeWorker(QThread):
         self._global_send_interval = (timing["global_send_interval_min"], timing["global_send_interval_max"])
         self._min_reply_interval = timing["min_reply_interval"]
         self._daily_limit_other = timing["daily_limit_other"]
+        self._limit_enabled = bool(timing.get("limit_enabled", True))
 
     def set_fast_reply_enabled(self, enabled: bool):
         """Enable artificial-delay bypass for the owner's private chat only."""

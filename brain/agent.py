@@ -188,6 +188,7 @@ _OWNER_MEMORY_TOOLS = {
     "discover_connections", "query_connected_entities",
     "delete_graph_entity", "add_graph_edge", "remove_graph_edge",
     "search_cross_session", "search_conversation_history",
+    "query_recent_contacts",
     "read_diary", "write_diary",
 }
 
@@ -3047,7 +3048,7 @@ class AgentCore:
         _no_new_evidence_count = 0
         _SEARCH_READ_TOOLS = {
             "search_files_everything", "search_graph_memory", "search_conversation_history",
-            "search_cross_session",
+            "search_cross_session", "query_recent_contacts",
             "search_code", "glob_files", "list_directory",
             "read_file", "read_file_chunk", "read_file_lines",
             "get_file_info_everything", "grep_file", "web_search",

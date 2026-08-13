@@ -1168,6 +1168,29 @@ TOOL_DEFINITIONS = [
             }
         }
     },
+
+    # ==================== 近期互动联系人聚合（仅主人） ====================
+    {
+        "type": "function",
+        "function": {
+            "name": "query_recent_contacts",
+            "description": (
+                "查询最近与莲心聊过天的其他用户（非主人），供主人回顾。"
+                "当主人问『最近有什么人找过你/跟你聊过天/都聊了什么』时必须使用。"
+                "返回每位联系人的身份标识、渠道、最后活跃时间和最近几条消息。"
+                "此工具仅对主人会话开放，其它用户无法调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "回顾最近N天，默认7，最大365"},
+                    "per_contact_limit": {"type": "integer", "description": "每位联系人返回最近消息条数，默认3，最大10"},
+                    "max_contacts": {"type": "integer", "description": "最多返回几位联系人，默认10，最大50"}
+                },
+                "additionalProperties": False
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -4814,6 +4837,42 @@ def search_conversation_history(query: str = "", mode: str = "recent",
         return f"聊天历史搜索失败：{e}"
 
 
+def query_recent_contacts(days: int = 7, per_contact_limit: int = 3,
+                          max_contacts: int = 10) -> str:
+    """聚合最近与其他用户的互动，供主人回顾（仅主人会话可调用）。"""
+    ctx = getattr(_tool_context, "cross_session", None)
+    if ctx is None:
+        return "无法获取当前会话上下文，无法查询近期联系人。"
+    history_mgr = ctx.get("history_mgr")
+    if history_mgr is None:
+        return "无法访问聊天历史库，无法查询近期联系人。"
+    try:
+        contacts = history_mgr.query_other_user_recent(
+            days=days, per_contact_limit=per_contact_limit,
+            max_contacts=max_contacts,
+        )
+    except Exception as e:
+        return f"查询近期联系人失败：{e}"
+    if not contacts:
+        return "最近这段时间没有其他用户找过我聊天。"
+    channel_names = {
+        "qq_private": "QQ私聊", "qq_group": "QQ群聊",
+        "wechat_private": "微信私聊", "wechat_group": "微信群聊",
+        "desktop": "桌面端",
+    }
+    lines = [f"最近和我聊过天的其他用户（共 {len(contacts)} 位）："]
+    for c in contacts:
+        chan = channel_names.get(c["channel"], c["channel"] or "未知渠道")
+        who = c["participant_id"]
+        lines.append(f"\n- {chan} · {who} · 最后活跃 {c['updated_at']}")
+        for m in c["messages"]:
+            speaker = "我" if m.get("role") == "assistant" else "对方"
+            content = (m.get("content") or "").strip().replace("\n", " ")
+            lines.append(f"  [{m.get('timestamp', '')} | {speaker}] {content[:200]}")
+    lines.append("请如实转述；若能从记忆或上下文判断对方称呼，可用昵称描述，否则以身份标识描述。")
+    return "\n".join(lines)
+
+
 # ── 技能系统工具函数 ─────────────────────────────────────────
 def _list_skills():
     from brain.skill_manager import get_skill_list
@@ -5743,6 +5802,9 @@ TOOL_EXECUTORS = {
         inp.get("time_range", "7d"), inp.get("channels"), inp.get("limit", 20)
     ),
     "search_cross_session": lambda inp: search_cross_session(inp["keyword"], inp.get("limit", 5)),
+    "query_recent_contacts": lambda inp: query_recent_contacts(
+        inp.get("days", 7), inp.get("per_contact_limit", 3), inp.get("max_contacts", 10)
+    ),
     "toggle_proactive_chat": lambda inp: toggle_proactive_chat(inp["action"]),
     "list_skills":   lambda inp: _list_skills(),
     "activate_skill":   lambda inp: _activate_skill(inp["name"]),

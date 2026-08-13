@@ -29,7 +29,7 @@ CORE_TOOLS: Set[str] = {
     # 技能系统
     "list_skills", "activate_skill", "deactivate_skill",
     # 跨端搜索
-    "search_conversation_history", "search_cross_session",
+    "search_conversation_history", "search_cross_session", "query_recent_contacts",
     # 文件操作（最高频入口，始终可用避免模型绕弯路）
     "search_files_everything", "read_file",
     "read_diary", "write_diary",
@@ -186,6 +186,7 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "complete_todo": "完成待办",
     "get_weather": "查询天气",
     "set_user_city": "设置用户城市",
+    "query_recent_contacts": "回顾近期找过你的其他用户及其聊天内容",
 }
 
 # ── 领域中文名 ──────────────────────────────────────────

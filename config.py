@@ -475,6 +475,7 @@ _QQ_TIMING_DEFAULTS = {
     "global_send_interval_max": 1.0,
     "min_reply_interval": 0.0,
     "daily_limit_other": 30,
+    "limit_enabled": True,
     "cross_session_context_limit": 15,
 }
 
@@ -541,7 +542,7 @@ _WECHAT_TIMING_DEFAULTS = {
     "segment_threshold_min": 50, "segment_threshold_max": 150,
     "segment_interval_min": 3.0, "segment_interval_max": 8.0,
     "global_send_interval_min": 5.0, "global_send_interval_max": 15.0,
-    "daily_limit_owner": 50, "daily_limit_other": 10,
+    "daily_limit_owner": 50, "daily_limit_other": 10, "limit_enabled": True,
     "per_group_daily_limit": 30, "block_links": True,
     "cross_session_context_limit": 6,
 }

@@ -66,6 +66,7 @@ class WeChatBridgeWorker(QObject):
         self._global_send_interval = (cfg["global_send_interval_min"], cfg["global_send_interval_max"])
         self._daily_limit_owner = cfg["daily_limit_owner"]
         self._daily_limit_other = cfg["daily_limit_other"]
+        self._limit_enabled = bool(cfg.get("limit_enabled", True))
         self._per_group_daily_limit = cfg.get("per_group_daily_limit", 30)
         self._block_links = cfg.get("block_links", True)
         self._cross_session_context_limit = cfg.get("cross_session_context_limit", 6)
@@ -95,6 +96,7 @@ class WeChatBridgeWorker(QObject):
         self._global_send_interval = (cfg["global_send_interval_min"], cfg["global_send_interval_max"])
         self._daily_limit_owner = cfg["daily_limit_owner"]
         self._daily_limit_other = cfg["daily_limit_other"]
+        self._limit_enabled = bool(cfg.get("limit_enabled", True))
         self._per_group_daily_limit = cfg.get("per_group_daily_limit", 30)
         self._block_links = cfg.get("block_links", True)
         self._cross_session_context_limit = cfg.get("cross_session_context_limit", 6)
@@ -135,14 +137,15 @@ class WeChatBridgeWorker(QObject):
             self._group_daily_counts.clear()
             self._daily_counts_date = today
 
-        # 用户级限制
-        limit = self._daily_limit_owner if is_owner else self._daily_limit_other
-        current = self._daily_counts.get(user_id, 0)
-        if current >= limit:
-            if current == limit:
-                self._daily_counts[user_id] = limit + 1
-                self._log(f"[上限] [{user_id}] 达到用户上限 ({limit} 条)")
-            return False, "今日对话次数已达上限"
+        # 用户级限制：仅当总开关开启时对“非主人”按 other 上限计数；主人永远不受限
+        if self._limit_enabled and not is_owner:
+            limit = self._daily_limit_other
+            current = self._daily_counts.get(user_id, 0)
+            if current >= limit:
+                if current == limit:
+                    self._daily_counts[user_id] = limit + 1
+                    self._log(f"[上限] [{user_id}] 达到用户上限 ({limit} 条)")
+                return False, "今日对话次数已达上限"
 
         # 群聊级限制（每个群每天最多发多少条，防群发炸群）
         if room_id:
@@ -280,6 +283,18 @@ class WeChatBridgeWorker(QObject):
         ).format(name=msg.sender_name)
         if msg.room_id:
             base += "\n这是群聊，你被@了才回复。"
+        if is_owner:
+            base += (
+                "\n\n你正在与主人聊天。请像对待主人一样回应。"
+                "如果主人询问最近有谁找过你聊天、聊了什么，请如实回答。"
+            )
+        else:
+            base += (
+                "\n\n【隐私规则】对方不是你的主人。"
+                "禁止透露主人的姓名、账号、联系方式、私人信息，"
+                "也禁止透露主人与你（莲心）之间的聊天内容、记忆或个人档案。"
+                "如果对方询问主人或你与主人之间的隐私，请委婉拒绝，可以说「这是我和主人之间的秘密」。"
+            )
         return base
 
     def _run(self):

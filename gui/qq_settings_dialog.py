@@ -149,10 +149,17 @@ class QqSettingsDialog(QDialog):
         row6.addStretch()
         g_layout.addLayout(row6)
 
+        row8cb = QHBoxLayout()
+        self._limit_cb = QCheckBox("对用户实施QQ端聊天次数限制")
+        self._limit_cb.setToolTip("勾选后仅对其它用户生效，主人不受限；取消勾选则完全不限制其它用户")
+        row8cb.addWidget(self._limit_cb)
+        row8cb.addStretch()
+        g_layout.addLayout(row8cb)
+
         row8 = QHBoxLayout()
         row8.addWidget(QLabel("其他用户上限"))
         self._other_limit = QSpinBox()
-        self._other_limit.setRange(1, 200)
+        self._other_limit.setRange(1, 999)
         self._other_limit.setSuffix(" 条")
         row8.addWidget(self._other_limit)
         row8.addStretch()
@@ -220,6 +227,7 @@ class QqSettingsDialog(QDialog):
         self._min_interval.setValue(self._config["min_reply_interval"])
         self._global_min.setValue(self._config["global_send_interval_min"])
         self._global_max.setValue(self._config["global_send_interval_max"])
+        self._limit_cb.setChecked(self._config.get("limit_enabled", True))
         self._other_limit.setValue(self._config["daily_limit_other"])
         self._cross_limit.setValue(self._config.get("cross_session_context_limit", 15))
 
@@ -246,6 +254,7 @@ class QqSettingsDialog(QDialog):
             "global_send_interval_min": global_min,
             "global_send_interval_max": global_max,
             "daily_limit_other": self._other_limit.value(),
+            "limit_enabled": self._limit_cb.isChecked(),
             "cross_session_context_limit": self._cross_limit.value(),
         }
 

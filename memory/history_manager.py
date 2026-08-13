@@ -552,6 +552,54 @@ class HistoryManager:
         rows.reverse()
         return rows
 
+    def query_other_user_recent(self, *, days: int = 7, per_contact_limit: int = 3,
+                                max_contacts: int = 10) -> list[dict]:
+        """查询最近有互动的其他用户会话（owner_scope=0），供主人回顾。
+
+        按最后活跃时间倒序返回每个会话及其最近若干条消息，只读不改写。
+        """
+        conn = self._conn()
+        try:
+            days = max(1, min(int(days), 365))
+        except (TypeError, ValueError):
+            days = 7
+        try:
+            per_contact_limit = max(1, min(int(per_contact_limit), 10))
+        except (TypeError, ValueError):
+            per_contact_limit = 3
+        try:
+            max_contacts = max(1, min(int(max_contacts), 50))
+        except (TypeError, ValueError):
+            max_contacts = 10
+        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            """SELECT id, title, channel, participant_id, updated_at
+               FROM sessions
+               WHERE owner_scope = 0 AND participant_id != ''
+                     AND updated_at >= ?
+               ORDER BY updated_at DESC, id DESC
+               LIMIT ?""",
+            (start, max_contacts),
+        ).fetchall()
+        result = []
+        for row in rows:
+            msgs = conn.execute(
+                """SELECT role, content, timestamp FROM messages
+                   WHERE session_id = ? ORDER BY id DESC LIMIT ?""",
+                (row["id"], per_contact_limit),
+            ).fetchall()
+            msgs = list(msgs)
+            msgs.reverse()
+            result.append({
+                "session_id": int(row["id"]),
+                "title": row["title"] or "新对话",
+                "channel": row["channel"],
+                "participant_id": str(row["participant_id"]),
+                "updated_at": row["updated_at"],
+                "messages": [dict(m) for m in msgs],
+            })
+        return result
+
     def get_messages_by_date(self, date_str: str, *, owner_only: bool = True,
                              channels: list[str] | None = None) -> list[dict]:
         """按日期聚合多个会话，供日记等跨窗口功能使用。"""

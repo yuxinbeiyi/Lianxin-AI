@@ -213,14 +213,23 @@ class WeChatSettingsDialog(QDialog):
         self._owner_limit = QSpinBox()
         self._owner_limit.setRange(5, 500)
         self._owner_limit.setSuffix(" 条")
+        self._owner_limit.setEnabled(False)  # 主人不受聊天次数限制，此值不参与限制
         row7.addWidget(self._owner_limit)
+        row7.addWidget(QLabel("（主人不受限）"))
         row7.addStretch()
         g_layout.addLayout(row7)
+
+        row8cb = QHBoxLayout()
+        self._limit_cb = QCheckBox("对用户实施微信端聊天次数限制")
+        self._limit_cb.setToolTip("勾选后仅对其它用户生效，主人不受限；取消勾选则完全不限制其它用户")
+        row8cb.addWidget(self._limit_cb)
+        row8cb.addStretch()
+        g_layout.addLayout(row8cb)
 
         row8 = QHBoxLayout()
         row8.addWidget(QLabel("其他用户上限"))
         self._other_limit = QSpinBox()
-        self._other_limit.setRange(1, 200)
+        self._other_limit.setRange(1, 999)
         self._other_limit.setSuffix(" 条")
         row8.addWidget(self._other_limit)
         row8.addStretch()
@@ -309,6 +318,7 @@ class WeChatSettingsDialog(QDialog):
         self._seg_interval_max.setValue(self._config["segment_interval_max"])
         self._global_min.setValue(self._config["global_send_interval_min"])
         self._global_max.setValue(self._config["global_send_interval_max"])
+        self._limit_cb.setChecked(self._config.get("limit_enabled", True))
         self._owner_limit.setValue(self._config["daily_limit_owner"])
         self._other_limit.setValue(self._config["daily_limit_other"])
         self._group_limit.setValue(self._config.get("per_group_daily_limit", 30))
@@ -334,6 +344,7 @@ class WeChatSettingsDialog(QDialog):
             "global_send_interval_min": self._global_min.value(),
             "global_send_interval_max": self._global_max.value(),
             "daily_limit_owner": self._owner_limit.value(),
+            "limit_enabled": self._limit_cb.isChecked(),
             "daily_limit_other": self._other_limit.value(),
             "per_group_daily_limit": self._group_limit.value(),
             "block_links": self._block_links_cb.isChecked(),
