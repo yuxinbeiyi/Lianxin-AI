@@ -5,7 +5,7 @@ SettingsDialog：莲心全局设置对话框
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QCheckBox, QGroupBox, QFrame, QMessageBox, QSpinBox, QSlider, QLineEdit,
+    QCheckBox, QGroupBox, QFrame, QMessageBox, QSpinBox, QSlider, QLineEdit, QDoubleSpinBox,
     QFileDialog, QTabWidget, QComboBox, QWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QFormLayout,
@@ -486,6 +486,106 @@ class SettingsDialog(QDialog):
         perf_layout.addStretch()
         tab_widget.addTab(perf_tab, "GPU/CPU 性能")
 
+        # ── 桌面端聊天设置选项卡 ──
+        desktop_tab = QWidget()
+        desktop_layout = QVBoxLayout(desktop_tab)
+        desktop_layout.setSpacing(14)
+
+        desktop_tip = QLabel(
+            "桌面端莲心会把长回复拆成多个气泡逐段发送，每段之间会停顿一小段时间，更像真人聊天。\n"
+            "停顿在「朗读完上一段之后」生效；修改保存后即时生效，无需重启莲心。"
+        )
+        desktop_tip.setWordWrap(True)
+        desktop_tip.setStyleSheet(
+            "color: #888; font-size: 12px; background: #1E1E30; padding: 10px; border-radius: 8px;"
+        )
+        desktop_layout.addWidget(desktop_tip)
+
+        # 对话式回复
+        chat_frame = self._create_frame()
+        chat_frame_layout = QVBoxLayout(chat_frame)
+        chat_frame_layout.setSpacing(8)
+        chat_title = QLabel("💬 对话式回复（日常闲聊、简短回复）")
+        chat_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        chat_title.setStyleSheet("color: #444466;")
+        chat_frame_layout.addWidget(chat_title)
+
+        chat_row = QHBoxLayout()
+        chat_row.addWidget(QLabel("最短停顿："))
+        self._chat_pause_min = QDoubleSpinBox()
+        self._chat_pause_min.setRange(0.1, 10.0)
+        self._chat_pause_min.setSingleStep(0.05)
+        self._chat_pause_min.setDecimals(2)
+        self._chat_pause_min.setSuffix(" 秒")
+        chat_row.addWidget(self._chat_pause_min)
+        chat_row.addWidget(QLabel("　最长停顿："))
+        self._chat_pause_max = QDoubleSpinBox()
+        self._chat_pause_max.setRange(0.1, 10.0)
+        self._chat_pause_max.setSingleStep(0.05)
+        self._chat_pause_max.setDecimals(2)
+        self._chat_pause_max.setSuffix(" 秒")
+        chat_row.addWidget(self._chat_pause_max)
+        chat_row.addStretch()
+        chat_frame_layout.addLayout(chat_row)
+
+        chat_hint = QLabel(
+            "💡 建议 0.3~2 秒。数值越小，莲心发完一段后越快接上下一段，显得更活泼；"
+            "数值越大，段落之间越从容。"
+        )
+        chat_hint.setFont(QFont("Microsoft YaHei UI", 8))
+        chat_hint.setStyleSheet("color: #888888;")
+        chat_hint.setWordWrap(True)
+        chat_frame_layout.addWidget(chat_hint)
+        desktop_layout.addWidget(chat_frame)
+
+        # 长文 / 结构化回复
+        long_frame = self._create_frame()
+        long_frame_layout = QVBoxLayout(long_frame)
+        long_frame_layout.setSpacing(8)
+        long_title = QLabel("📄 长文 / 结构化回复（代码、列表、长段落）")
+        long_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        long_title.setStyleSheet("color: #444466;")
+        long_frame_layout.addWidget(long_title)
+
+        long_row = QHBoxLayout()
+        long_row.addWidget(QLabel("最短停顿："))
+        self._semantic_pause_min = QDoubleSpinBox()
+        self._semantic_pause_min.setRange(0.1, 30.0)
+        self._semantic_pause_min.setSingleStep(0.5)
+        self._semantic_pause_min.setDecimals(1)
+        self._semantic_pause_min.setSuffix(" 秒")
+        long_row.addWidget(self._semantic_pause_min)
+        long_row.addWidget(QLabel("　最长停顿："))
+        self._semantic_pause_max = QDoubleSpinBox()
+        self._semantic_pause_max.setRange(0.1, 30.0)
+        self._semantic_pause_max.setSingleStep(0.5)
+        self._semantic_pause_max.setDecimals(1)
+        self._semantic_pause_max.setSuffix(" 秒")
+        long_row.addWidget(self._semantic_pause_max)
+        long_row.addStretch()
+        long_frame_layout.addLayout(long_row)
+
+        long_hint = QLabel(
+            "💡 建议 3~10 秒。长文每段要朗读的内容更多，停顿长一点更像真人「看一段、说一段」，"
+            "也不会让屏幕刷得太快。"
+        )
+        long_hint.setFont(QFont("Microsoft YaHei UI", 8))
+        long_hint.setStyleSheet("color: #888888;")
+        long_hint.setWordWrap(True)
+        long_frame_layout.addWidget(long_hint)
+        desktop_layout.addWidget(long_frame)
+
+        note = QLabel(
+            "ℹ️ 这些停顿是「固定等待」，不含朗读耗时；朗读本身由语音设置里的音色与速度控制。"
+        )
+        note.setFont(QFont("Microsoft YaHei UI", 8))
+        note.setStyleSheet("color: #666666;")
+        note.setWordWrap(True)
+        desktop_layout.addWidget(note)
+
+        desktop_layout.addStretch()
+        tab_widget.addTab(desktop_tab, "桌面端聊天设置")
+
         layout.addWidget(tab_widget)
 
         # 底部按钮
@@ -841,6 +941,11 @@ class SettingsDialog(QDialog):
 
         self._user_name_edit.setText(self._settings.user_name)
         self._load_background_controls()
+        # 桌面端聊天分段停顿
+        self._chat_pause_min.setValue(self._settings.segment_pause_chat_min)
+        self._chat_pause_max.setValue(self._settings.segment_pause_chat_max)
+        self._semantic_pause_min.setValue(self._settings.segment_pause_semantic_min)
+        self._semantic_pause_max.setValue(self._settings.segment_pause_semantic_max)
 
     def _on_save(self):
         if hasattr(self, "_chat_avatar_tab"):
@@ -928,6 +1033,20 @@ class SettingsDialog(QDialog):
             })
             char_widget._avatar_mode = "animated"
             char_widget._switch_to_animated()
+
+        # ── 保存桌面端聊天分段停顿 ──
+        chat_min = self._chat_pause_min.value()
+        chat_max = self._chat_pause_max.value()
+        if chat_min > chat_max:
+            chat_min, chat_max = chat_max, chat_min
+        semantic_min = self._semantic_pause_min.value()
+        semantic_max = self._semantic_pause_max.value()
+        if semantic_min > semantic_max:
+            semantic_min, semantic_max = semantic_max, semantic_min
+        self._settings.segment_pause_chat_min = chat_min
+        self._settings.segment_pause_chat_max = chat_max
+        self._settings.segment_pause_semantic_min = semantic_min
+        self._settings.segment_pause_semantic_max = semantic_max
 
         self.window_settings_changed.emit()
         self.accept()

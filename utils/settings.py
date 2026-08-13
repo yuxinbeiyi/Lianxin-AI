@@ -47,6 +47,11 @@ _DEFAULT_SETTINGS = {
     "always_on_top": False,
     "reduced_motion": False,
     "desktop_notifications": True,
+    # 桌面端聊天分段停顿（秒）
+    "segment_pause_chat_min": 0.45,
+    "segment_pause_chat_max": 1.1,
+    "segment_pause_semantic_min": 3.0,
+    "segment_pause_semantic_max": 7.0,
 }
 
 
@@ -416,6 +421,55 @@ class SettingsManager:
     @desktop_notifications.setter
     def desktop_notifications(self, val: bool):
         self._settings["desktop_notifications"] = bool(val)
+        self.save()
+
+    # ========== 桌面端聊天分段停顿（秒） ==========
+    @property
+    def segment_pause_chat_min(self) -> float:
+        try:
+            return max(0.1, min(10.0, float(self._settings.get("segment_pause_chat_min", 0.45))))
+        except (TypeError, ValueError):
+            return 0.45
+
+    @segment_pause_chat_min.setter
+    def segment_pause_chat_min(self, val: float):
+        self._settings["segment_pause_chat_min"] = max(0.1, min(10.0, float(val)))
+        self.save()
+
+    @property
+    def segment_pause_chat_max(self) -> float:
+        try:
+            return max(0.1, min(10.0, float(self._settings.get("segment_pause_chat_max", 1.1))))
+        except (TypeError, ValueError):
+            return 1.1
+
+    @segment_pause_chat_max.setter
+    def segment_pause_chat_max(self, val: float):
+        self._settings["segment_pause_chat_max"] = max(0.1, min(10.0, float(val)))
+        self.save()
+
+    @property
+    def segment_pause_semantic_min(self) -> float:
+        try:
+            return max(0.1, min(30.0, float(self._settings.get("segment_pause_semantic_min", 3.0))))
+        except (TypeError, ValueError):
+            return 3.0
+
+    @segment_pause_semantic_min.setter
+    def segment_pause_semantic_min(self, val: float):
+        self._settings["segment_pause_semantic_min"] = max(0.1, min(30.0, float(val)))
+        self.save()
+
+    @property
+    def segment_pause_semantic_max(self) -> float:
+        try:
+            return max(0.1, min(30.0, float(self._settings.get("segment_pause_semantic_max", 7.0))))
+        except (TypeError, ValueError):
+            return 7.0
+
+    @segment_pause_semantic_max.setter
+    def segment_pause_semantic_max(self, val: float):
+        self._settings["segment_pause_semantic_max"] = max(0.1, min(30.0, float(val)))
         self.save()
 
 

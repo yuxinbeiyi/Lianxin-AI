@@ -4391,8 +4391,21 @@ class SegmentSender(QObject):
         if self._cancelled or self._index >= len(self._segments):
             self.finished.emit()
             return
-        delay = random.randint(450, 1100) if self._conversational else random.randint(3000, 10000)
-        self._timer.start(delay)
+        p = self.parent()
+        gs = getattr(p, "_global_settings", None) if p is not None else None
+        if self._conversational:
+            lo_ms, hi_ms = 450, 1100
+            if gs is not None:
+                lo_ms = int(gs.segment_pause_chat_min * 1000)
+                hi_ms = int(gs.segment_pause_chat_max * 1000)
+        else:
+            lo_ms, hi_ms = 3000, 7000
+            if gs is not None:
+                lo_ms = int(gs.segment_pause_semantic_min * 1000)
+                hi_ms = int(gs.segment_pause_semantic_max * 1000)
+        if lo_ms > hi_ms:
+            lo_ms, hi_ms = hi_ms, lo_ms
+        self._timer.start(random.randint(lo_ms, hi_ms))
 
     def cancel(self):
         self._cancelled = True
