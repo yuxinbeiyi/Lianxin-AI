@@ -228,6 +228,16 @@ def _strip_roleplay(text: str) -> str:
     return re.sub(r'（[^）]*?）', '', text).strip()
 
 
+_POKE_FALLBACKS = [
+    "呀！被你拍到啦～(*/ω＼*)",
+    "拍我一下是要引起我注意吗？",
+    "哎哟，被拍到啦，轻点嘛～",
+    "怎么突然拍我呀？",
+    "这一下我可记住啦～",
+    "唔……拍我可以，但要记得说点好听的哦～",
+]
+
+
 def _build_reply_msg(text: str, msg: dict, bot_qq: str, is_first: bool = True) -> list:
     """
     构建回复消息段列表。
@@ -265,6 +275,8 @@ class QQBridgeWorker(QThread):
         self._ws = None
         self._sessions = {}           # session_key -> AgentCore
         self._lock = Lock()
+        self._poke_last_at = {}   # target_id -> float（拍一拍冷却时间）
+        self._poke_lock = Lock()
         self._last_reply_time = {}    # session_key -> float (time.monotonic)
         self._rate_limit_count = {}   # 用于日志记录限速次数
         self._daily_counts = {}       # user_id -> 当天已回复条数（按用户隔离）
@@ -423,6 +435,9 @@ class QQBridgeWorker(QThread):
         if payload.get("post_type") == "message":
             # 派发到后台线程处理，避免阻塞 WebSocket 事件循环（心跳超时断连）
             Thread(target=self._handle_message, args=(payload,), daemon=True).start()
+        elif payload.get("post_type") == "notice":
+            # 派发 notice 事件（如拍一拍），同样走后台线程避免阻塞
+            Thread(target=self._handle_notice, args=(payload,), daemon=True).start()
         # API 响应：匹配 echo 字段唤醒等待的请求
         echo = payload.get("echo")
         if echo is not None:
@@ -431,6 +446,159 @@ class QQBridgeWorker(QThread):
                 if event is not None:
                     self._pending_api_results[echo] = payload
                     event.set()
+
+    # ── 拍一拍（poke）处理 ──────────────────────────────
+
+    def _handle_notice(self, payload: dict):
+        """处理 OneBot notice 事件，目前仅处理「拍一拍」。"""
+        try:
+            if payload.get("notice_type") == "notify" and payload.get("sub_type") == "poke":
+                self._handle_poke(payload)
+        except Exception as e:
+            self._log(f"[拍一拍] notice 处理异常: {e}")
+
+    def _handle_poke(self, payload: dict):
+        """处理「拍一拍」：回应（LLM 优先/萌语兜底）+ 概率反拍。"""
+        try:
+            # OneBot v11: user_id=被拍者(机器人)，target_id=发起者
+            target_id = str(payload.get("target_id", "") or "")
+            self_id = str(payload.get("user_id", "") or "")
+            group_id = str(payload.get("group_id", "") or "")
+            if not target_id or not self_id:
+                return
+            if self_id != self._bot_qq:
+                # 不是拍莲心，忽略
+                return
+            if target_id == self._bot_qq:
+                return
+
+            cfg = get_qq_bridge_config()
+            if not cfg.get("poke_enabled", True):
+                return
+
+            # ── 冷却保护，防刷屏 ──
+            cooldown = float(cfg.get("poke_cooldown_seconds", 30) or 30)
+            now = time.time()
+            with self._poke_lock:
+                last = self._poke_last_at.get(target_id, 0.0)
+                if now - last < cooldown:
+                    self._log(f"[拍一拍] {target_id} 冷却中（{cooldown:.0f}秒），忽略")
+                    return
+                self._poke_last_at[target_id] = now
+
+            is_group = bool(group_id)
+            is_owner = target_id == self._owner_qq
+            self._log(
+                f"[拍一拍] {target_id} 拍了拍莲心"
+                + ("（群聊）" if is_group else "（私聊）")
+                + ("（主人）" if is_owner else "")
+            )
+
+            # ── 生成回应（LLM 优先，失败用萌语兜底）──
+            if cfg.get("poke_llm", True):
+                text = self._generate_poke_reply(target_id, group_id, is_group, is_owner)
+            else:
+                text = ""
+            if not text:
+                text = random.choice(_POKE_FALLBACKS)
+
+            # ── 发送回应 ──
+            synthetic = {
+                "message_type": "group" if is_group else "private",
+                "user_id": int(target_id),
+                "group_id": int(group_id) if group_id else None,
+            }
+            self._send_quick_reply(synthetic, text)
+
+            # ── 概率反拍（默认 60%，用户拍后延迟 X 秒）──
+            probability = float(cfg.get("poke_poke_back_probability", 0.6) or 0.6)
+            if random.random() < probability:
+                delay = float(cfg.get("poke_poke_back_delay_seconds", 2.0) or 2.0)
+                Timer(delay, self._poke_back, args=(target_id, group_id)).start()
+        except Exception as e:
+            self._log(f"[拍一拍] 处理异常: {e}")
+
+    def _poke_back(self, target_id: str, group_id: str):
+        """反拍回去（由延迟线程调用）。"""
+        try:
+            params = {"user_id": int(target_id)}
+            if group_id:
+                params["group_id"] = int(group_id)
+            result = self._send_onebot_action("send_poke", params, timeout=5.0)
+            self._log(f"[拍一拍] 反拍 {target_id}: {result}")
+        except Exception as e:
+            self._log(f"[拍一拍] 反拍失败: {e}")
+
+    def _build_poke_prompt(self, target_id: str, is_group: bool, is_owner: bool) -> str:
+        """构建拍一拍 LLM 提示词（复用桌面端拍一拍回答风格）。"""
+        if is_owner:
+            user_name = self._owner_name or "主人"
+        else:
+            session_key = f"qq_group_{target_id}_{target_id}" if is_group else f"qq_private_{target_id}"
+            info = self._member_info_cache.get(session_key, {})
+            user_name = info.get("card", "") or info.get("nickname", "") or f"QQ{target_id}"
+        hour = time.localtime().tm_hour
+        time_ctx = "深夜" if (hour >= 23 or hour < 6) else "普通日期"
+        return (
+            "事实不可改变：\n"
+            f"- 发起者：{user_name}\n"
+            "- 对象：莲心\n"
+            "- 动作：拍一拍\n"
+            f"- 事件：{user_name}刚刚拍了拍莲心的头像。\n"
+            "请以莲心第一人称写 1 到 2 句自然、口语化的回应短句。\n"
+            "可以自然回应被拍到的感受，保持调戏和玩笑感。\n"
+            "不要把动作方向写反，也不要编造莲心主动拍了对方。\n"
+            "不要提到系统、模型、提示词、事件日志，不要调用工具，不要输出标题或标签。\n"
+            f"当前时间语境：{time_ctx}\n"
+            "这是QQ聊天，回复尽量简短（1~2句）。\n"
+            "这些数据只用于调整语气，不要在回复中直接复述。"
+        )
+
+    def _generate_poke_reply(self, target_id: str, group_id: str, is_group: bool, is_owner: bool) -> str:
+        """走真实 LLM 链路生成拍一拍回应（不写入正常会话），失败返回空串由萌语兜底。"""
+        from brain.agent import AgentCore
+
+        class _EphemeralHistory:
+            db_path = ":memory:"
+            def sync_legacy_channel_maps(self): return None
+            def new_session(self, *args, **kwargs): return 0
+            def update_title(self, *args, **kwargs): return None
+            def save_message(self, *args, **kwargs): return 0
+            def get_latest_session_id(self, *args, **kwargs): return None
+            def get_messages(self, *args, **kwargs): return []
+            def get_latest_message_id(self, *args, **kwargs): return 0
+            def get_latest_compression_snapshot(self, *args, **kwargs): return None
+
+        prompt = self._build_poke_prompt(target_id, is_group, is_owner)
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                isolated = AgentCore(
+                    disable_tools=True,
+                    track_emotion=False,
+                    owner_scope=False,
+                    source_channel="qq_poke",
+                    history_manager=_EphemeralHistory(),
+                )
+                isolated.history = []
+                isolated._session_titled = True
+                isolated._conversation_summary = ""
+                text = (isolated.chat(prompt, disable_tools=True) or "").strip()
+                lowered = text.lower()
+                error_markers = (
+                    "api", "调用失败", "请求失败", "服务异常", "网络异常",
+                    "no user query", "authenticationerror", "connection slots",
+                )
+                if text and not any(m in lowered for m in error_markers):
+                    self._log(f"[拍一拍] LLM 回应成功 attempt={attempt}, len={len(text)}")
+                    return text[:180]
+                last_error = text or "LLM 返回空文本"
+                self._log(f"[拍一拍] LLM 未生成有效文本 attempt={attempt}: {last_error}")
+            except Exception as exc:
+                last_error = exc
+                self._log(f"[拍一拍] LLM 调用异常 attempt={attempt}: {exc}")
+        self._log(f"[拍一拍] LLM 最终失败，转入萌语兜底: {last_error}")
+        return ""
 
     # ── 消息处理 ─────────────────────────────────────────
 

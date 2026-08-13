@@ -68,6 +68,12 @@ _QQ_BRIDGE_DEFAULTS = {
     "owner_name": "主人",
     "voice_reply_enabled": True,
     "segmented_reply_enabled": True,
+    # ── QQ 拍一拍回应 ──────────────────────────────────
+    "poke_enabled": True,
+    "poke_llm": True,
+    "poke_poke_back_probability": 0.6,
+    "poke_poke_back_delay_seconds": 2.0,
+    "poke_cooldown_seconds": 30,
 }
 
 
