@@ -407,10 +407,9 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
     import edge_tts
     from pydub import AudioSegment
 
-    _configure_pydub_ffmpeg()
-
     mp3_path = wav_path + ".mp3"
     try:
+        _configure_pydub_ffmpeg()
         asyncio.run(edge_tts.Communicate(text, edge_voice).save(mp3_path))
         audio = AudioSegment.from_mp3(mp3_path)
         audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)

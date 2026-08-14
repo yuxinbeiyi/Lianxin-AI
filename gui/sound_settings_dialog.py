@@ -349,6 +349,9 @@ class SoundSettingsDialog(QDialog):
         self._tts_test_btn.setFixedWidth(120)
         self._tts_test_btn.clicked.connect(self._on_tts_test)
         test_hbox.addWidget(self._tts_test_btn)
+        self._tts_test_status = QLabel("")
+        self._tts_test_status.setStyleSheet("color: #888; font-size: 12px;")
+        test_hbox.addWidget(self._tts_test_status)
         test_hbox.addStretch()
         scroll_layout.addWidget(test_frame)
 
@@ -772,9 +775,11 @@ class SoundSettingsDialog(QDialog):
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             wav_path = tmp.name
             tmp.close()
+            failed = False
             try:
                 success = engine.synthesize(test_text, wav_path)
                 if not success:
+                    failed = True
                     return
                 import pygame
                 if not pygame.mixer.get_init():
@@ -793,6 +798,10 @@ class SoundSettingsDialog(QDialog):
                     os.unlink(wav_path)
                 except Exception:
                     pass
+                if failed:
+                    self._tts_test_status.setText("❌ 合成失败：可能未找到 FFmpeg 或 TTS 异常，详见 logs/debug.log")
+                else:
+                    self._tts_test_status.setText("✅ 试听完成")
                 self._tts_test_btn.setText("🔊 试听")
                 self._tts_test_btn.setEnabled(True)
 
