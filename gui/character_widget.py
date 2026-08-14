@@ -44,16 +44,7 @@ class CharacterWidget(QWidget):
         self._playing_arms_cross = False
         self._arms_cross_speech_pending = False
         self._function_expanded = False
-        # 加载自定义图标
-        icons_dir = self._assets_dir / "icons"
-        self.icon_play = QIcon(str(icons_dir / "play.png"))
-        self.icon_pause = QIcon(str(icons_dir / "pause.png"))
-        self.icon_prev = QIcon(str(icons_dir / "prev.png"))
-        self.icon_next = QIcon(str(icons_dir / "next.png"))
-        self.icon_list = QIcon(str(icons_dir / "list.png"))   # 新增：用于文件夹按钮
-        self.icon_loop = QIcon(str(icons_dir / "loop.png"))      # 列表循环
-        self.icon_loop_one = QIcon(str(icons_dir / "loop2.png")) # 单曲循环（需准备图标）
-        self.icon_random = QIcon(str(icons_dir / "random.png"))  # 随机播放（需准备图标）
+        self._music_box_view = None
 
 
         self._build_ui()
@@ -131,161 +122,12 @@ class CharacterWidget(QWidget):
         # 音乐盒与功能区整体下移
         main_layout.addSpacing(8)
 
-        # ========== 音乐盒控件 ==========
+        # ========== 音乐盒控件（由 MusicBoxWidget 提供） ==========
         self._music_bar = QWidget()
-        self._music_bar.setStyleSheet("""
-            background-color: rgba(60, 60, 70, 220);
-            border-radius: 20px;
-            margin: 6px 8px;
-            padding: 8px;
-        """)
+        self._music_bar.setStyleSheet("background: transparent; border: none;")
         music_main_layout = QVBoxLayout(self._music_bar)
-        music_main_layout.setSpacing(8)
-        music_main_layout.setContentsMargins(12, 8, 12, 8)
-
-        # 第一行：播放控制按钮
-        row1 = QHBoxLayout()
-        row1.setSpacing(15)
-        row1.setAlignment(Qt.AlignCenter)
-
-        self._btn_prev = QPushButton()
-        self._btn_prev.setFixedSize(44, 44)
-        self._btn_prev.setIcon(self.icon_prev)
-        self._btn_prev.setIconSize(self._btn_prev.size())
-        self._btn_prev.setCursor(Qt.PointingHandCursor)
-        self._btn_prev.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(240,240,240,0.9);
-                border-radius: 22px;
-                border: 1px solid #aaa;
-            }
-            QPushButton:hover { background-color: #e0e0e0; border: 1px solid #6C7BFF; }
-        """)
-        row1.addWidget(self._btn_prev)
-
-        self._btn_play_pause = QPushButton()
-        self._btn_play_pause.setFixedSize(54, 54)
-        self._btn_play_pause.setIcon(self.icon_play)
-        self._btn_play_pause.setIconSize(self._btn_play_pause.size())
-        self._btn_play_pause.setCursor(Qt.PointingHandCursor)
-        self._btn_play_pause.setStyleSheet("""
-            QPushButton {
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #6C7BFF, stop:1 #4A5ADE);
-                border-radius: 27px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #5A6AEE; }
-        """)
-        row1.addWidget(self._btn_play_pause)
-
-        self._btn_next = QPushButton()
-        self._btn_next.setFixedSize(44, 44)
-        self._btn_next.setIcon(self.icon_next)
-        self._btn_next.setIconSize(self._btn_next.size())
-        self._btn_next.setCursor(Qt.PointingHandCursor)
-        self._btn_next.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(240,240,240,0.9);
-                border-radius: 22px;
-                border: 1px solid #aaa;
-            }
-            QPushButton:hover { background-color: #e0e0e0; border: 1px solid #6C7BFF; }
-        """)
-        row1.addWidget(self._btn_next)
-
-        self._btn_loop = QPushButton()
-        self._btn_loop.setFixedSize(36, 36)
-        self._btn_loop.setIcon(self.icon_loop)
-        self._btn_loop.setIconSize(self._btn_loop.size())
-        self._btn_loop.setCursor(Qt.PointingHandCursor)
-        self._btn_loop.setToolTip("循环模式: 列表循环")
-        self._btn_loop.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(240,240,240,0.9);
-                border-radius: 18px;
-                border: 1px solid #aaa;
-            }
-            QPushButton:hover { background-color: #e0e0e0; border: 1px solid #6C7BFF; }
-        """)
-        row1.addWidget(self._btn_loop)
-
-        music_main_layout.addLayout(row1)
-
-        # 第二行：进度条 + 时间标签
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-        row2.setContentsMargins(0, 0, 0, 0)
-        self._music_progress = QSlider(Qt.Horizontal)
-        self._music_progress.setRange(0, 100)
-        self._music_progress.setValue(0)
-        self._music_progress.setCursor(Qt.PointingHandCursor)
-        self._music_progress.setStyleSheet("""
-            QSlider::groove:horizontal {
-                height: 4px; background: #A0A0A8; border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: #C0C0FF; width: 10px; margin: -4px 0; border-radius: 5px;
-            }
-        """)
-        row2.addWidget(self._music_progress, 1)
-        self._time_label = QLabel("00:00 / 00:00")
-        self._time_label.setFont(QFont("Microsoft YaHei UI", 8))
-        self._time_label.setStyleSheet("color: #E0E0E0;")
-        self._time_label.setAlignment(Qt.AlignCenter)
-        row2.addWidget(self._time_label)
-        music_main_layout.addLayout(row2)
-
-        # 第三行：频谱跳动条
-        from gui.spectrum_widget import SpectrumWidget
-        self.spectrum = SpectrumWidget()
-        music_main_layout.addWidget(self.spectrum)
-
-        # 第四行：音量控制 + 歌名 + 文件夹按钮
-        row4 = QHBoxLayout()
-        row4.setSpacing(10)
-        row4.setAlignment(Qt.AlignVCenter)
-        self._music_volume_icon = QLabel("🔊")
-        self._music_volume_icon.setFont(QFont("Segoe UI Emoji", 10))
-        self._music_volume_icon.setCursor(Qt.PointingHandCursor)
-        self._music_volume_icon.mousePressEvent = self._on_volume_icon_click
-        row4.addWidget(self._music_volume_icon)
-        self._music_volume_slider = QSlider(Qt.Horizontal)
-        self._music_volume_slider.setRange(0, 100)
-        self._music_volume_slider.setFixedWidth(80)
-        self._music_volume_slider.setCursor(Qt.PointingHandCursor)
-        self._music_volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                height: 4px; background: #A0A0A8; border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: #C0C0FF; width: 10px; margin: -4px 0; border-radius: 5px;
-            }
-        """)
-        row4.addWidget(self._music_volume_slider)
-        self._music_title_label = QLabel("未导入音乐")
-        self._music_title_label.setFont(QFont("Microsoft YaHei UI", 8))
-        self._music_title_label.setStyleSheet("color: #E0E0E0;")
-        self._music_title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._music_title_label.setWordWrap(False)
-        self._music_title_label.setMinimumWidth(100)
-        row4.addWidget(self._music_title_label, 1)
-        self._btn_open_music_folder = QPushButton()
-        self._btn_open_music_folder.setFixedSize(36, 36)
-        self._btn_open_music_folder.setIcon(self.icon_list)
-        self._btn_open_music_folder.setIconSize(self._btn_open_music_folder.size())
-        self._btn_open_music_folder.setCursor(Qt.PointingHandCursor)
-        self._btn_open_music_folder.setToolTip("打开音乐列表")
-        self._btn_open_music_folder.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(220,220,230,0.9);
-                border-radius: 18px;
-                border: 1px solid rgba(255,255,255,0.3);
-            }
-            QPushButton:hover { background-color: rgba(240,240,255,1.0); }
-        """)
-        row4.addWidget(self._btn_open_music_folder)
-        music_main_layout.addLayout(row4)
+        music_main_layout.setContentsMargins(6, 0, 6, 0)
+        music_main_layout.setSpacing(0)
 
         from gui.jiwen_status_widget import JiwenStatusWidget
         self._view_stack = QStackedWidget(self)
@@ -511,50 +353,45 @@ class CharacterWidget(QWidget):
             grid.addWidget(button, index // 2, index % 2)
         layout.addLayout(grid)
 
-    # ========== 音乐盒控件获取方法 ==========
-    def get_music_play_button(self):
-        return self._btn_play_pause
+    # ========== 音乐盒控件安装 / 获取方法 ==========
+    def install_music_box_view(self, view):
+        self._music_box_view = view
+        layout = self._music_bar.layout()
+        if layout is not None:
+            layout.addWidget(view)
 
-    def get_music_prev_button(self):
-        return self._btn_prev
+    def get_music_box_view(self):
+        return self._music_box_view
 
-    def get_music_next_button(self):
-        return self._btn_next
+    def is_function_expanded(self) -> bool:
+        """功能区覆盖面板当前是否处于展开状态"""
+        return bool(getattr(self, "_function_expanded", False))
 
-    def get_music_volume_slider(self):
-        return self._music_volume_slider
+    def _set_music_box_visible(self, visible: bool):
+        """控制音乐盒 Web 视图的显隐。
 
-    def get_music_volume_icon(self):
-        return self._music_volume_icon
-
-    def get_music_title_label(self):
-        return self._music_title_label
-
-    def get_open_music_folder_button(self):
-        return self._btn_open_music_folder
-
-    def get_loop_button(self):
-        return self._btn_loop
-
-    def get_music_loop_button(self):
-        return self._btn_loop
-
-    def get_music_progress(self):   
-        return self._music_progress
-
-    def get_time_label(self):
-        return self._time_label
-
-    def set_music_title(self, title: str):
-        # 显示省略号处理：限制最大显示字符数（根据字体宽度估算，这里简单用长度）
-        max_len = 20  # 根据你的控件宽度调整
-        if len(title) > max_len:
-            display_title = title[:max_len] + "..."
-            self._music_title_label.setToolTip(title)   # 悬停显示完整
+        QWebEngineView 是原生子窗口（HWND），会穿透普通 Qt 控件的 Z 序，
+        因此功能区覆盖面板打开时必须隐藏它，否则音乐盒会显示在覆盖面板上层。
+        关闭面板后，仅当音乐盒仍是当前侧栏视图时才恢复显示。
+        """
+        view = getattr(self, "_music_box_view", None)
+        if view is None:
+            return
+        if visible:
+            if self._view_stack.currentWidget() is self._music_bar:
+                view.show()
         else:
-            display_title = title
-            self._music_title_label.setToolTip("")
-        self._music_title_label.setText(display_title)
+            view.hide()
+
+    def _sync_music_box_visibility(self):
+        """按当前侧栏视图 + 功能区状态同步音乐盒 Web 视图显隐。"""
+        view = getattr(self, "_music_box_view", None)
+        if view is None:
+            return
+        if self._view_stack.currentWidget() is self._music_bar and not self._function_expanded:
+            view.show()
+        else:
+            view.hide()
 
     def _switch_sidebar_view(self, index: int):
         self._view_stack.setCurrentIndex(int(index))
@@ -562,6 +399,8 @@ class CharacterWidget(QWidget):
         self._jiwen_view_button.setChecked(index == 1)
         if index == 1:
             self._jiwen_status_widget.refresh()
+        # 修复：切换侧栏视图后同步音乐盒 Web 视图显隐。
+        self._sync_music_box_visibility()
 
     def _toggle_function_panel(self):
         """弹出/收起功能区覆盖面板"""
@@ -577,12 +416,16 @@ class CharacterWidget(QWidget):
             self._function_opacity.setOpacity(0.0)
             self._function_popup.show()
             self._function_popup.raise_()
+            # QWebEngineView 是原生子窗口（HWND），会穿透普通 Qt 控件的 Z 序，
+            # 打开功能区覆盖面板时必须隐藏音乐盒 Web 视图，避免它显示在最上层。
+            self._set_music_box_visible(False)
             self._btn_function_toggle.setText("▼ 收起")
             self._function_animation.setStartValue(0.0)
             self._function_animation.setEndValue(1.0)
             self._function_animation.start()
         else:
             self._btn_function_toggle.setText("▲ 功能中心")
+            self._set_music_box_visible(True)
             self._function_animation.setStartValue(self._function_opacity.opacity())
             self._function_animation.setEndValue(0.0)
             self._function_animation.finished.connect(self._finish_function_popup_hide)
@@ -602,17 +445,6 @@ class CharacterWidget(QWidget):
         super().resizeEvent(event)
         if self._function_expanded:
             self._position_function_popup()
-
-    def _on_volume_icon_click(self, event):
-        current = self._music_volume_slider.value()
-        if current > 0:
-            self._muted_volume = current
-            self._music_volume_slider.setValue(0)
-        else:
-            if hasattr(self, '_muted_volume'):
-                self._music_volume_slider.setValue(self._muted_volume)
-            else:
-                self._music_volume_slider.setValue(50)
 
     # ========== 动画控制方法（保持不变） ==========
     def set_talking(self):

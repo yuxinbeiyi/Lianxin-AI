@@ -47,6 +47,10 @@ from workers.speaker_worker    import SpeakerWorker
 from workers.standby_worker    import StandbyWorker   # 不再需要 contains_end_phrase, strip_end_phrase
 from brain.voice_duplex        import VoiceDuplexManager
 from utils.accompany_stats  import AccompanyStats
+import json
+from gui.music_box.bridge import MusicBoxBridge
+from gui.music_box.music_box_widget import MusicBoxWidget
+from gui.music_box.music_space_window import MusicSpaceWindow
 
 from utils.proactive_chat import ProactiveChatScheduler
 from utils.settings import get_settings
@@ -190,7 +194,6 @@ class MainWindow(QMainWindow):
         self._diary_dialog = None
         self._qq_settings_dialog = None
         self._wechat_settings_dialog = None
-        self._music_list_dialog = None
 
         # ── 非模态对话框（改为 show() 打开，不阻塞主窗口）────
         self._network_settings_dialog = None
@@ -199,7 +202,6 @@ class MainWindow(QMainWindow):
         self._emotion_debug_dialog = None
         self._diary_dialog = None
         self._qq_settings_dialog = None
-        self._music_list_dialog = None
         # ── 闹钟模块 ──────────────────────────────────────────
         self._alarm_manager = AlarmManager()
         self._alarm_dialog: AlarmDialog | None = None
@@ -537,13 +539,13 @@ class MainWindow(QMainWindow):
             self._on_loop_mode_clicked()
             return "已切换循环模式。"
         elif action == "volume_up":
-            new_val = min(100, self._char_widget.get_music_volume_slider().value() + 10)
-            self._char_widget.get_music_volume_slider().setValue(new_val)
-            return f"音量增加到 {new_val}%"
+            new_val = min(1.0, self._global_settings.music_volume + 0.1)
+            self._set_music_volume(new_val)
+            return f"音量增加到 {int(round(new_val * 100))}%"
         elif action == "volume_down":
-            new_val = max(0, self._char_widget.get_music_volume_slider().value() - 10)
-            self._char_widget.get_music_volume_slider().setValue(new_val)
-            return f"音量减小到 {new_val}%"
+            new_val = max(0.0, self._global_settings.music_volume - 0.1)
+            self._set_music_volume(new_val)
+            return f"音量减小到 {int(round(new_val * 100))}%"
         else:
             return "不支持的操作。"
 
@@ -1015,16 +1017,28 @@ class MainWindow(QMainWindow):
 
 
 
-        # 音乐盒按钮连接
-        self._char_widget.get_music_play_button().clicked.connect(self._on_music_play_pause)
-        self._char_widget.get_music_prev_button().clicked.connect(self._prev_track)
-        self._char_widget.get_music_next_button().clicked.connect(self._next_track)
-        self._char_widget.get_music_volume_slider().valueChanged.connect(self._on_music_volume_changed)
-        self._char_widget.get_open_music_folder_button().clicked.connect(self._open_music_list)
-        self._char_widget.get_music_loop_button().clicked.connect(self._on_loop_mode_clicked)
-        self._char_widget.get_music_progress().sliderReleased.connect(self._seek_to)
-        # 初始化音量滑块值
-        self._char_widget.get_music_volume_slider().setValue(int(self._global_settings.music_volume * 100))
+        # 音乐盒（Mode A 嵌入式 Web 播放器 + Mode B 沉浸式音乐空间）
+        self._music_box_bridge = MusicBoxBridge(self._music_box_state, self)
+        self._music_box_widget = MusicBoxWidget(self._music_box_bridge, self)
+        self._char_widget.install_music_box_view(self._music_box_widget)
+        self._music_space_window = None   # Mode B 懒加载
+
+        _mb = self._music_box_bridge
+        _mb.toggle_play_requested.connect(self._on_music_play_pause)
+        _mb.play_requested.connect(self._resume_music)
+        _mb.pause_requested.connect(self._pause_music)
+        _mb.next_requested.connect(self._next_track)
+        _mb.previous_requested.connect(self._prev_track)
+        _mb.seek_requested.connect(self._seek_to_seconds)
+        _mb.volume_requested.connect(self._set_music_volume)
+        _mb.play_mode_requested.connect(self._set_loop_mode)
+        _mb.track_requested.connect(self._switch_to_track)
+        _mb.open_space_requested.connect(self._open_music_space)
+        _mb.close_space_requested.connect(self._close_music_space)
+
+        # 初始化音量与状态推送
+        self._global_settings.music_volume = max(0.0, min(1.0, float(self._global_settings.music_volume)))
+        self._push_music_state()
         
     def _open_note_dialog(self):
         play_sound("MemoBook.mp3")
@@ -3632,6 +3646,10 @@ class MainWindow(QMainWindow):
         self._save_music_state()
         if self._study_room_window:
             self._study_room_window.shutdown()
+        if getattr(self, '_music_box_widget', None) is not None:
+            self._music_box_widget.shutdown()
+        if getattr(self, '_music_space_window', None) is not None:
+            self._music_space_window.shutdown()
         
         # ── 停止待机模式相关线程（新版）──
         if hasattr(self, '_note_poll_timer') and self._note_poll_timer:
@@ -3905,18 +3923,8 @@ class MainWindow(QMainWindow):
         self._update_music_ui()
 
     def _update_music_ui(self):
-        """更新音乐盒界面（播放按钮状态、歌名等）"""
-        if not self.playlist:
-            self._char_widget.get_music_play_button().setEnabled(False)
-            self._char_widget.set_music_title("无音乐文件")
-            return
-        self._char_widget.get_music_play_button().setEnabled(True)
-        if 0 <= self.current_track_index < len(self.playlist):
-            title = self.playlist[self.current_track_index].stem
-            self._char_widget.set_music_title(title)
-        else:
-            self._char_widget.set_music_title("未知")
-
+        """更新音乐盒界面（状态由前端渲染）"""
+        self._push_music_state()
     def _play_music(self, start_sec=0):
         if not self.playlist:
             return
@@ -3929,8 +3937,6 @@ class MainWindow(QMainWindow):
         self.current_offset = start_sec
         self.current_position = start_sec
         self.current_song_start_time = time.time() - start_sec   # 记录开始时间（考虑偏移）
-        self._char_widget.spectrum.set_playing(True)  
-        self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_pause)
         # 获取总时长
         try:
             from mutagen.mp3 import MP3 # type: ignore
@@ -3947,6 +3953,7 @@ class MainWindow(QMainWindow):
         self._music_check_timer = QTimer(self)
         self._music_check_timer.timeout.connect(self._on_music_check)
         self._music_check_timer.start(500)
+        self._push_music_state()
 
     def _stop_music(self):
     # 更新当前歌曲的播放时长（如果正在播放且已记录开始时间）
@@ -3956,8 +3963,9 @@ class MainWindow(QMainWindow):
                 self.music_stats.update_song(str(self.playlist[self.current_track_index]), elapsed)
         pygame.mixer.music.stop()
         self.music_playing = False
-        self._char_widget.spectrum.set_playing(False) 
-        self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_play)
+        self._push_music_state()
+        if self._progress_timer:
+            self._progress_timer.stop()
         if hasattr(self, '_music_check_timer'):
             self._music_check_timer.stop()
 
@@ -4010,21 +4018,23 @@ class MainWindow(QMainWindow):
         if not self.music_playing and self.playlist:
             pygame.mixer.music.unpause()
             self.music_playing = True
-            self._char_widget.spectrum.set_playing(True)
-            self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_pause)
+            if self._progress_timer:
+                self._progress_timer.start(500)
+            self._push_music_state()
 
     def _pause_music(self):
         if self.music_playing:
             pygame.mixer.music.pause()
             self.music_playing = False
-            self._char_widget.spectrum.set_playing(False)   
-            self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_play)
+            self._push_music_state()
+            if self._progress_timer:
+                self._progress_timer.stop()
 
 
     def _on_music_volume_changed(self, value):
         vol = value / 100.0
         self._global_settings.music_volume = vol
-        self._char_widget.spectrum.set_volume(vol) 
+        self._push_music_state()
         # 确保 mixer 已初始化
         if not pygame.mixer.get_init():
             pygame.mixer.init()
@@ -4045,25 +4055,145 @@ class MainWindow(QMainWindow):
             self._play_music(start_sec=start_pos)
         else:
             self.music_playing = False
-            self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_play)
+            self._push_music_state()
 
     def _save_music_state(self):
         self._global_settings.music_playlist_index = self.current_track_index
         self._global_settings.music_is_playing = self.music_playing
         self._global_settings.music_position = self.current_position  # 保存进度
 
-    def _open_music_list(self):
-        play_sound("ButtonMusic.mp3")
-        if not self.playlist:
+    def _music_box_state(self) -> dict:
+        """收集当前音乐状态，供 HTML 前端渲染
+
+        注意：Web 前端加载完成后会异步调用 bridge.getState()，而它可能在
+        MainWindow.__init__ 的“音乐播放器变量区域”初始化之前被触发，
+        因此这里对所有音乐状态字段做防御式读取，避免启动期
+        'MainWindow' object has no attribute 'playlist' 之类的序列化崩溃。
+        """
+        playlist = getattr(self, "playlist", None) or []
+        current_index = getattr(self, "current_track_index", 0)
+        current_duration = getattr(self, "current_duration", 0)
+        current_position = getattr(self, "current_position", 0)
+        music_playing = bool(getattr(self, "music_playing", False))
+        loop_mode = getattr(self, "loop_mode", "list")
+        try:
+            volume = float(getattr(self._global_settings, "music_volume", 0.5))
+        except Exception:
+            volume = 0.5
+        playlist_items = []
+        for idx, path in enumerate(playlist):
+            dur = current_duration if idx == current_index and current_duration else 0
+            try:
+                name = path.stem
+            except Exception:
+                name = str(path)
+            playlist_items.append({"title": name, "duration": dur, "index": idx})
+        title = ""
+        if playlist and 0 <= current_index < len(playlist):
+            try:
+                title = playlist[current_index].stem
+            except Exception:
+                title = str(playlist[current_index])
+        return {
+            "playing": music_playing and bool(playlist),
+            "current_index": current_index if playlist else 0,
+            "title": title,
+            "artist": "",
+            "album": "",
+            "duration": current_duration,
+            "position": current_position,
+            "playlist": playlist_items,
+            "loop_mode": loop_mode,
+            "volume": volume,
+            "has_playlist": bool(playlist),
+            "error": "",
+            "wallpaper": self._music_box_wallpaper(),
+        }
+
+    def _music_box_wallpaper(self) -> str:
+        """解析当前壁纸路径，供 Mode B 背景使用（file:// URI）"""
+        try:
+            central = self.centralWidget()
+            if isinstance(central, BackgroundWidget):
+                resolved = central.resolved_path
+                if resolved:
+                    path = Path(resolved).resolve()
+                    if path.is_file():
+                        return path.as_uri()
+        except Exception:
+            pass
+        return ""
+
+    def _push_music_state(self):
+        """推送最新音乐状态到 Mode A / Mode B 前端"""
+        try:
+            payload = json.dumps(self._music_box_state(), ensure_ascii=False)
+        except Exception as exc:
+            print(f"[音乐盒] 状态序列化失败: {exc}")
             return
-        from gui.music_list_dialog import MusicListDialog
-        if self._music_list_dialog is None:
-            self._music_list_dialog = MusicListDialog(self.playlist, self.current_track_index, self)
-            self._music_list_dialog.track_selected.connect(self._switch_to_track)
-            self._music_list_dialog.order_changed.connect(self._reorder_playlist)
-        self._music_list_dialog.show()
-        self._music_list_dialog.raise_()
-        self._music_list_dialog.activateWindow()
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is not None:
+            try:
+                widget.push_state(payload)
+            except Exception as exc:
+                print(f"[音乐盒] Mode A 推送失败: {exc}")
+        space = getattr(self, "_music_space_window", None)
+        if space is not None:
+            try:
+                space.push_state(payload)
+            except Exception as exc:
+                print(f"[音乐盒] Mode B 推送失败: {exc}")
+
+    def _set_music_volume(self, volume: float):
+        """设置音量（0~1），来自前端音量滑块"""
+        try:
+            vol = max(0.0, min(1.0, float(volume)))
+        except (TypeError, ValueError):
+            return
+        self._global_settings.music_volume = vol
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        try:
+            pygame.mixer.music.set_volume(vol)
+        except pygame.error:
+            pass
+        self._push_music_state()
+
+    def _set_loop_mode(self, mode: str):
+        """切换播放模式：list / one / random"""
+        if mode in ("list", "one", "random"):
+            self.loop_mode = mode
+            self._push_music_state()
+
+
+    def _open_music_space(self):
+        """打开沉浸式音乐空间（Mode B，懒加载）"""
+        if self._music_space_window is None:
+            self._music_space_window = MusicSpaceWindow(self._music_box_bridge, self, self)
+            self._music_space_window.set_anchor(self)
+        self._music_space_window.show_space()
+        # 全屏音乐空间已覆盖主窗口，隐藏主界面嵌入式音乐盒
+        # （QWebEngineView 为原生子窗口，不隐藏会射穿到最上层）
+        if getattr(self, "_music_box_widget", None) is not None:
+            self._music_box_widget.hide()
+        self._push_music_state()
+
+    def _close_music_space(self):
+        """关闭沉浸式音乐空间（Mode B）"""
+        if self._music_space_window is not None:
+            self._music_space_window.close_space()
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is None:
+            return
+        # 如果功能区覆盖面板仍打开，音乐盒仍需保持隐藏
+        try:
+            if self._char_widget.is_function_expanded():
+                widget.hide()
+                return
+        except Exception:
+            pass
+        widget.show()
+
 
 
     def _reorder_playlist(self, new_order):
@@ -4085,7 +4215,7 @@ class MainWindow(QMainWindow):
             self._stop_music()
             self._play_music(start_sec=current_pos)
         else:
-            self._char_widget.get_music_play_button().setIcon(self._char_widget.icon_play)
+            self._push_music_state()
 
     def _switch_to_track(self, index):
         """切换到指定索引的歌曲"""
@@ -4103,47 +4233,50 @@ class MainWindow(QMainWindow):
                 pos = 0
             self.current_position = pos   # 保存位置
             self._update_time_display(pos)
-            if self.current_duration > 0:
-                progress = int(pos / self.current_duration * 100)
-                self._char_widget.get_music_progress().setValue(progress)
-        else:
-            if self._progress_timer:
-                self._progress_timer.stop()
 
     def _update_time_display(self, current_sec):
-        current_str = f"{current_sec // 60:02d}:{current_sec % 60:02d}"
-        total_str = f"{self.current_duration // 60:02d}:{self.current_duration % 60:02d}"
-        self._char_widget.get_time_label().setText(f"{current_str} / {total_str}")
-
-    def _seek_to(self):
-        value = self._char_widget.get_music_progress().value()
-        if self.music_playing and self.current_duration > 0:
-            target_sec = int(value / 100 * self.current_duration)
-            was_playing = self.music_playing
+        """时间标签已由前端渲染，这里只需刷新状态"""
+        self._push_music_state()
+    def _seek_to_seconds(self, seconds: float):
+        """按秒跳转（来自前端 seek 指令）"""
+        try:
+            target_sec = max(0, int(float(seconds or 0)))
+        except (TypeError, ValueError):
+            return
+        if self.current_duration > 0:
+            target_sec = min(target_sec, self.current_duration)
+        was_playing = self.music_playing
+        if not self.playlist:
+            return
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        try:
             pygame.mixer.music.stop()
             pygame.mixer.music.play(start=target_sec)
-            self.current_offset = target_sec   # 记录偏移
-            if not was_playing:
-                pygame.mixer.music.pause()
-            else:
-                self.music_playing = True
-            self._update_time_display(target_sec)
-            # 进度条值已在拖动时改变，无需再次 setValue
+        except pygame.error:
+            return
+        self.current_offset = target_sec
+        self.current_position = target_sec
+        if not was_playing:
+            pygame.mixer.music.pause()
+        self.music_playing = was_playing
+        self._update_time_display(target_sec)
+        self._push_music_state()
+
+    def _seek_to(self):
+        """保留旧接口（无滑块后为空操作，兜底跳转到当前位置）"""
+        if self.playlist and self.current_duration > 0:
+            self._seek_to_seconds(self.current_position)
 
     def _on_loop_mode_clicked(self):
         play_sound("ButtonMusic.mp3")
         if self.loop_mode == "list":
             self.loop_mode = "one"
-            self._char_widget.get_loop_button().setIcon(self._char_widget.icon_loop_one)
-            self._char_widget.get_loop_button().setToolTip("循环模式: 单曲循环")
         elif self.loop_mode == "one":
             self.loop_mode = "random"
-            self._char_widget.get_loop_button().setIcon(self._char_widget.icon_random)
-            self._char_widget.get_loop_button().setToolTip("循环模式: 随机播放")
         else:
             self.loop_mode = "list"
-            self._char_widget.get_loop_button().setIcon(self._char_widget.icon_loop)
-            self._char_widget.get_loop_button().setToolTip("循环模式: 列表循环")
+        self._push_music_state()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Space:
