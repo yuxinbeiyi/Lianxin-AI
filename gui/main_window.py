@@ -4320,6 +4320,18 @@ class MainWindow(QMainWindow):
         if self._music_space_window is not None:
             self._music_space_window.close_space()
 
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is None:
+            return
+        # 关闭音乐空间后，恢复主界面嵌入式音乐盒的显示
+        try:
+            if self._char_widget.is_function_expanded():
+                widget.hide()
+                return
+        except Exception:
+            pass
+        widget.show()
+
     def _minimize_music_space(self):
         """最小化音乐空间窗口"""
         space = getattr(self, "_music_space_window", None)
