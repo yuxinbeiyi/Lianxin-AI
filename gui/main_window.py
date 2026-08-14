@@ -468,6 +468,8 @@ class MainWindow(QMainWindow):
         self._restore_music_state()
         self.music_stats = MusicStats()
         self.current_song_start_time = None
+        self._favorite_stems = set()   # 收藏歌曲（stem 集合）
+        self._load_favorite_stems()
 
     def _on_route_ready(self, text: str, is_chat: bool, route_result):
         # IntentRouter 仅用于快速 UI 分类；真正的工具边界由 AgentCore 的
@@ -1035,6 +1037,7 @@ class MainWindow(QMainWindow):
         _mb.track_requested.connect(self._switch_to_track)
         _mb.open_space_requested.connect(self._open_music_space)
         _mb.close_space_requested.connect(self._close_music_space)
+        _mb.toggle_favorite_requested.connect(self._toggle_favorite)
 
         # 初始化音量与状态推送
         self._global_settings.music_volume = max(0.0, min(1.0, float(self._global_settings.music_volume)))
@@ -4087,7 +4090,7 @@ class MainWindow(QMainWindow):
                 name = path.stem
             except Exception:
                 name = str(path)
-            playlist_items.append({"title": name, "duration": dur, "index": idx})
+            playlist_items.append({"title": name, "duration": dur, "index": idx, "favorite": (name in self._favorite_stems)})
         title = ""
         if playlist and 0 <= current_index < len(playlist):
             try:
@@ -4107,6 +4110,8 @@ class MainWindow(QMainWindow):
             "volume": volume,
             "has_playlist": bool(playlist),
             "error": "",
+            "favorite": (title in self._favorite_stems),
+            "space_background": self._music_space_background(),
             "wallpaper": self._music_box_wallpaper(),
         }
 
@@ -4123,6 +4128,52 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return ""
+
+    def _music_space_background(self) -> str:
+        """返回音乐空间背景图（猫与咖啡桌.png）的 file:// URI"""
+        try:
+            from utils.resource_path import get_asset_path
+            p = get_asset_path("主界面背景图", "猫与咖啡桌.png")
+            if p.exists():
+                return p.resolve().as_uri()
+        except Exception:
+            pass
+        return ""
+
+    def _load_favorite_stems(self):
+        """加载收藏歌曲（stem 集合）"""
+        try:
+            from utils.paths import get_user_data_dir
+            f = get_user_data_dir() / "music_favorites.json"
+            if f.exists():
+                data = json.loads(f.read_text(encoding="utf-8"))
+                self._favorite_stems = set(data if isinstance(data, list) else [])
+            else:
+                self._favorite_stems = set()
+        except Exception:
+            self._favorite_stems = set()
+
+    def _save_favorite_stems(self):
+        """持久化收藏歌曲到 JSON"""
+        try:
+            from utils.paths import get_user_data_dir
+            f = get_user_data_dir() / "music_favorites.json"
+            f.write_text(json.dumps(sorted(self._favorite_stems), ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"[音乐盒] 收藏保存失败: {exc}")
+
+    def _toggle_favorite(self):
+        """切换当前歌曲收藏状态"""
+        if not self.playlist or not (0 <= self.current_track_index < len(self.playlist)):
+            self._push_music_state()
+            return
+        stem = self.playlist[self.current_track_index].stem
+        if stem in self._favorite_stems:
+            self._favorite_stems.discard(stem)
+        else:
+            self._favorite_stems.add(stem)
+        self._save_favorite_stems()
+        self._push_music_state()
 
     def _push_music_state(self):
         """推送最新音乐状态到 Mode A / Mode B 前端"""

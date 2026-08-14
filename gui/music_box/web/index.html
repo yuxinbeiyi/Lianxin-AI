@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>莲心 · 音乐盒</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ Mode A：主界面嵌入式音乐盒 ============ -->
+<section id="app-compact" class="panel compact" hidden>
+  <div class="card" id="cardA">
+
+    <!-- 唱机：黑胶 + 唱针（视觉主体） -->
+    <div class="turntable" id="turntableA">
+      <div class="turntable-stage">
+        <div class="tonearm" id="tonearmA">
+          <div class="arm-pivot"></div>
+          <div class="arm-body"></div>
+          <div class="arm-head"></div>
+        </div>
+        <div class="vinyl" id="vinylA">
+          <div class="vinyl-sheen"></div>
+          <div class="vinyl-label" id="labelA">
+            <span class="label-hub"></span>
+          </div>
+        </div>
+      </div>
+      <div class="mini-eq" id="eqA"></div>
+    </div>
+
+    <!-- 歌曲信息 -->
+    <div class="song-info" id="songInfoA">
+      <div class="song-title" id="titleA"></div>
+      <div class="song-sub" id="subA"></div>
+    </div>
+
+    <!-- 进度条 -->
+    <div class="progress-row">
+      <span class="time" id="curTimeA">00:00</span>
+      <div class="progress" id="progressA">
+        <div class="progress-track"></div>
+        <div class="progress-fill" id="progressFillA"></div>
+        <div class="progress-thumb" id="progressThumbA"></div>
+        <div class="progress-tip" id="progressTipA"></div>
+      </div>
+      <span class="time" id="durTimeA">00:00</span>
+    </div>
+
+    <!-- 播放控制：播放 / 暂停 最大 -->
+    <div class="controls">
+      <button class="ctl prev" id="prevA" title="上一首"></button>
+      <button class="ctl play" id="playA" title="播放 / 暂停"></button>
+      <button class="ctl next" id="nextA" title="下一首"></button>
+    </div>
+
+    <!-- 底部：模式 / 播放列表 / 音量 / 展开 -->
+    <div class="footer">
+      <button class="link mode" id="modeBtnA" title="播放模式"></button>
+      <button class="link list" id="listBtnA">播放列表</button>
+      <button class="link vol" id="volBtnA" title="音量"></button>
+      <input type="range" id="volSliderA" min="0" max="100" value="50" step="1">
+      <span class="vol-val" id="volValA">50%</span>
+      <div class="footer-spacer"></div>
+      <button class="link expand" id="expandBtnA">音乐空间</button>
+    </div>
+
+    <!-- 播放列表浮层 -->
+    <div class="playlist-pop" id="playlistPopA" hidden>
+      <div class="pop-header">
+        <span>播放列表</span>
+      </div>
+      <div class="pop-list" id="popListA"></div>
+      <div class="pop-empty" id="popEmptyA" hidden>暂无歌曲</div>
+    </div>
+
+    <div class="status-line" id="statusLineA" hidden></div>
+  </div>
+</section>
+
+<!-- ============ Mode B：沉浸式音乐空间 ============ -->
+<section id="app-full" class="panel full" hidden>
+  <!-- 动态背景层（外层做呼吸缩放，内层负责模糊，避免每帧重模糊导致闪烁） -->
+  <div class="space-bg-wrap" id="spaceBgWrap">
+    <div class="space-bg" id="spaceBg"></div>
+  </div>
+  <div class="space-vignette"></div>
+
+  <header class="space-top">
+    <button class="back" id="backBtn"><span class="back-arrow"></span>返回</button>
+    <div class="space-title">莲心 · 音乐空间</div>
+    <div class="space-top-spacer"></div>
+  </header>
+
+  <div class="space-main">
+    <!-- 左：当前歌曲信息 -->
+    <div class="info-col glass">
+      <div class="now-playing">NOW PLAYING</div>
+      <div class="song-title big" id="titleB"></div>
+      <div class="song-sub big" id="subB"></div>
+      <div class="song-meta" id="albumB"></div>
+      <div class="song-lyric" id="lyricB">在某个温柔的夜晚，听见一首旧歌。</div>
+      <button class="fav-btn" id="favInfoBtn" title="收藏 / 取消收藏">
+        <span class="heart" id="heartInfo"></span>
+        <span class="fav-label" id="favInfoLabel">收藏</span>
+      </button>
+    </div>
+
+    <!-- 中：黑胶播放器 -->
+    <div class="vinyl-col">
+      <div class="big-turntable">
+        <div class="tonearm big" id="tonearmB">
+          <div class="arm-pivot"></div>
+          <div class="arm-body"></div>
+          <div class="arm-head"></div>
+        </div>
+        <div class="vinyl big" id="vinylB">
+          <div class="vinyl-sheen"></div>
+          <div class="vinyl-cover" id="vinylCoverB"></div>
+          <div class="vinyl-hub"></div>
+        </div>
+      </div>
+      <div class="eq-wrap">
+        <canvas id="eqCanvas"></canvas>
+        <div class="eq-idle" id="eqIdleB">聆听音乐中…</div>
+      </div>
+    </div>
+
+    <!-- 右：播放列表（全部 / 收藏歌单） -->
+    <div class="playlist-col glass">
+      <div class="tabs">
+        <button class="tab active" data-tab="all" id="tabAll">全部歌曲</button>
+        <button class="tab" data-tab="fav" id="tabFav"><span class="tab-heart">♥</span> 收藏歌单</button>
+      </div>
+      <div class="playlist" id="listB"></div>
+      <div class="list-empty" id="listEmptyB" hidden>暂无歌曲</div>
+    </div>
+  </div>
+
+  <footer class="space-bottom">
+    <div class="progress-row wide">
+      <span class="time" id="curTimeB">00:00</span>
+      <div class="progress" id="progressB">
+        <div class="progress-track"></div>
+        <div class="progress-fill" id="progressFillB"></div>
+        <div class="progress-thumb" id="progressThumbB"></div>
+        <div class="progress-tip" id="progressTipB"></div>
+      </div>
+      <span class="time" id="durTimeB">00:00</span>
+    </div>
+    <div class="controls wide">
+      <button class="ctl mode" id="modeBtn" title="播放模式"></button>
+      <button class="ctl prev" id="prevB" title="上一首"></button>
+      <button class="ctl play big" id="playB" title="播放 / 暂停"></button>
+      <button class="ctl next" id="nextB" title="下一首"></button>
+      <button class="ctl fav-ctl" id="favBottomBtn" title="收藏 / 取消收藏">
+        <span class="heart small" id="heartBottom"></span>
+      </button>
+      <div class="vol-wide">
+        <button class="vol-btn" id="volBtnB" title="音量"></button>
+        <input type="range" id="volSliderB" min="0" max="100" value="50" step="1">
+      </div>
+    </div>
+  </footer>
+</section>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
