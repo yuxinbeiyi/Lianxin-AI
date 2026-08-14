@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QAbstractNativeEventFilter, QPoint, QObject,
-    QThread, pyqtSignal, QTime,
+    QThread, pyqtSignal, QTime, QSettings,
 )
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QKeySequence
 from pathlib import Path
@@ -1020,7 +1020,11 @@ class MainWindow(QMainWindow):
 
 
         # 音乐盒（Mode A 嵌入式 Web 播放器 + Mode B 沉浸式音乐空间）
-        self._music_box_bridge = MusicBoxBridge(self._music_box_state, self)
+        self._music_box_bridge = MusicBoxBridge(
+            self._music_box_state, self,
+            space_settings_provider=self._music_space_settings,
+            space_settings_saver=self._save_music_space_settings,
+        )
         self._music_box_widget = MusicBoxWidget(self._music_box_bridge, self)
         self._char_widget.install_music_box_view(self._music_box_widget)
         self._music_space_window = None   # Mode B 懒加载
@@ -1037,6 +1041,8 @@ class MainWindow(QMainWindow):
         _mb.track_requested.connect(self._switch_to_track)
         _mb.open_space_requested.connect(self._open_music_space)
         _mb.close_space_requested.connect(self._close_music_space)
+        _mb.minimize_space_requested.connect(self._minimize_music_space)
+        _mb.maximize_space_requested.connect(self._toggle_max_music_space)
         _mb.toggle_favorite_requested.connect(self._toggle_favorite)
 
         # 初始化音量与状态推送
@@ -4113,6 +4119,7 @@ class MainWindow(QMainWindow):
             "favorite": (title in self._favorite_stems),
             "space_background": self._music_space_background(),
             "wallpaper": self._music_box_wallpaper(),
+            "space_settings": self._music_space_settings(),
         }
 
     def _music_box_wallpaper(self) -> str:
@@ -4130,15 +4137,94 @@ class MainWindow(QMainWindow):
         return ""
 
     def _music_space_background(self) -> str:
-        """返回音乐空间背景图（猫与咖啡桌.png）的 file:// URI"""
+        """返回音乐空间背景图（默认猫与咖啡桌.png，或用户选择的壁纸）的 file:// URI"""
         try:
             from utils.resource_path import get_asset_path
+            settings = QSettings("Lianxin", "MusicBox")
+            chosen = str(settings.value("space_wallpaper", "default"))
+            if chosen != "default":
+                p = Path(chosen)
+                if p.is_file():
+                    return p.resolve().as_uri()
             p = get_asset_path("主界面背景图", "猫与咖啡桌.png")
             if p.exists():
                 return p.resolve().as_uri()
         except Exception:
             pass
         return ""
+
+    def _music_space_wallpapers(self) -> list:
+        """扫描主界面背景图目录，返回壁纸列表 [{id, name, url}]。"""
+        try:
+            from utils.resource_path import get_asset_path
+            directory = get_asset_path("主界面背景图")
+        except Exception:
+            directory = None
+        items = [{"id": "default", "name": "默认壁纸", "url": ""}]
+        if directory is not None and directory.is_dir():
+            allowed = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            try:
+                files = sorted(directory.iterdir(), key=lambda p: p.name.lower())
+            except Exception:
+                files = []
+            for image in files:
+                try:
+                    if image.is_file() and image.suffix.lower() in allowed:
+                        resolved = image.resolve()
+                        items.append({"id": str(resolved), "name": image.stem,
+                                      "url": resolved.as_uri()})
+                except Exception:
+                    continue
+        return items
+
+    def _music_space_settings(self) -> dict:
+        """返回音乐空间设置载荷：壁纸列表 + 当前配置。"""
+        settings = QSettings("Lianxin", "MusicBox")
+        current = str(settings.value("space_wallpaper", "default"))
+        wallpapers = self._music_space_wallpapers()
+        known = {item["id"] for item in wallpapers}
+        if current != "default" and current not in known:
+            p = Path(current)
+            if p.is_file():
+                wallpapers.append({"id": str(p.resolve()), "name": f"自定义：{p.stem}",
+                                   "url": p.resolve().as_uri()})
+        try:
+            opacity = float(settings.value("space_wallpaper_opacity", 0.7))
+        except (TypeError, ValueError):
+            opacity = 0.75
+        try:
+            mask = float(settings.value("space_content_mask_opacity", 0.5))
+        except (TypeError, ValueError):
+            mask = 0.82
+        return {
+            "wallpapers": wallpapers,
+            "settings": {
+                "wallpaper": current,
+                "wallpaper_opacity": opacity,
+                "content_mask_opacity": mask,
+                "fit": str(settings.value("space_wallpaper_fit", "cover")),
+            },
+        }
+
+    def _save_music_space_settings(self, wallpaper, wallpaper_opacity,
+                                   content_mask_opacity, fit) -> dict:
+        """持久化音乐空间设置并推送最新状态，返回更新后的设置载荷。"""
+        settings = QSettings("Lianxin", "MusicBox")
+        path = str(wallpaper or "default")
+        if path != "default":
+            p = Path(path)
+            if not p.is_file():
+                path = "default"
+        settings.setValue("space_wallpaper", path)
+        settings.setValue("space_wallpaper_opacity",
+                          max(0.0, min(1.0, float(wallpaper_opacity))))
+        settings.setValue("space_content_mask_opacity",
+                          max(0.0, min(1.0, float(content_mask_opacity))))
+        settings.setValue("space_wallpaper_fit",
+                          "contain" if str(fit) == "contain" else "cover")
+        settings.sync()
+        self._push_music_state()
+        return self._music_space_settings()
 
     def _load_favorite_stems(self):
         """加载收藏歌曲（stem 集合）"""
@@ -4233,6 +4319,19 @@ class MainWindow(QMainWindow):
         """关闭沉浸式音乐空间（Mode B）"""
         if self._music_space_window is not None:
             self._music_space_window.close_space()
+
+    def _minimize_music_space(self):
+        """最小化音乐空间窗口"""
+        space = getattr(self, "_music_space_window", None)
+        if space is not None:
+            space.minimize_space()
+
+    def _toggle_max_music_space(self):
+        """最大化 / 还原音乐空间窗口"""
+        space = getattr(self, "_music_space_window", None)
+        if space is not None:
+            space.toggle_maximize()
+
         widget = getattr(self, "_music_box_widget", None)
         if widget is None:
             return

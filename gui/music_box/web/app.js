@@ -30,7 +30,7 @@
     vol: '<svg viewBox="0 0 24 24"><path d="M4 9v6h3.4L13 19.4V4.6L7.4 9H4z"/><path d="M15.5 8.2a4.6 4.6 0 0 1 0 7.6l1.2 1.3a6.4 6.4 0 0 0 0-10.2l-1.2 1.3z"/><path d="M17.9 5.5l-1.2 1.3a7.8 7.8 0 0 1 0 10.4l1.2 1.3a9.6 9.6 0 0 0 0-13z"/></svg>',
     muted: '<svg viewBox="0 0 24 24"><path d="M4 9v6h3.4L13 19.4V4.6L7.4 9H4z"/><path d="M16.4 8.9l1.6 1.6 1.6-1.6 1.1 1.1-1.6 1.6 1.6 1.6-1.1 1.1-1.6-1.6-1.6 1.6-1.1-1.1 1.6-1.6-1.6-1.6z"/></svg>',
     repeat: '<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>',
-    repeatOne: '<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><circle cx="12" cy="16" r="2.1" fill="#fff"/><path d="M12 14l-1.3 1.9h2.6z" fill="#c94b5b"/></svg>',
+    repeatOne: '<svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/><circle cx="12" cy="16" r="2.1" fill="#fff"/><path d="M12 14l-1.3 1.9h2.6z" fill="#2fd9a0"/></svg>',
     shuffle: '<svg viewBox="0 0 24 24"><path d="M14.8 6h3.4l-1.4 1.4 1.4 1.4 3.8-3.8-3.8-3.8-1.4 1.4 1.4 1.4h-3.4c-2.2 0-3.8 1.2-5 2.6l1.5 1.5c.9-1 2-2 3.5-2.1zM3.4 7.4h2.4c1.2 0 2.2.4 3 1.1l1.6 1.6 1.4-1.4-1.5-1.5c-1.2-1.1-2.7-1.8-4.5-1.8H3.4zM14.8 18h3.4l-1.4-1.4 1.4-1.4 3.8 3.8-3.8 3.8-1.4-1.4 1.4-1.4h-3.4c-1.5-.1-2.6-1.1-3.5-2.1l-7-7c-.8-.7-1.8-1.1-3-1.1H3.4v2h2.4c.8 0 1.4.3 2 .9l7 7z"/></svg>',
     expand: '<svg viewBox="0 0 24 24"><path d="M4 8V4h4v2H6v2H4zm4 12H4v-4h2v2h2v2zm12-4v4h-4v-2h2v-2h2zm-4-12h4v4h-2V6h-2V4z"/></svg>',
     trackPlay: '<svg viewBox="0 0 24 24"><path d="M8 5.14v13.72c0 .8.87 1.3 1.56.9l10.2-6.86a1.05 1.05 0 0 0 0-1.8L9.56 4.24A1.05 1.05 0 0 0 8 5.14z"/></svg>'
@@ -53,12 +53,14 @@
     has_playlist: false,
     favorite: false,
     space_background: "",
+    space_settings: null,
     error: ""
   };
   var bridge = null;
   var refs = {};
   var currentTab = "all";
   var lastSpaceBg = "";
+  var spaceDirty = false; // 壁纸预览中标记，防止播放进度推送覆盖预览
 
   /* ---------- 元素引用 ---------- */
   function collectRefs() {
@@ -127,7 +129,26 @@
         tabAll: qs("#tabAll"),
         tabFav: qs("#tabFav"),
         album: qs("#albumB"),
-        lyric: qs("#lyricB")
+        lyric: qs("#lyricB"),
+        spaceMask: qs("#spaceMask"),
+        settingsBtn: qs("#settingsBtn"),
+        settingsBackdrop: qs("#settingsBackdrop"),
+        settingsPanel: qs("#settingsPanel"),
+        settingsClose: qs("#settingsClose"),
+        settingsStatus: qs("#settingsStatus"),
+        spaceWallpaperStrip: qs("#spaceWallpaperStrip"),
+        spaceWallpaperOpacity: qs("#spaceWallpaperOpacity"),
+        spaceWallpaperOpacityValue: qs("#spaceWallpaperOpacityValue"),
+        spaceMaskOpacity: qs("#spaceMaskOpacity"),
+        spaceMaskOpacityValue: qs("#spaceMaskOpacityValue"),
+        spaceFit: qs("#spaceFit"),
+        spaceSettingsSave: qs("#spaceSettingsSave"),
+        spaceSettingsReset: qs("#spaceSettingsReset"),
+        winMinBtn: qs("#winMinBtn"),
+        winMaxBtn: qs("#winMaxBtn"),
+        winCloseBtn: qs("#winCloseBtn"),
+        nowThumb: qs("#nowThumb"),
+        nowTitle: qs("#nowTitleB")
       };
     }
   }
@@ -208,15 +229,159 @@
     if (refs.favBottomBtn) refs.favBottomBtn.title = fav ? "取消收藏" : "收藏";
   }
 
-  /* ---------- 渲染：音乐空间背景（仅在变化时更新，避免每帧重模糊） ---------- */
+  /* ---------- 渲染：音乐空间背景（参考莲心自习室的壁纸调节方案） ---------- */
+  function clamp01(v) {
+    v = Number(v);
+    if (isNaN(v)) return 0.7;
+    return Math.max(0, Math.min(1, v));
+  }
+
+  function findSpaceWallpaper(wallpapers, id) {
+    if (!wallpapers) return null;
+    for (var i = 0; i < wallpapers.length; i++) {
+      if (wallpapers[i].id === id) return wallpapers[i];
+    }
+    return null;
+  }
+
+  function currentSpaceVisuals() {
+    var s = state.space_settings || {};
+    var settings = s.settings || {};
+    var wallpaperId = settings.wallpaper || "default";
+    var item = findSpaceWallpaper(s.wallpapers, wallpaperId);
+    var url = (item && item.url) || state.space_background || "";
+    var opacity = clamp01(settings.wallpaper_opacity != null ? settings.wallpaper_opacity : 0.7);
+    var mask = clamp01(settings.content_mask_opacity != null ? settings.content_mask_opacity : 0.5);
+    var fit = settings.fit === "contain" ? "contain" : "cover";
+    // 与自习室一致：有效遮罩 = 1 - 壁纸透明度 x (1 - 内容遮罩)
+    return {
+      url: url,
+      opacity: opacity,
+      mask: mask,
+      effective: 1 - opacity * (1 - mask),
+      fit: fit
+    };
+  }
+
   function renderSpaceBackground() {
     if (MODE !== "full") return;
-    var bg = state.space_background || "";
-    if (bg === lastSpaceBg) return;
-    lastSpaceBg = bg;
-    var url = bg ? "url('" + bg + "')" : "";
-    if (refs.spaceBg) refs.spaceBg.style.backgroundImage = url;
-    if (refs.vinylCover) refs.vinylCover.style.backgroundImage = url;
+    var v = currentSpaceVisuals();
+    var key = v.url + "|" + v.opacity + "|" + v.mask + "|" + v.fit;
+    if (key === lastSpaceBg) return;
+    lastSpaceBg = key;
+    var root = document.documentElement;
+    root.style.setProperty("--space-wallpaper", v.url ? ("url(\"" + v.url + "\")") : "none");
+    root.style.setProperty("--space-wallpaper-size", v.fit);
+    root.style.setProperty("--space-wallpaper-opacity", String(v.opacity));
+    root.style.setProperty("--space-effective-mask", String(v.effective));
+  }
+
+  /* ---------- 渲染：音乐空间设置面板 ---------- */
+  function renderSpaceSettings() {
+    if (MODE !== "full") return;
+    renderSpaceBackground();
+    renderWallpaperStrip();
+  }
+
+  function renderWallpaperStrip() {
+    var strip = refs.spaceWallpaperStrip;
+    if (!strip) return;
+    var s = state.space_settings || {};
+    var settings = s.settings || {};
+    var wallpapers = s.wallpapers || [];
+    strip.innerHTML = "";
+    if (!wallpapers.length) {
+      strip.innerHTML = '<div class="settings-empty">没有可用的壁纸</div>';
+      return;
+    }
+    wallpapers.forEach(function (item) {
+      var btn = document.createElement("button");
+      btn.className = "wallpaper-option" + (item.id === settings.wallpaper ? " active" : "");
+      btn.dataset.wallpaper = item.id;
+      btn.title = item.name;
+      var img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.alt = "";
+      if (item.url) img.src = item.url;
+      else img.style.background = "linear-gradient(135deg,#16202e,#0d1320)";
+      var strong = document.createElement("strong");
+      strong.textContent = item.name;
+      btn.appendChild(img);
+      btn.appendChild(strong);
+      btn.addEventListener("click", function () {
+        spaceSettingsPreview(item.id, null, null, null);
+      });
+      strip.appendChild(btn);
+    });
+  }
+
+  /* ---------- 音乐空间设置：实时预览（不落盘） ---------- */
+  function spaceSettingsPreview(wallpaperId, opacity, mask, fit) {
+    var s = state.space_settings || { settings: {} };
+    s.settings = s.settings || {};
+    if (wallpaperId != null) s.settings.wallpaper = wallpaperId;
+    if (opacity != null) s.settings.wallpaper_opacity = opacity;
+    if (mask != null) s.settings.content_mask_opacity = mask;
+    if (fit != null) s.settings.fit = fit;
+    state.space_settings = s;
+    spaceDirty = true;
+    renderSpaceBackground();
+    renderWallpaperStrip();
+  }
+
+  function syncSpaceSettingsControls() {
+    if (MODE !== "full") return;
+    var settings = (state.space_settings || {}).settings || {};
+    if (refs.spaceWallpaperOpacity) {
+      var v = Math.round(clamp01(settings.wallpaper_opacity != null ? settings.wallpaper_opacity : 0.7) * 100);
+      refs.spaceWallpaperOpacity.value = v;
+      if (refs.spaceWallpaperOpacityValue) refs.spaceWallpaperOpacityValue.textContent = v + "%";
+    }
+    if (refs.spaceMaskOpacity) {
+      var m = Math.round(clamp01(settings.content_mask_opacity != null ? settings.content_mask_opacity : 0.5) * 100);
+      refs.spaceMaskOpacity.value = m;
+      if (refs.spaceMaskOpacityValue) refs.spaceMaskOpacityValue.textContent = m + "%";
+    }
+    if (refs.spaceFit) refs.spaceFit.value = settings.fit === "contain" ? "contain" : "cover";
+  }
+
+  function toggleSpaceSettingsPanel(open) {
+    if (MODE !== "full" || !refs.settingsPanel) return;
+    var show = (open === undefined) ? refs.settingsPanel.hidden : !!open;
+    if (show) syncSpaceSettingsControls();
+    refs.settingsPanel.hidden = !show;
+    if (refs.settingsBackdrop) refs.settingsBackdrop.hidden = !show;
+  }
+
+  function saveSpaceSettings() {
+    if (!bridge) return;
+    var s = state.space_settings || { settings: {} };
+    var settings = s.settings || {};
+    bridge.saveSpaceSettings(
+      settings.wallpaper || "default",
+      clamp01(settings.wallpaper_opacity != null ? settings.wallpaper_opacity : 0.7),
+      clamp01(settings.content_mask_opacity != null ? settings.content_mask_opacity : 0.5),
+      settings.fit === "contain" ? "contain" : "cover",
+      function (json) {
+        try {
+          var payload = JSON.parse(json);
+          if (payload && payload.settings) {
+            state.space_settings = payload;
+            spaceDirty = false;
+            renderSpaceBackground();
+            renderWallpaperStrip();
+          }
+        } catch (e) { console.error(e); }
+      }
+    );
+    if (refs.settingsStatus) {
+      refs.settingsStatus.textContent = "已保存";
+      clearTimeout(saveSpaceSettings._t);
+      saveSpaceSettings._t = setTimeout(function () {
+        if (refs.settingsStatus) refs.settingsStatus.textContent = "";
+      }, 1800);
+    }
   }
 
   /* ---------- 切换播放列表 Tab ---------- */
@@ -280,6 +445,39 @@
     if (refs.vinyl) refs.vinyl.classList.toggle("playing", playing);
     if (refs.eq) refs.eq.classList.toggle("playing", playing);
     if (refs.eqIdle) refs.eqIdle.hidden = playing;
+    setVinylSpin(playing);
+  }
+
+  /* ---------- 黑胶旋转：JS 驱动（暂停时保持当前角度不归位） ---------- */
+  var vinylSpin = { angle: 0, raf: null, playing: false, last: 0 };
+  function applyVinylTransform() {
+    if (refs.vinyl) refs.vinyl.style.transform = "rotate(" + vinylSpin.angle + "deg)";
+  }
+  function startVinylSpin() {
+    if (vinylSpin.raf) return;
+    vinylSpin.playing = true;
+    vinylSpin.last = 0;
+    function tick(ts) {
+      if (vinylSpin.last) {
+        var dt = (ts - vinylSpin.last) / 1000;
+        vinylSpin.angle = (vinylSpin.angle + (360 / 30) * dt) % 360;
+      }
+      vinylSpin.last = ts;
+      applyVinylTransform();
+      if (vinylSpin.playing) vinylSpin.raf = requestAnimationFrame(tick);
+      else { vinylSpin.raf = null; vinylSpin.last = 0; }
+    }
+    vinylSpin.raf = requestAnimationFrame(tick);
+  }
+  function stopVinylSpin() {
+    vinylSpin.playing = false;
+    if (vinylSpin.raf) { cancelAnimationFrame(vinylSpin.raf); vinylSpin.raf = null; }
+    vinylSpin.last = 0;
+    applyVinylTransform();
+  }
+  function setVinylSpin(playing) {
+    if (playing) startVinylSpin();
+    else stopVinylSpin();
   }
 
   /* ---------- 渲染：歌曲信息 ---------- */
@@ -302,6 +500,7 @@
     }
     refs.title.textContent = title;
     refs.sub.textContent = sub;
+    if (refs.nowTitle) refs.nowTitle.textContent = title;
   }
 
   /* ---------- 渲染：状态提示 ---------- */
@@ -323,7 +522,7 @@
     renderTurntable();
     renderModeButton(refs.modeBtn);
     renderFavorite();
-    renderSpaceBackground();
+    renderSpaceSettings();
     renderSongMeta();
     restartEqAnim();
     renderError();
@@ -405,6 +604,24 @@
         if (bridge) bridge.closeMusicSpace();
       });
     }
+    if (refs.winMinBtn) {
+      refs.winMinBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (bridge) bridge.minimizeMusicSpace();
+      });
+    }
+    if (refs.winMaxBtn) {
+      refs.winMaxBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (bridge) bridge.maximizeMusicSpace();
+      });
+    }
+    if (refs.winCloseBtn) {
+      refs.winCloseBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (bridge) bridge.closeMusicSpace();
+      });
+    }
     if (refs.favInfoBtn) {
       refs.favInfoBtn.addEventListener("click", function (e) {
         e.stopPropagation();
@@ -477,6 +694,54 @@
         }
       });
     }
+    if (refs.settingsBtn) {
+      refs.settingsBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleSpaceSettingsPanel();
+      });
+    }
+    if (refs.settingsClose) {
+      refs.settingsClose.addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleSpaceSettingsPanel(false);
+      });
+    }
+    if (refs.settingsBackdrop) {
+      refs.settingsBackdrop.addEventListener("click", function () {
+        toggleSpaceSettingsPanel(false);
+      });
+    }
+    if (refs.spaceWallpaperOpacity) {
+      refs.spaceWallpaperOpacity.addEventListener("input", function () {
+        var v = parseFloat(refs.spaceWallpaperOpacity.value) / 100;
+        if (refs.spaceWallpaperOpacityValue) refs.spaceWallpaperOpacityValue.textContent = Math.round(v * 100) + "%";
+        spaceSettingsPreview(null, v, null, null);
+      });
+    }
+    if (refs.spaceMaskOpacity) {
+      refs.spaceMaskOpacity.addEventListener("input", function () {
+        var v = parseFloat(refs.spaceMaskOpacity.value) / 100;
+        if (refs.spaceMaskOpacityValue) refs.spaceMaskOpacityValue.textContent = Math.round(v * 100) + "%";
+        spaceSettingsPreview(null, null, v, null);
+      });
+    }
+    if (refs.spaceFit) {
+      refs.spaceFit.addEventListener("change", function () {
+        spaceSettingsPreview(null, null, null, refs.spaceFit.value);
+      });
+    }
+    if (refs.spaceSettingsSave) {
+      refs.spaceSettingsSave.addEventListener("click", function () {
+        saveSpaceSettings();
+      });
+    }
+    if (refs.spaceSettingsReset) {
+      refs.spaceSettingsReset.addEventListener("click", function () {
+        spaceSettingsPreview("default", 0.7, 0.5, "cover");
+        syncSpaceSettingsControls();
+        saveSpaceSettings();
+      });
+    }
     bindSeek(refs.progress);
   }
 
@@ -517,7 +782,7 @@
     function drawIdle() {
       var d = ensureSize();
       ctx.clearRect(0, 0, d.w, d.h);
-      ctx.fillStyle = "rgba(255,255,255,0.16)";
+      ctx.fillStyle = "rgba(47,217,160,0.22)";
       ctx.fillRect(0, d.h / 2 - 1, d.w, 2);
     }
     function loop() {
@@ -530,14 +795,17 @@
       ctx.clearRect(0, 0, d.w, d.h);
       var gap = 2, bw = (d.w - gap * (n - 1)) / n;
       var mid = d.h / 2;
-      var amp = (state.volume || 0.5) * d.h * 0.42;
+      var amp = (state.volume || 0.5) * mid * 0.9;
+      var grad = ctx.createLinearGradient(0, 0, 0, mid);
+      grad.addColorStop(0, "#6df0c0");
+      grad.addColorStop(1, "#18b98a");
       for (var i = 0; i < n; i++) {
         var gauss = Math.exp(-Math.pow((i - n / 2) / (n / 3.2), 2));
         var target = gauss * amp * (0.6 + Math.random() * 0.4);
         eqBars[i] = eqBars[i] * 0.72 + target * 0.28;
-        var bh = Math.max(2, eqBars[i]);
-        var x = i * (bw + gap), y = mid - bh / 2;
-        ctx.fillStyle = "rgba(201,75,91,0.75)";
+        var bh = Math.min(mid, Math.max(2, eqBars[i]));
+        var x = i * (bw + gap), y = mid - bh;
+        ctx.fillStyle = grad;
         ctx.fillRect(x, y, bw, bh);
       }
       eqAnim = requestAnimationFrame(loop);
@@ -557,6 +825,13 @@
   function applyState(payload) {
     if (!payload) return;
     var next = (typeof payload === "string") ? JSON.parse(payload) : payload;
+    if (next.space_settings && spaceDirty) {
+      // 用户正在实时预览：仅刷新壁纸列表，保留本地预览值，避免被播放进度推送覆盖
+      var local = state.space_settings || { settings: {} };
+      local.settings = local.settings || {};
+      local.wallpapers = (next.space_settings && next.space_settings.wallpapers) || local.wallpapers || [];
+      next.space_settings = local;
+    }
     Object.keys(next).forEach(function (k) { state[k] = next[k]; });
     render();
   }

@@ -5,7 +5,7 @@
 """
 from pathlib import Path
 
-from PyQt5.QtCore import QUrl, Qt, QTimer
+from PyQt5.QtCore import QEvent, QUrl, Qt, QTimer
 from PyQt5.QtGui import QColor
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import (QWebEnginePage, QWebEngineProfile,
@@ -128,11 +128,42 @@ class MusicSpaceWindow(QWidget):
             print(f"[音乐Web] push_state 失败: {exc}")
 
     def show_space(self):
+        if self.isMaximized():
+            self.showNormal()
         self._follow_anchor()
         self.show()
         self.raise_()
         self.activateWindow()
         self._follow_timer.start(250)
+
+    def minimize_space(self):
+        """最小化：暂停跟随锚点，避免 setGeometry 干扰最小化状态。"""
+        self._follow_timer.stop()
+        self.showMinimized()
+
+    def toggle_maximize(self):
+        """最大化 / 还原：最大化时暂停跟随锚点，还原时恢复跟随。"""
+        if self.isMaximized():
+            self.showNormal()
+            self._resume_follow()
+        else:
+            self._follow_timer.stop()
+            self.showMaximized()
+
+    def _resume_follow(self):
+        self._follow_timer.start(250)
+        self._follow_anchor()
+
+    def changeEvent(self, event):
+        """从任务栏恢复 / 还原窗口时恢复锚点跟随。"""
+        super().changeEvent(event)
+        try:
+            if event.type() == QEvent.WindowStateChange:
+                if (self.isVisible() and not self.isMinimized()
+                        and not self.isMaximized()):
+                    self._resume_follow()
+        except Exception:
+            pass
 
     def close_space(self):
         self._follow_timer.stop()

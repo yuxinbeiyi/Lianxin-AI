@@ -18,11 +18,16 @@ class MusicBoxBridge(QObject):
     track_requested = pyqtSignal(int)
     open_space_requested = pyqtSignal()
     close_space_requested = pyqtSignal()
+    minimize_space_requested = pyqtSignal()
+    maximize_space_requested = pyqtSignal()
     toggle_favorite_requested = pyqtSignal()
 
-    def __init__(self, state_provider, parent=None):
+    def __init__(self, state_provider, parent=None,
+                 space_settings_provider=None, space_settings_saver=None):
         super().__init__(parent)
         self._state_provider = state_provider
+        self._space_settings_provider = space_settings_provider
+        self._space_settings_saver = space_settings_saver
 
     @pyqtSlot()
     def togglePlay(self):
@@ -69,6 +74,14 @@ class MusicBoxBridge(QObject):
         self.close_space_requested.emit()
 
     @pyqtSlot()
+    def minimizeMusicSpace(self):
+        self.minimize_space_requested.emit()
+
+    @pyqtSlot()
+    def maximizeMusicSpace(self):
+        self.maximize_space_requested.emit()
+
+    @pyqtSlot()
     def toggleFavorite(self):
         self.toggle_favorite_requested.emit()
 
@@ -79,4 +92,29 @@ class MusicBoxBridge(QObject):
             return json.dumps(data, ensure_ascii=False)
         except Exception as exc:
             print(f"[musicbox] getState failed: {exc}")
+            return "{}"
+
+    @pyqtSlot(result=str)
+    def getSpaceSettings(self):
+        """返回音乐空间设置（壁纸列表 + 当前配置）。"""
+        try:
+            if self._space_settings_provider is None:
+                return "{}"
+            data = self._space_settings_provider() or {}
+            return json.dumps(data, ensure_ascii=False)
+        except Exception as exc:
+            print(f"[musicbox] getSpaceSettings failed: {exc}")
+            return "{}"
+
+    @pyqtSlot(str, float, float, str, result=str)
+    def saveSpaceSettings(self, wallpaper, wallpaper_opacity, content_mask_opacity, fit):
+        """持久化音乐空间设置，返回更新后的设置载荷。"""
+        try:
+            if self._space_settings_saver is None:
+                return "{}"
+            data = self._space_settings_saver(
+                wallpaper, wallpaper_opacity, content_mask_opacity, fit) or {}
+            return json.dumps(data, ensure_ascii=False)
+        except Exception as exc:
+            print(f"[musicbox] saveSpaceSettings failed: {exc}")
             return "{}"
