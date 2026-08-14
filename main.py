@@ -118,11 +118,23 @@ if sys.platform == "win32":
             except Exception:
                 return None
 
+        @staticmethod
+        def _to_str(text):
+            """字节安全归一化：bytes -> str，避免 '\n' in bytes 崩溃。"""
+            if isinstance(text, bytes):
+                try:
+                    return text.decode("utf-8", errors="replace")
+                except Exception:
+                    return text.decode("latin-1", errors="replace")
+            return text
+
         def _drain(self):
             while True:
                 text = self._queue.get()
                 if text is None:
                     break
+                if not isinstance(text, str):
+                    text = self._to_str(text)
                 try:
                     try:
                         self._real.write(text)
@@ -131,17 +143,19 @@ if sys.platform == "win32":
                 except Exception:
                     pass
                 # 批量 flush：每 20 条或遇到换行时才刷终端，大幅减少终端 I/O 阻塞
-                if text and "\n" in text:
-                    try:
+                try:
+                    if text and "\n" in text:
                         self._real.flush()
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
         def write(self, text):
+            if not isinstance(text, str):
+                text = self._to_str(text)
             if self._log is not None:
                 try:
                     self._log.write(text)
-                    # 仅在文本不含换行符时才手动 flush（line-buffered 模式已自动处理 \n）
+                    # 仅在文本不含换行符时才手动 flush（line-buffered 模式已自动处理换行）
                     if "\n" not in text:
                         self._log.flush()
                 except Exception:

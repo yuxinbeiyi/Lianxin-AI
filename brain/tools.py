@@ -1603,7 +1603,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_graph_memory",
-                       "description": "统一搜索长期记忆：同时搜索分类事实和知识图谱实体关系。比 search_memory 更全面——一次调用返回分类事实 + 实体关系边。适用于所有需要回顾信息的问题，尤其是涉及「谁」「什么关系」「哪些关联」的查询。",
+"description": "统一搜索长期记忆：同时搜索分类事实和知识图谱实体关系。比 search_memory 更全面——一次调用返回分类事实 + 实体关系边。适用于所有需要回顾信息的问题，尤其是涉及「谁」「什么关系」「哪些关联」的查询。必填参数名是 keywords（字符串数组），从用户问题提取实体名和关系词填入 keywords；不要使用 query 或 keyword 作为参数名。",
 
             "parameters": {
                 "type": "object",
@@ -5852,7 +5852,7 @@ TOOL_EXECUTORS = {
     "delete_memory":   lambda inp: _delete_memory(inp["keyword"], inp.get("category")),
     "list_memories":   lambda inp: _list_memories(),
     "discover_connections": lambda inp: _discover_connections(inp["entity_name"], inp.get("depth", 2)),
-    "search_graph_memory": lambda inp: _search_graph_memory(inp["keywords"], inp.get("entity_type")),
+    "search_graph_memory": lambda inp: _search_graph_memory((inp.get("keywords") or inp.get("query") or ""), inp.get("entity_type")),
     "query_connected_entities": lambda inp: _query_connected_entities(inp["entity_name"], inp.get("depth", 1)),
     "delete_graph_entity": lambda inp: _delete_graph_entity(inp["entity_name"]),
     "set_expression":  lambda inp: _set_expression(inp["emotion"]),
