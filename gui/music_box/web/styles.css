@@ -522,16 +522,24 @@ svg { fill: currentColor; display: block; }
   align-items: center;
   padding: 14px 24px;
   gap: 12px;
+  justify-content: center;
 }
 .space-title {
-  flex: 1;
+  min-width: 0;
+  max-width: calc(100% - 180px);
   text-align: center;
   font-size: 15px;
   letter-spacing: 6px;
   color: var(--text-mid);
   text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .back {
+  position: absolute;
+  top: 14px;
+  right: 24px;
   background: rgba(255,255,255,0.04);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -674,6 +682,8 @@ svg { fill: currentColor; display: block; }
 
 /* Mode B 黑胶材质：更真实 */
 .full .vinyl {
+  will-change: transform;
+  transform: translateZ(0);
   background:
     radial-gradient(circle at 50% 50%,
       #2a2f3a 0%, #181b23 16%, #0d0f15 42%, #07080c 70%, #0b0d12 100%);
@@ -689,6 +699,7 @@ svg { fill: currentColor; display: block; }
       rgba(0,0,0,0.22) 2px, rgba(0,0,0,0.22) 3px);
 }
 .full .vinyl-sheen {
+  pointer-events: none;
   background: conic-gradient(from 20deg,
       rgba(255,255,255,0.07), transparent 18%,
       transparent 76%, rgba(255,255,255,0.05));

@@ -449,23 +449,42 @@
   }
 
   /* ---------- 黑胶旋转：JS 驱动（暂停时保持当前角度不归位） ---------- */
-  var vinylSpin = { angle: 0, raf: null, playing: false, last: 0 };
+  var vinylSpin = { angle: 0, raf: null, playing: false, last: 0, lastFrameAt: 0 };
+  // Keep the time-based 60fps motion, but use a calmer half-speed visual rotation.
+  var VINYL_RPM = 3.267;
+  var VINYL_DEG_PER_SEC = VINYL_RPM * 360 / 60;
+  var VINYL_FRAME_INTERVAL = 1000 / 60;
   function applyVinylTransform() {
-    if (refs.vinyl) refs.vinyl.style.transform = "rotate(" + vinylSpin.angle + "deg)";
+    if (refs.vinyl) refs.vinyl.style.transform = "rotate(" + vinylSpin.angle.toFixed(3) + "deg) translateZ(0)";
   }
   function startVinylSpin() {
     if (vinylSpin.raf) return;
     vinylSpin.playing = true;
     vinylSpin.last = 0;
+    vinylSpin.lastFrameAt = 0;
     function tick(ts) {
+      if (!vinylSpin.playing) {
+        vinylSpin.raf = null;
+        vinylSpin.last = 0;
+        return;
+      }
+      if (document.hidden) {
+        vinylSpin.last = 0;
+        vinylSpin.raf = requestAnimationFrame(tick);
+        return;
+      }
+      if (vinylSpin.lastFrameAt && ts - vinylSpin.lastFrameAt < VINYL_FRAME_INTERVAL) {
+        vinylSpin.raf = requestAnimationFrame(tick);
+        return;
+      }
       if (vinylSpin.last) {
-        var dt = (ts - vinylSpin.last) / 1000;
-        vinylSpin.angle = (vinylSpin.angle + (360 / 30) * dt) % 360;
+        var dt = Math.min((ts - vinylSpin.last) / 1000, 0.05);
+        vinylSpin.angle = (vinylSpin.angle + VINYL_DEG_PER_SEC * dt) % 360;
       }
       vinylSpin.last = ts;
+      vinylSpin.lastFrameAt = ts;
       applyVinylTransform();
-      if (vinylSpin.playing) vinylSpin.raf = requestAnimationFrame(tick);
-      else { vinylSpin.raf = null; vinylSpin.last = 0; }
+      vinylSpin.raf = requestAnimationFrame(tick);
     }
     vinylSpin.raf = requestAnimationFrame(tick);
   }
@@ -473,6 +492,7 @@
     vinylSpin.playing = false;
     if (vinylSpin.raf) { cancelAnimationFrame(vinylSpin.raf); vinylSpin.raf = null; }
     vinylSpin.last = 0;
+    vinylSpin.lastFrameAt = 0;
     applyVinylTransform();
   }
   function setVinylSpin(playing) {
