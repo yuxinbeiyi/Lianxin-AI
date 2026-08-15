@@ -547,19 +547,7 @@ svg { fill: currentColor; display: block; }
 }
 .back:hover { color: var(--text-hi); border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.08); }
 .back-arrow { font-size: 15px; line-height: 0; }
-.space-win-btns { display: flex; align-items: center; gap: 8px; min-width: 74px; justify-content: flex-end; }
-.win-btn {
-  width: 30px; height: 30px;
-  border: none; border-radius: 8px;
-  background: rgba(255,255,255,0.05);
-  color: var(--text-mid);
-  cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: color .15s, background .15s, border-color .15s;
-}
-.win-btn svg { width: 13px; height: 13px; }
-.win-btn:hover { color: var(--mint-hi); background: rgba(47,217,160,0.14); }
-.win-btn.close:hover { color: #ff7a8a; background: rgba(255,90,120,0.16); }
+.space-win-btns { min-width: 0; }
 
 /* ---------- 玻璃面板 ---------- */
 .glass {

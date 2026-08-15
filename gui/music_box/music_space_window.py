@@ -5,7 +5,7 @@
 """
 from pathlib import Path
 
-from PyQt5.QtCore import QEvent, QUrl, Qt, QTimer
+from PyQt5.QtCore import QEvent, QUrl, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import (QWebEnginePage, QWebEngineProfile,
@@ -26,6 +26,8 @@ class MusicSpacePage(QWebEnginePage):
 
 class MusicSpaceWindow(QWidget):
     """沉浸式音乐空间主窗口"""
+
+    space_visibility_changed = pyqtSignal(bool)
 
     def __init__(self, bridge, anchor=None, parent=None):
         super().__init__(parent)
@@ -140,6 +142,13 @@ class MusicSpaceWindow(QWidget):
         """最小化：暂停跟随锚点，避免 setGeometry 干扰最小化状态。"""
         self._follow_timer.stop()
         self.showMinimized()
+        self.space_visibility_changed.emit(False)
+        if self._anchor is not None:
+            try:
+                self._anchor.activateWindow()
+                self._anchor.raise_()
+            except Exception:
+                pass
 
     def toggle_maximize(self):
         """最大化 / 还原：最大化时暂停跟随锚点，还原时恢复跟随。"""
@@ -162,12 +171,20 @@ class MusicSpaceWindow(QWidget):
                 if (self.isVisible() and not self.isMinimized()
                         and not self.isMaximized()):
                     self._resume_follow()
+                    self.space_visibility_changed.emit(True)
         except Exception:
             pass
 
     def close_space(self):
         self._follow_timer.stop()
         self.hide()
+        self.space_visibility_changed.emit(False)
+        if self._anchor is not None:
+            try:
+                self._anchor.activateWindow()
+                self._anchor.raise_()
+            except Exception:
+                pass
 
     def shutdown(self):
         self._follow_timer.stop()

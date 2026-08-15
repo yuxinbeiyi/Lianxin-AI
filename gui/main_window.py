@@ -4308,6 +4308,8 @@ class MainWindow(QMainWindow):
         if self._music_space_window is None:
             self._music_space_window = MusicSpaceWindow(self._music_box_bridge, self, self)
             self._music_space_window.set_anchor(self)
+            self._music_space_window.space_visibility_changed.connect(
+                self._on_music_space_visibility_changed)
         self._music_space_window.show_space()
         # 全屏音乐空间已覆盖主窗口，隐藏主界面嵌入式音乐盒
         # （QWebEngineView 为原生子窗口，不隐藏会射穿到最上层）
@@ -4320,18 +4322,6 @@ class MainWindow(QMainWindow):
         if self._music_space_window is not None:
             self._music_space_window.close_space()
 
-        widget = getattr(self, "_music_box_widget", None)
-        if widget is None:
-            return
-        # 关闭音乐空间后，恢复主界面嵌入式音乐盒的显示
-        try:
-            if self._char_widget.is_function_expanded():
-                widget.hide()
-                return
-        except Exception:
-            pass
-        widget.show()
-
     def _minimize_music_space(self):
         """最小化音乐空间窗口"""
         space = getattr(self, "_music_space_window", None)
@@ -4343,18 +4333,39 @@ class MainWindow(QMainWindow):
         space = getattr(self, "_music_space_window", None)
         if space is not None:
             space.toggle_maximize()
-
         widget = getattr(self, "_music_box_widget", None)
         if widget is None:
             return
-        # 如果功能区覆盖面板仍打开，音乐盒仍需保持隐藏
-        try:
-            if self._char_widget.is_function_expanded():
-                widget.hide()
-                return
-        except Exception:
-            pass
-        widget.show()
+        if space is not None and space.isMaximized():
+            widget.hide()
+        else:
+            try:
+                if self._char_widget.is_function_expanded():
+                    widget.hide()
+                    return
+            except Exception:
+                pass
+            widget.show()
+
+    def _on_music_space_visibility_changed(self, visible: bool):
+        """音乐空间可见性变化时，统一控制嵌入式音乐盒的显隐
+
+        - 音乐空间可见（正常/最大化/从任务栏恢复）→ 隐藏音乐盒
+        - 音乐空间不可见（最小化/关闭）→ 显示音乐盒
+        """
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is None:
+            return
+        if visible:
+            widget.hide()
+        else:
+            try:
+                if self._char_widget.is_function_expanded():
+                    widget.hide()
+                    return
+            except Exception:
+                pass
+            widget.show()
 
 
 

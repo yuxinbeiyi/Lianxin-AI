@@ -604,24 +604,6 @@
         if (bridge) bridge.closeMusicSpace();
       });
     }
-    if (refs.winMinBtn) {
-      refs.winMinBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (bridge) bridge.minimizeMusicSpace();
-      });
-    }
-    if (refs.winMaxBtn) {
-      refs.winMaxBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (bridge) bridge.maximizeMusicSpace();
-      });
-    }
-    if (refs.winCloseBtn) {
-      refs.winCloseBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (bridge) bridge.closeMusicSpace();
-      });
-    }
     if (refs.favInfoBtn) {
       refs.favInfoBtn.addEventListener("click", function (e) {
         e.stopPropagation();
