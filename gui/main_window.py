@@ -4281,6 +4281,29 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 print(f"[音乐盒] Mode B 推送失败: {exc}")
 
+    def _push_music_position(self):
+        """轻量级推送：仅推送播放位置，不序列化播放列表/壁纸/设置等重数据"""
+        try:
+            payload = json.dumps({
+                "playing": bool(getattr(self, "music_playing", False)) and bool(getattr(self, "playlist", None)),
+                "position": getattr(self, "current_position", 0),
+                "duration": getattr(self, "current_duration", 0),
+            }, ensure_ascii=False)
+        except Exception:
+            return
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is not None:
+            try:
+                widget.push_state(payload)
+            except Exception:
+                pass
+        space = getattr(self, "_music_space_window", None)
+        if space is not None:
+            try:
+                space.push_state(payload)
+            except Exception:
+                pass
+
     def _set_music_volume(self, volume: float):
         """设置音量（0~1），来自前端音量滑块"""
         try:
@@ -4408,8 +4431,8 @@ class MainWindow(QMainWindow):
             self._update_time_display(pos)
 
     def _update_time_display(self, current_sec):
-        """时间标签已由前端渲染，这里只需刷新状态"""
-        self._push_music_state()
+        """时间标签已由前端渲染，仅轻量推送位置（避免每500ms全量重渲染）"""
+        self._push_music_position()
     def _seek_to_seconds(self, seconds: float):
         """按秒跳转（来自前端 seek 指令）"""
         try:

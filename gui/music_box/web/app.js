@@ -513,23 +513,60 @@
     }
   }
 
+  /* ---------- 脏标志（位掩码） ---------- */
+  var D_PROGRESS  = 1 << 0;
+  var D_CONTROL   = 1 << 1;
+  var D_TURNTABLE = 1 << 2;
+  var D_SONG      = 1 << 3;
+  var D_VOLUME    = 1 << 4;
+  var D_MODE      = 1 << 5;
+  var D_FAVORITE  = 1 << 6;
+  var D_PLAYLIST  = 1 << 7;
+  var D_SETTINGS  = 1 << 8;
+  var D_ERROR     = 1 << 9;
+  var DIRTY_ALL   = (1 << 10) - 1;
+
+  function computeDirty(next) {
+    var d = 0;
+    if ("position" in next && next.position !== state.position) d |= D_PROGRESS;
+    if ("duration" in next && next.duration !== state.duration) d |= D_PROGRESS;
+    if ("playing" in next && next.playing !== state.playing) d |= (D_CONTROL | D_TURNTABLE | D_PROGRESS);
+    if ("has_playlist" in next && next.has_playlist !== state.has_playlist) d |= (D_CONTROL | D_TURNTABLE);
+    if ("title" in next && next.title !== state.title) d |= D_SONG;
+    if ("artist" in next && next.artist !== state.artist) d |= D_SONG;
+    if ("album" in next && next.album !== state.album) d |= D_SONG;
+    if ("current_index" in next && next.current_index !== state.current_index) d |= D_SONG;
+    if ("volume" in next && next.volume !== state.volume) d |= D_VOLUME;
+    if ("loop_mode" in next && next.loop_mode !== state.loop_mode) d |= D_MODE;
+    if ("favorite" in next && next.favorite !== state.favorite) d |= D_FAVORITE;
+    if ("playlist" in next && next.playlist !== state.playlist) d |= D_PLAYLIST;
+    if ("space_settings" in next && next.space_settings !== state.space_settings) d |= D_SETTINGS;
+    if ("space_background" in next && next.space_background !== state.space_background) d |= D_SETTINGS;
+    if ("wallpaper" in next && next.wallpaper !== state.wallpaper) d |= D_SETTINGS;
+    if ("error" in next && next.error !== state.error) d |= D_ERROR;
+    return d || D_PROGRESS;
+  }
+
   /* ---------- 总渲染 ---------- */
-  function render() {
-    renderControlIcons();
-    renderProgress();
-    renderVolume();
-    renderSongInfo();
-    renderTurntable();
-    renderModeButton(refs.modeBtn);
-    renderFavorite();
-    renderSpaceSettings();
-    renderSongMeta();
-    restartEqAnim();
-    renderError();
-    if (MODE === "compact") {
-      renderPlaylistInto(refs.popList, refs.popEmpty);
-    } else {
-      renderPlaylistInto(refs.list, refs.listEmpty);
+  function render(dirty) {
+    if (!dirty) dirty = DIRTY_ALL;
+    if (dirty & D_CONTROL)   renderControlIcons();
+    if (dirty & D_PROGRESS)  renderProgress();
+    if (dirty & D_VOLUME)    renderVolume();
+    if (dirty & D_SONG)      renderSongInfo();
+    if (dirty & D_TURNTABLE) renderTurntable();
+    if (dirty & D_MODE)      renderModeButton(refs.modeBtn);
+    if (dirty & D_FAVORITE)  renderFavorite();
+    if (dirty & D_SETTINGS)  renderSpaceSettings();
+    if (dirty & D_SONG)      renderSongMeta();
+    if (dirty & D_TURNTABLE) restartEqAnim();
+    if (dirty & D_ERROR)     renderError();
+    if (dirty & D_PLAYLIST) {
+      if (MODE === "compact") {
+        renderPlaylistInto(refs.popList, refs.popEmpty);
+      } else {
+        renderPlaylistInto(refs.list, refs.listEmpty);
+      }
     }
   }
 
@@ -808,14 +845,14 @@
     if (!payload) return;
     var next = (typeof payload === "string") ? JSON.parse(payload) : payload;
     if (next.space_settings && spaceDirty) {
-      // 用户正在实时预览：仅刷新壁纸列表，保留本地预览值，避免被播放进度推送覆盖
       var local = state.space_settings || { settings: {} };
       local.settings = local.settings || {};
       local.wallpapers = (next.space_settings && next.space_settings.wallpapers) || local.wallpapers || [];
       next.space_settings = local;
     }
+    var dirty = computeDirty(next);
     Object.keys(next).forEach(function (k) { state[k] = next[k]; });
-    render();
+    render(dirty);
   }
 
   /* ---------- 初始化 ---------- */
