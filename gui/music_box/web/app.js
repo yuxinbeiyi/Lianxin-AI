@@ -121,10 +121,7 @@
         vinylCol: qs(".vinyl-col"),
         spaceBg: qs("#spaceBg"),
         vinylCover: qs("#vinylCoverB"),
-        heartInfo: qs("#heartInfo"),
         heartBottom: qs("#heartBottom"),
-        favInfoBtn: qs("#favInfoBtn"),
-        favInfoLabel: qs("#favInfoLabel"),
         favBottomBtn: qs("#favBottomBtn"),
         tabAll: qs("#tabAll"),
         tabFav: qs("#tabFav"),
@@ -222,10 +219,7 @@
   /* ---------- 渲染：收藏状态 ---------- */
   function renderFavorite() {
     var fav = !!state.favorite;
-    if (refs.heartInfo) refs.heartInfo.classList.toggle("on", fav);
     if (refs.heartBottom) refs.heartBottom.classList.toggle("on", fav);
-    if (refs.favInfoBtn) refs.favInfoBtn.classList.toggle("on", fav);
-    if (refs.favInfoLabel) refs.favInfoLabel.textContent = fav ? "已收藏" : "收藏";
     if (refs.favBottomBtn) refs.favBottomBtn.title = fav ? "取消收藏" : "收藏";
   }
 
@@ -669,12 +663,6 @@
         if (bridge) bridge.closeMusicSpace();
       });
     }
-    if (refs.favInfoBtn) {
-      refs.favInfoBtn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (bridge) bridge.toggleFavorite();
-      });
-    }
     if (refs.favBottomBtn) {
       refs.favBottomBtn.addEventListener("click", function (e) {
         e.stopPropagation();
@@ -834,21 +822,29 @@
     }
     function loop() {
       if (!eqIsPlaying()) {
-        eqAnim = null;
-        drawIdle();
-        return;
+        var fading = false;
+        for (var f = 0; f < eqBars.length; f++) {
+          eqBars[f] *= 0.82;
+          if (eqBars[f] > 0.5) fading = true;
+        }
+        if (!fading) {
+          eqAnim = null;
+          drawIdle();
+          return;
+        }
       }
       var d = ensureSize();
       ctx.clearRect(0, 0, d.w, d.h);
       var gap = 2, bw = (d.w - gap * (n - 1)) / n;
       var mid = d.h / 2;
       var amp = (state.volume || 0.5) * mid * 0.9;
-      var grad = ctx.createLinearGradient(0, 0, 0, mid);
-      grad.addColorStop(0, "#6df0c0");
+      var grad = ctx.createLinearGradient(0, 0, 0, d.h);
+      grad.addColorStop(0, "#c1ffe8");
+      grad.addColorStop(0.5, "#6df0c0");
       grad.addColorStop(1, "#18b98a");
       for (var i = 0; i < n; i++) {
         var gauss = Math.exp(-Math.pow((i - n / 2) / (n / 3.2), 2));
-        var target = gauss * amp * (0.6 + Math.random() * 0.4);
+        var target = eqIsPlaying() ? gauss * amp * (0.6 + Math.random() * 0.4) : 0;
         eqBars[i] = eqBars[i] * 0.72 + target * 0.28;
         var bh = Math.min(mid, Math.max(2, eqBars[i]));
         var x = i * (bw + gap), y = mid - bh;
@@ -858,7 +854,7 @@
       eqAnim = requestAnimationFrame(loop);
     }
     drawIdle();
-    if (eqIsPlaying()) loop();
+    if (eqIsPlaying() || eqBars.some(function (bar) { return bar > 0.5; })) loop();
   }
   function restartEqAnim() {
     if (MODE !== "full" || !refs.eqCanvas) return;

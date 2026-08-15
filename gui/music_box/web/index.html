@@ -102,10 +102,6 @@
       <div class="song-sub big" id="subB"></div>
       <div class="song-meta" id="albumB"></div>
       <div class="song-lyric" id="lyricB">在某个温柔的夜晚，听见一首旧歌。</div>
-      <button class="fav-btn" id="favInfoBtn" title="收藏 / 取消收藏">
-        <span class="heart" id="heartInfo"></span>
-        <span class="fav-label" id="favInfoLabel">收藏</span>
-      </button>
     </div>
 
     <!-- 中：黑胶播放器 -->
@@ -125,10 +121,6 @@
       <div class="eq-wrap">
         <canvas id="eqCanvas"></canvas>
         <div class="eq-idle" id="eqIdleB">聆听音乐中…</div>
-      </div>
-      <div class="now-card">
-        <div class="now-thumb" id="nowThumb"></div>
-        <div class="now-title" id="nowTitleB"></div>
       </div>
     </div>
 
@@ -154,17 +146,23 @@
       </div>
       <span class="time" id="durTimeB">00:00</span>
     </div>
-    <div class="controls wide">
-      <button class="ctl mode" id="modeBtn" title="播放模式"></button>
-      <button class="ctl prev" id="prevB" title="上一首"></button>
-      <button class="ctl play big" id="playB" title="播放 / 暂停"></button>
-      <button class="ctl next" id="nextB" title="下一首"></button>
-      <div class="vol-wide">
-        <button class="vol-btn" id="volBtnB" title="音量"></button>
-        <input type="range" id="volSliderB" min="0" max="100" value="50" step="1">
-        <button class="ctl fav-ctl" id="favBottomBtn" title="收藏 / 取消收藏">
-          <span class="heart small" id="heartBottom"></span>
-        </button>
+    <div class="controls-row">
+      <div class="now-card">
+        <div class="now-thumb" id="nowThumb"></div>
+        <div class="now-title" id="nowTitleB"></div>
+      </div>
+      <div class="controls wide">
+        <button class="ctl mode" id="modeBtn" title="播放模式"></button>
+        <button class="ctl prev" id="prevB" title="上一首"></button>
+        <button class="ctl play big" id="playB" title="播放 / 暂停"></button>
+        <button class="ctl next" id="nextB" title="下一首"></button>
+        <div class="vol-wide">
+          <button class="vol-btn" id="volBtnB" title="音量"></button>
+          <input type="range" id="volSliderB" min="0" max="100" value="50" step="1">
+          <button class="ctl fav-ctl" id="favBottomBtn" title="收藏 / 取消收藏">
+            <span class="heart small" id="heartBottom">♥</span>
+          </button>
+        </div>
       </div>
     </div>
     <button class="space-settings-gear" id="settingsBtn" title="音乐空间设置">

@@ -37,7 +37,9 @@ class MusicSpaceWindow(QWidget):
         self._pending_payload = ""
         self._last_geo = None
 
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # Keep the space above the parent window, while allowing other Windows
+        # apps to cover it without fighting the compositor when focus changes.
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.setWindowTitle("莲心音乐空间")
 
@@ -95,6 +97,12 @@ class MusicSpaceWindow(QWidget):
         if anchor is None:
             return
         try:
+            # Never resize/reposition the QWebEngine window while another app
+            # owns focus. Repeated native geometry changes cause compositor
+            # flicker when Windows overlays an external window.
+            if self.isVisible() and not self.isActiveWindow():
+                self._follow_timer.stop()
+                return
             if not anchor.isVisible():
                 return
             geo = anchor.frameGeometry()
@@ -172,6 +180,11 @@ class MusicSpaceWindow(QWidget):
                         and not self.isMaximized()):
                     self._resume_follow()
                     self.space_visibility_changed.emit(True)
+            elif event.type() == QEvent.ActivationChange:
+                if self.isActiveWindow():
+                    self._resume_follow()
+                else:
+                    self._follow_timer.stop()
         except Exception:
             pass
 
