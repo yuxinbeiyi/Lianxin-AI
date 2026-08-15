@@ -628,6 +628,14 @@
 
   /* ---------- 事件绑定 ---------- */
   function bindEvents() {
+    if (MODE === "full") {
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" || e.keyCode === 27) {
+          e.preventDefault();
+          if (bridge) bridge.closeMusicSpace();
+        }
+      });
+    }
     if (refs.play) {
       refs.play.addEventListener("click", function () {
         if (bridge) bridge.togglePlay();

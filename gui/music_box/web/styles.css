@@ -74,8 +74,11 @@ svg { fill: currentColor; display: block; }
   position: absolute;
   top: 0; right: 0; bottom: 0; left: 0;
   border-radius: inherit;
-  padding: 1.5px;
-  background: linear-gradient(180deg, #7ff0cb, #2fd9a0 45%, #14b384);
+  padding: 0.75px;
+  background: linear-gradient(180deg,
+    rgba(190, 255, 230, 0.82),
+    rgba(109, 240, 192, 0.58) 45%,
+    rgba(78, 190, 157, 0.5));
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
