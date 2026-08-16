@@ -211,6 +211,42 @@ class _VolumeWave(QWidget):
             painter.drawRoundedRect(int(x), int(y), 4, int(height), 2, 2)
 
 
+class _ConnectionAnimation(QWidget):
+    """Minimal connection indicator shown before the portrait is available."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._advance)
+
+    def set_active(self, active: bool):
+        if active:
+            self._timer.start(90)
+        else:
+            self._timer.stop()
+        self.setVisible(active)
+        self.update()
+
+    def _advance(self):
+        self._phase = (self._phase + 1) % 24
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QColor(255, 188, 210, 210))
+        center_y = self.height() // 2
+        points = []
+        for x in range(0, self.width(), 5):
+            wave = ((x + self._phase * 9) % 72) / 72.0
+            y = center_y + int(__import__('math').sin(wave * 6.283) * 15)
+            points.append((x, y))
+        for first, second in zip(points, points[1:]):
+            painter.drawLine(first[0], first[1], second[0], second[1])
+
+
 class VideoCallWindow(QDialog):
     """Video-call presentation. It remains independent of voice backends."""
 
@@ -221,16 +257,16 @@ class VideoCallWindow(QDialog):
     chat_requested = pyqtSignal()
 
     _STATE_TEXT = {
-        "CONNECTING": "正在接通莲心…",
+        "CONNECTING": "莲心待机中...",
         "LISTENING": "可以直接说话",
-        "USER_SPEAKING": "莲心正在听你说话",
+        "USER_SPEAKING": "莲心倾听中...",
         "PROCESSING": "莲心思考中…",
         "SPEAKING": "莲心正在说话",
         "ERROR": "语音识别暂不可用",
         "ENDED": "通话已结束",
     }
 
-    def __init__(self, parent=None, preview_mode: bool = False):
+    def __init__(self, parent=None, preview_mode: bool = False, user_name: str = "用户"):
         super().__init__(parent)
         self.setWindowTitle("莲心 AI 视频聊天预览")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -245,6 +281,7 @@ class VideoCallWindow(QDialog):
         self._host_closing = False
         self._preview_mode = preview_mode
         self._drag_offset = None
+        self._user_name = str(user_name or "用户")
         self._loading_phase = 0
         self._loading_timer = QTimer(self)
         self._loading_timer.timeout.connect(self._update_loading_text)
@@ -311,6 +348,14 @@ class VideoCallWindow(QDialog):
         self._subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._subtitle.setWordWrap(True)
         self._subtitle.hide()
+        self._connection_animation = _ConnectionAnimation(self._surface)
+        self._connection_label = QLabel("莲心正在连接FunASR，请稍等...", self._surface)
+        self._connection_label.setAlignment(Qt.AlignCenter)
+        self._connection_label.setStyleSheet(
+            "color: #FFD2DF; background: transparent; font-size: 12pt;"
+        )
+        self._connection_animation.hide()
+        self._connection_label.hide()
         self._user_tile = _UserTile(avatar, self._surface)
         overlay.addWidget(self._user_tile, 0, Qt.AlignRight)
         self._volume_wave = _VolumeWave(self._surface)
@@ -320,7 +365,8 @@ class VideoCallWindow(QDialog):
         self._surface._media_frame.raise_()
         self._surface._video.lower()
         self._surface._poster.lower()
-        for widget in (self._top_bar, self._subtitle, self._user_tile, self._volume_wave):
+        for widget in (self._top_bar, self._subtitle, self._user_tile, self._volume_wave,
+                       self._connection_animation, self._connection_label):
             widget.raise_()
 
         controls = QFrame(self)
@@ -337,7 +383,12 @@ class VideoCallWindow(QDialog):
             "•••\n演示状态" if self._preview_mode else "聊天\n窗口",
             self._cycle_demo_state if self._preview_mode else self.chat_requested.emit,
         )
-        self._hangup = self._button("结束\n通话", self._request_hangup)
+        self._hangup = self._button("☎", self._request_hangup)
+        self._hangup.setToolTip("挂断电话")
+        self._hangup.setStyleSheet(
+            "QPushButton { color: white; background: #d94b64; border: none; "
+            "border-radius: 29px; font-size: 24pt; } QPushButton:hover { background: #ef657c; }"
+        )
         row.addStretch(1)
         for button in (self._mic, self._speaker, self._subtitles, self._more, self._hangup):
             row.addWidget(button)
@@ -354,6 +405,14 @@ class VideoCallWindow(QDialog):
             subtitle_width = min(410, max(250, int(self._surface.width() * 0.40)))
             self._subtitle.setGeometry(
                 28, max(112, self._surface.height() - 122), subtitle_width, 86
+            )
+            self._connection_animation.setGeometry(
+                max(80, (self._surface.width() - 250) // 2),
+                max(180, self._surface.height() // 2 - 34), 250, 48
+            )
+            self._connection_label.setGeometry(
+                max(40, (self._surface.width() - 360) // 2),
+                max(180, self._surface.height() // 2 + 24), 360, 32
             )
 
     def _button(self, text: str, callback):
@@ -375,6 +434,8 @@ class VideoCallWindow(QDialog):
     def set_state(self, state: str):
         state = state.upper()
         self._state.setText(self._STATE_TEXT.get(state, state))
+        if state != "CONNECTING":
+            self._set_connection_overlay(False)
         if state in self._video_paths:
             self._surface.play_state(state)
         if state == "USER_SPEAKING":
@@ -403,7 +464,9 @@ class VideoCallWindow(QDialog):
         """Show a connection animation while the speech model is loading."""
         if not active:
             self._loading_timer.stop()
+            self._set_connection_overlay(False)
             return
+        self._set_connection_overlay(True)
         self._loading_phase = 0
         self._loading_timer.start(180)
         self._update_loading_text()
@@ -412,6 +475,16 @@ class VideoCallWindow(QDialog):
         marks = ("·  ", "·· ", "···", " ··", "  ·")
         self._state.setText("正在接通" + marks[self._loading_phase % len(marks)])
         self._loading_phase += 1
+
+    def _set_connection_overlay(self, active: bool):
+        self._surface._media_frame.setVisible(not active)
+        self._surface._background.setVisible(not active)
+        self._connection_animation.set_active(active)
+        self._connection_label.setVisible(active)
+        if active:
+            self._surface.setStyleSheet("QFrame { background: #050507; border: none; }")
+        else:
+            self._surface.setStyleSheet("QFrame { background: #09090b; border: none; }")
 
     def _cycle_demo_state(self):
         states = ["USER_SPEAKING", "PROCESSING", "SPEAKING", "LISTENING"]
@@ -447,7 +520,7 @@ class VideoCallWindow(QDialog):
         # Keep playback diagnostics out of the portrait area. The first phase
         # must remain visually usable even when Qt's local MP4 backend is not
         # available, so the poster remains the primary fallback.
-        self._state.setText("静态画面")
+        self._state.setText("莲心待机中...")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.pos().y() <= 104:

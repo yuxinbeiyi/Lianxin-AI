@@ -3,6 +3,7 @@
 from PyQt5.QtCore import QObject
 
 from gui.video_call_window import VideoCallWindow
+from config import get_user_name
 from utils.resource_path import get_asset_path
 
 
@@ -25,7 +26,9 @@ class VideoCallPresentationAdapter(QObject):
             self._window.raise_()
             self._window.activateWindow()
             return
-        self._window = VideoCallWindow(self._host, preview_mode=False)
+        self._window = VideoCallWindow(
+            self._host, preview_mode=False, user_name=get_user_name()
+        )
         self._window.hangup_requested.connect(self._host._exit_standby)
         self._window.microphone_toggled.connect(self._host._on_video_call_mic_toggled)
         self._window.speaker_toggled.connect(self._host._on_video_call_speaker_toggled)
@@ -63,7 +66,7 @@ class VideoCallPresentationAdapter(QObject):
     def set_user_transcript(self, text: str):
         if self.is_open:
             self._window.set_user_speaking(False)
-            self._window.set_subtitle(text, "你")
+            self._window.set_subtitle(text, self._window._user_name)
 
     def set_tts_started(self, text: str):
         if self.is_open:
@@ -100,7 +103,9 @@ class VideoCallPresentationAdapter(QObject):
             self._connecting_sound = pygame.mixer.Sound(str(path))
             from utils.settings import get_settings
             self._connecting_sound.set_volume(get_settings().sfx_volume)
-            self._connecting_channel = self._connecting_sound.play()
+            # Keep the connection cue audible for the entire model warm-up.
+            # It is stopped explicitly when FunASR becomes ready or the call closes.
+            self._connecting_channel = self._connecting_sound.play(loops=-1)
         except Exception:
             self._connecting_sound = None
             self._connecting_channel = None
