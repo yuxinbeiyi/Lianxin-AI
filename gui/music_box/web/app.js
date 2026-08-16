@@ -133,6 +133,8 @@
         settingsPanel: qs("#settingsPanel"),
         settingsClose: qs("#settingsClose"),
         settingsStatus: qs("#settingsStatus"),
+        importMusicBtn: qs("#importMusicBtn"),
+        quarantineMusicBtn: qs("#quarantineMusicBtn"),
         spaceWallpaperStrip: qs("#spaceWallpaperStrip"),
         spaceWallpaperOpacity: qs("#spaceWallpaperOpacity"),
         spaceWallpaperOpacityValue: qs("#spaceWallpaperOpacityValue"),
@@ -727,6 +729,16 @@
             !refs.volPop.contains(e.target) && e.target !== refs.volBtn) {
           refs.volPop.hidden = true;
         }
+      });
+    }
+    if (refs.importMusicBtn) {
+      refs.importMusicBtn.addEventListener("click", function () {
+        if (bridge && bridge.importMusic) bridge.importMusic();
+      });
+    }
+    if (refs.quarantineMusicBtn) {
+      refs.quarantineMusicBtn.addEventListener("click", function () {
+        if (bridge && bridge.manageQuarantine) bridge.manageQuarantine();
       });
     }
     if (refs.settingsBtn) {

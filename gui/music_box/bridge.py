@@ -21,6 +21,8 @@ class MusicBoxBridge(QObject):
     minimize_space_requested = pyqtSignal()
     maximize_space_requested = pyqtSignal()
     toggle_favorite_requested = pyqtSignal()
+    import_music_requested = pyqtSignal()
+    quarantine_requested = pyqtSignal()
 
     def __init__(self, state_provider, parent=None,
                  space_settings_provider=None, space_settings_saver=None):
@@ -84,6 +86,14 @@ class MusicBoxBridge(QObject):
     @pyqtSlot()
     def toggleFavorite(self):
         self.toggle_favorite_requested.emit()
+
+    @pyqtSlot()
+    def importMusic(self):
+        self.import_music_requested.emit()
+
+    @pyqtSlot()
+    def manageQuarantine(self):
+        self.quarantine_requested.emit()
 
     @pyqtSlot(result=str)
     def getState(self):

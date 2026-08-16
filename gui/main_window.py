@@ -10,11 +10,11 @@ from ctypes import wintypes
 from typing import Optional
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
-    QMessageBox, QDialog, QTextEdit, QMenu, QCheckBox, QSizeGrip, QShortcut
+    QMessageBox, QDialog, QTextEdit, QMenu, QCheckBox, QSizeGrip, QShortcut, QFileDialog, QProgressDialog
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QAbstractNativeEventFilter, QPoint, QObject,
-    QThread, pyqtSignal, QTime, QSettings,
+    QThread, pyqtSignal, QTime, QSettings, QFileSystemWatcher,
 )
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QKeySequence
 from pathlib import Path
@@ -68,6 +68,7 @@ import random
 from utils.sound import play_sound
 import time
 from utils.music_stats import MusicStats
+from utils.music_library import MusicLibrary, MusicImportWorker
 from gui.note_dialog import NoteDialog
 from utils.reminder_manager import ReminderManager
 from gui.reminder_dialog import ReminderDialog
@@ -471,6 +472,7 @@ class MainWindow(QMainWindow):
 
         # 音乐播放器变量区域
         self.playlist = []           # 音乐文件路径列表
+        self._music_library = MusicLibrary()
         self.current_track_index = 0
         self.music_playing = False
         self.loop_mode = "list"          # list / one / random
@@ -1039,6 +1041,8 @@ class MainWindow(QMainWindow):
             space_settings_provider=self._music_space_settings,
             space_settings_saver=self._save_music_space_settings,
         )
+        self._music_box_bridge.import_music_requested.connect(self._import_music_files)
+        self._music_box_bridge.quarantine_requested.connect(self._manage_music_quarantine)
         self._music_box_widget = MusicBoxWidget(self._music_box_bridge, self)
         self._char_widget.install_music_box_view(self._music_box_widget)
         self._music_space_window = None   # Mode B 懒加载
@@ -3985,11 +3989,106 @@ class MainWindow(QMainWindow):
         """扫描 assets/music/ 目录下的 mp3 文件"""
         from utils.resource_path import get_asset_path
         music_dir = get_asset_path("music")
+        user_dir = getattr(self, "_music_library", None)
         if music_dir.exists():
             self.playlist = sorted(music_dir.glob("*.mp3"))
         else:
             self.playlist = []
+        if user_dir is not None and user_dir.normalized.exists():
+            self.playlist.extend(sorted(user_dir.normalized.glob("*.mp3")))
+            self.playlist.sort(key=lambda path: path.name.lower())
         self._update_music_ui()
+
+    def _import_music_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "导入音乐", "", "音频文件 (*.mp3 *.wav *.m4a *.flac *.ogg *.aac)"
+        )
+        if not paths:
+            return
+        self._queue_music_import(paths)
+
+    def _queue_music_import(self, paths):
+        if not paths:
+            return
+        if not hasattr(self, "_music_library"):
+            self._music_library = MusicLibrary()
+        self._music_watcher = QFileSystemWatcher(self)
+        self._music_watcher.addPath(str(self._music_library.originals))
+        self._music_watch_timer = QTimer(self)
+        self._music_watch_timer.setSingleShot(True)
+        self._music_watch_timer.setInterval(900)
+        self._music_watch_timer.timeout.connect(self._scan_import_folder)
+        self._music_watcher.directoryChanged.connect(lambda _path: self._music_watch_timer.start())
+        if getattr(self, "_music_import_thread", None) is not None:
+            return
+        self._music_import_progress = QProgressDialog("准备导入音乐...", "取消", 0, len(paths), self)
+        self._music_import_progress.setWindowTitle("导入音乐")
+        self._music_import_progress.setAutoClose(False)
+        self._music_import_progress.setAutoReset(False)
+        self._music_import_progress.show()
+        self._music_import_thread = QThread(self)
+        self._music_import_worker = MusicImportWorker(self._music_library, paths)
+        self._music_import_worker.moveToThread(self._music_import_thread)
+        self._music_import_thread.started.connect(self._music_import_worker.run)
+        self._music_import_worker.progress.connect(self._on_music_import_progress)
+        self._music_import_worker.finished.connect(self._on_music_import_finished)
+        self._music_import_worker.finished.connect(self._music_import_thread.quit)
+        self._music_import_thread.finished.connect(self._music_import_worker.deleteLater)
+        self._music_import_thread.finished.connect(self._music_import_thread.deleteLater)
+        self._music_import_thread.finished.connect(self._clear_music_import_state)
+        self._music_import_progress.canceled.connect(self._music_import_thread.requestInterruption)
+        self._music_import_thread.start()
+
+    def _on_music_import_progress(self, completed, total, message):
+        dialog = getattr(self, "_music_import_progress", None)
+        if dialog is not None:
+            dialog.setMaximum(total)
+            dialog.setValue(completed)
+            dialog.setLabelText(message)
+
+    def _on_music_import_finished(self, imported, failures):
+        self._load_music_playlist()
+        dialog = getattr(self, "_music_import_progress", None)
+        if dialog is not None:
+            dialog.setValue(dialog.maximum())
+            dialog.close()
+        if failures:
+            QMessageBox.warning(
+                self, "部分音乐导入失败",
+                f"成功导入 {imported} 首。\n\n" + "\n".join(failures[:8]),
+            )
+        elif imported:
+            self._chat_widget.add_system_tip(f"已导入 {imported} 首音乐，歌单已刷新")
+
+    def _clear_music_import_state(self):
+        self._music_import_worker = None
+        self._music_import_thread = None
+
+    def _scan_import_folder(self):
+        if getattr(self, "_music_import_thread", None) is not None:
+            return
+        paths = [str(path) for path in self._music_library.originals.iterdir()
+                 if path.is_file() and path.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}]
+        normalized_names = {path.name for path in self._music_library.normalized.glob("*.mp3")}
+        paths = [path for path in paths if not any(path.endswith(name) for name in normalized_names)]
+        self._queue_music_import(paths)
+
+    def _manage_music_quarantine(self):
+        files = self._music_library.quarantine_files()
+        if not files:
+            QMessageBox.information(self, "异常音乐", "当前没有异常音乐文件。")
+            return
+        names = "\n".join(path.name for path in files[:15])
+        answer = QMessageBox.question(
+            self, "异常音乐",
+            f"发现 {len(files)} 个无法处理的文件：\n\n{names}\n\n是否重试全部？",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self._queue_music_import([str(path) for path in files])
+        elif answer == QMessageBox.No:
+            self._music_library.clear_quarantine()
 
     def _update_music_ui(self):
         """更新音乐盒界面（状态由前端渲染）"""
@@ -3999,7 +4098,16 @@ class MainWindow(QMainWindow):
             return
         if not pygame.mixer.get_init():
             pygame.mixer.init()
-        pygame.mixer.music.load(str(self.playlist[self.current_track_index]))
+        try:
+            pygame.mixer.music.load(str(self.playlist[self.current_track_index]))
+        except pygame.error as exc:
+            failed = self.playlist[self.current_track_index]
+            print(f"[音乐盒] 跳过无法播放的歌曲: {failed} ({exc})")
+            self.music_playing = False
+            self._push_music_state()
+            if len(self.playlist) > 1:
+                self._next_track()
+            return
         pygame.mixer.music.set_volume(self._global_settings.music_volume)
         pygame.mixer.music.play(start=start_sec)
         self.music_playing = True
