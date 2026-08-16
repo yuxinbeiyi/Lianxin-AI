@@ -81,6 +81,7 @@ from gui.galgame.expression_manager import ExpressionManager
 from gui.proactive_controller import ProactivePresentationController
 from gui.bridge_controller import BridgeController
 from gui.avatar_action_router import AvatarActionRouter
+from gui.video_call_adapter import VideoCallPresentationAdapter
 from gui.window_experience import WindowExperienceController
 from utils.platform_capabilities import get_platform_capabilities
 # ── Win32 全局热键 ───────────────────────────────────────────
@@ -118,6 +119,10 @@ class MainWindow(QMainWindow):
     _auto_task_done_signal = pyqtSignal(str, bool, str)       # (task_id, success, message)
     _duplex_voice_start_signal = pyqtSignal()                  # 跨线程：VAD 检测到语音 → UI 更新
     _duplex_transcript_signal = pyqtSignal(str)                # 跨线程：转录结果 → 发送消息
+    _duplex_state_signal = pyqtSignal(str)                     # 跨线程：语音状态 → 通话表现层
+    _duplex_ready_signal = pyqtSignal(bool)                   # 跨线程：STT 预加载结果
+    _video_tts_started_signal = pyqtSignal(str)                # TTS 分句开始
+    _video_tts_finished_signal = pyqtSignal()                  # TTS 分句结束
     def __init__(self, autostart_mode: bool = False):
         super().__init__()
         self._autostart_mode = autostart_mode
@@ -236,6 +241,8 @@ class MainWindow(QMainWindow):
         self._note_file = None
         self._voice_duplex: Optional[VoiceDuplexManager] = None
         self._standby_mode = "full_duplex"        # "full_duplex" / "legacy"
+        self._video_call_adapter = VideoCallPresentationAdapter(self)
+        self._video_call_speaker_enabled = True
 
         self._build_ui()
         self._resize_grip = QSizeGrip(self)
@@ -271,9 +278,16 @@ class MainWindow(QMainWindow):
         self._duplex_voice_start_signal.connect(
             lambda: self._input_panel._input.setPlaceholderText("🎤 聆听中...")
         )
+        self._duplex_voice_start_signal.connect(
+            lambda: self._video_call_adapter.set_user_speaking(True)
+        )
         self._duplex_transcript_signal.connect(
             self._handle_duplex_transcript
         )
+        self._duplex_state_signal.connect(self._on_video_duplex_state)
+        self._duplex_ready_signal.connect(self._on_video_stt_ready)
+        self._video_tts_started_signal.connect(self._video_call_adapter.set_tts_started)
+        self._video_tts_finished_signal.connect(self._video_call_adapter.set_tts_finished)
 
         # 初始化 pygame 混音器（用于音乐播放）
         # 首次启动时音频驱动可能未就绪，静默降级避免崩溃
@@ -1950,6 +1964,8 @@ class MainWindow(QMainWindow):
     def _speak(self, text: str):
         if self._global_settings.silent_mode:
             return
+        if not getattr(self, "_video_call_speaker_enabled", True):
+            return
         self._speaker_worker = SpeakerWorker(self._speaker, text, self)
         avatar_actions = getattr(self, "_avatar_actions", None)
         if avatar_actions is not None:
@@ -1958,6 +1974,9 @@ class MainWindow(QMainWindow):
             )
         self._speaker_worker.speaking_started.connect(lambda: self._input_panel.set_mute_visible(True))
         self._speaker_worker.speaking_started.connect(self._on_galgame_speaking_start)
+        self._speaker_worker.speaking_started.connect(
+            lambda: self._video_tts_started_signal.emit(text)
+        )
         # 全双工模式：TTS 播放时暂停 VAD，防止莲心声音被麦克风拾取→打断循环
         if self._voice_duplex:
             self._speaker_worker.speaking_started.connect(self._voice_duplex.pause_vad)
@@ -1965,6 +1984,9 @@ class MainWindow(QMainWindow):
         if avatar_actions is not None:
             self._speaker_worker.speaking_finished.connect(avatar_actions.speaking_finished)
         self._speaker_worker.speaking_finished.connect(lambda: self._input_panel.set_mute_visible(False))
+        self._speaker_worker.speaking_finished.connect(
+            self._video_tts_finished_signal.emit
+        )
         if self._voice_duplex:
             self._speaker_worker.speaking_finished.connect(self._voice_duplex.resume_vad)
             # 莲心说完后延迟播提示音（等 VAD cooldown 结束，用户可发言时）
@@ -3195,6 +3217,7 @@ class MainWindow(QMainWindow):
                 on_voice_start_ui=self._on_duplex_voice_start,
                 on_state_change=self._on_duplex_state_change,
                 on_interrupt_tts=self._on_duplex_interrupt_tts,
+                on_stt_ready=self._on_duplex_stt_ready,
             )
             # 自动检测耳机：耳机/耳麦 → 允许TTS期间语音打断
             detected = self._voice_duplex.auto_detect_headphone()
@@ -3211,9 +3234,8 @@ class MainWindow(QMainWindow):
                     "请查看终端中的具体依赖错误。"
                 )
                 return
+            self._video_call_adapter.open()
             self._update_standby_button()
-            # 提示音：麦克风就绪，可以说话了
-            QTimer.singleShot(500, self._play_speak_cue)
             self._chat_widget.add_system_tip(
                 '—— 全双工待机已开启，**随时开口说话即可**，莲心说话时随时打断——')
         else:
@@ -3249,6 +3271,8 @@ class MainWindow(QMainWindow):
     def _exit_standby(self):
         """关闭待机模式"""
         self._standby_state = "IDLE"
+        self._video_call_adapter.close()
+        self._video_call_speaker_enabled = True
         self._char_widget.exit_standby()
         
         # 全双工模式
@@ -3328,6 +3352,7 @@ class MainWindow(QMainWindow):
             self._avatar_actions.request("listening", source="voice_interrupt", force=True)
         elif self._char_widget:
             self._char_widget.set_normal()
+        self._duplex_state_signal.emit("USER_SPEAKING")
         self._chat_widget.add_system_tip("🗣️ 莲心被打断了，你说吧~")
 
     def _on_duplex_transcript(self, text: str):
@@ -3343,6 +3368,7 @@ class MainWindow(QMainWindow):
         if not text or not text.strip():
             return
         text = text.strip()
+        self._video_call_adapter.set_user_transcript(text)
 
         # 取消上一次的自动发送定时器（用户连续说话）
         if hasattr(self, '_voice_auto_send_timer') and self._voice_auto_send_timer:
@@ -3385,10 +3411,44 @@ class MainWindow(QMainWindow):
         from brain.voice_duplex import STATE_LABELS
         label = STATE_LABELS.get(state, state)
         print(f"[全双工] {label}")
+        self._duplex_state_signal.emit(state)
+
+    def _on_duplex_stt_ready(self, ready: bool):
+        """STT 预加载在线程中完成，转发到 Qt 主线程。"""
+        self._duplex_ready_signal.emit(bool(ready))
+
+    def _on_video_stt_ready(self, ready: bool):
+        if self._standby_state != "STANDBY":
+            return
+        self._video_call_adapter.set_stt_loading(False)
+        if ready:
+            self._video_call_adapter.set_duplex_state("LISTENING")
+            self._chat_widget.add_system_tip("—— 语音识别已就绪，可以开始说话 ——")
+            self._play_speak_cue()
+        else:
+            self._video_call_adapter.set_duplex_state("ERROR")
+            self._chat_widget.add_system_tip("⚠️ 语音识别模型加载失败，请检查 FunASR 状态")
+
+    def _on_video_duplex_state(self, state: str):
+        """在 Qt 主线程中更新通话表现层和输入提示。"""
+        self._video_call_adapter.set_duplex_state(state)
         # 待机时恢复输入框占位提示
         if state == "LISTENING":
             self._input_panel._input.setPlaceholderText(
                 "🎤 随时开口说话…（按 Enter 发送文字，Shift+Enter 换行）")
+
+    def _on_video_call_mic_toggled(self, enabled: bool):
+        if self._voice_duplex is None:
+            return
+        if enabled:
+            self._voice_duplex.resume_vad(cooldown=0.0)
+        else:
+            self._voice_duplex.pause_vad()
+
+    def _on_video_call_speaker_toggled(self, enabled: bool):
+        self._video_call_speaker_enabled = bool(enabled)
+        if not enabled:
+            self._on_mute()
 
     def _check_note_file(self):
         """轮询检查小纸条.txt。内容有变化时重置倒计时，
@@ -4701,8 +4761,13 @@ class SegmentSender(QObject):
 
         # 朗读当前段
         p = self.parent()
-        if p and hasattr(p, '_global_settings') and not p._global_settings.silent_mode:
+        speaker_enabled = getattr(p, "_video_call_speaker_enabled", True) if p is not None else True
+        if (p and hasattr(p, '_global_settings') and not p._global_settings.silent_mode
+                and speaker_enabled):
             self._speaker_worker = SpeakerWorker(self._speaker, seg, self)
+            self._speaker_worker.speaking_started.connect(
+                lambda seg=seg: p._video_tts_started_signal.emit(seg)
+            )
             # TTS 播放 → 暂停 VAD（防止回声循环）
             if hasattr(p, '_voice_duplex') and p._voice_duplex:
                 self._speaker_worker.speaking_started.connect(p._voice_duplex.pause_vad)
@@ -4711,8 +4776,13 @@ class SegmentSender(QObject):
                 self._speaker_worker.speaking_finished.connect(
                     lambda: QTimer.singleShot(2500, p._play_speak_cue))
             self._speaker_worker.speaking_finished.connect(self._on_tts_finished)
+            self._speaker_worker.speaking_finished.connect(
+                p._video_tts_finished_signal.emit
+            )
             self._speaker_worker.start()
         else:
+            if p is not None and hasattr(p, "_video_tts_finished_signal"):
+                p._video_tts_finished_signal.emit()
             self._on_tts_finished()
 
 

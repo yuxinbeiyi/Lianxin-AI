@@ -76,12 +76,14 @@ class VoiceDuplexManager:
                  on_transcript: Optional[Callable] = None,
                  on_voice_start_ui: Optional[Callable] = None,
                  on_interrupt_tts: Optional[Callable] = None,
+                 on_stt_ready: Optional[Callable] = None,
                  input_device_index: Optional[int] = None):
         self._on_state_change = on_state_change
         self._on_transcript   = on_transcript
         self._input_device_index = input_device_index
         self._on_voice_start_ui = on_voice_start_ui
         self._on_interrupt_tts  = on_interrupt_tts
+        self._on_stt_ready = on_stt_ready
         self._state = STATE_STOPPED
         self._vad_worker: Optional[WebRTCVADWorker] = None
 
@@ -205,17 +207,26 @@ class VoiceDuplexManager:
         worker.start()
         self._set_state(STATE_LISTENING)
 
-        # 后台预热 FunASR 模型（不阻塞聆听）
-        try:
-            from brain.stt_funasr import warmup
-            warmup()
-        except Exception:
-            pass
+        # 在后台提前加载 STT，避免用户第一次说话时才触发模型加载。
+        # 语音采集和 UI 不被阻塞；VoiceDuplexManager 内部的模型锁负责
+        # 与实际转录线程的安全衔接。
+        threading.Thread(target=self._preload_stt, daemon=True).start()
 
         # STT 处理线程（只转录，不做 LLM/TTS）
         threading.Thread(target=self._process_loop, daemon=True).start()
         logger.info("✅ 全双工语音已启动")
         return True
+
+    def _preload_stt(self):
+        ready = False
+        try:
+            from brain.stt_funasr import is_available
+            ready = bool(is_available())
+            logger.info("✅ FunASR 预加载完成" if ready else "⚠️ FunASR 预加载失败")
+        except Exception as exc:
+            logger.warning(f"⚠️ FunASR 预加载异常: {exc}")
+        if self._on_stt_ready:
+            _safe_call(self._on_stt_ready, ready)
 
     def stop(self):
         self._set_state(STATE_STOPPED)
