@@ -221,22 +221,13 @@ class VideoCallWindow(QDialog):
     chat_requested = pyqtSignal()
 
     _STATE_TEXT = {
-        "CONNECTING": "正在连接莲心…",
-        "LISTENING": "聆听中",
-        "USER_SPEAKING": "我在听",
-        "PROCESSING": "莲心思考中…",
-        "SPEAKING": "莲心正在说话",
-        "ERROR": "通话状态异常",
-        "ENDED": "通话已结束",
-    }
-    _STATE_HINT = {
-        "CONNECTING": "正在准备通话画面",
+        "CONNECTING": "正在接通莲心…",
         "LISTENING": "可以直接说话",
         "USER_SPEAKING": "莲心正在听你说话",
-        "PROCESSING": "正在准备回复",
-        "SPEAKING": "莲心正在陪你聊天",
-        "ERROR": "语音链路仍可在主程序中单独检查",
-        "ENDED": "",
+        "PROCESSING": "莲心思考中…",
+        "SPEAKING": "莲心正在说话",
+        "ERROR": "语音识别暂不可用",
+        "ENDED": "通话已结束",
     }
 
     def __init__(self, parent=None, preview_mode: bool = False):
@@ -253,6 +244,7 @@ class VideoCallWindow(QDialog):
         self._closed = False
         self._host_closing = False
         self._preview_mode = preview_mode
+        self._drag_offset = None
         self._loading_phase = 0
         self._loading_timer = QTimer(self)
         self._loading_timer.timeout.connect(self._update_loading_text)
@@ -292,39 +284,33 @@ class VideoCallWindow(QDialog):
         overlay.setContentsMargins(22, 15, 22, 20)
         overlay.setSpacing(6)
 
-        top = QHBoxLayout()
+        self._top_bar = QWidget(self._surface)
+        self._top_bar.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._top_bar.setStyleSheet("background: transparent;")
+        top = QHBoxLayout(self._top_bar)
+        top.setContentsMargins(0, 0, 0, 0)
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title = QLabel("莲心 AI 视频聊天")
         title.setFont(QFont("Microsoft YaHei UI", 13, QFont.Bold))
         self._duration = QLabel("语音通话  00:00")
         self._duration.setStyleSheet("color: rgba(255,255,255,180); font-size: 10pt;")
-        title_box.addWidget(title)
-        title_box.addWidget(self._duration)
-        top.addLayout(title_box)
-        top.addStretch()
         self._state = QLabel()
         self._state.setStyleSheet(
-            "color: #ffd6e0; background: rgba(24,18,24,190); padding: 6px 10px; border-radius: 10px;"
+            "color: #FFD2DF; background: transparent; font-size: 10pt; padding-top: 2px;"
         )
-        top.addWidget(self._state)
-        overlay.addLayout(top)
+        title_box.addWidget(title)
+        title_box.addWidget(self._duration)
+        title_box.addWidget(self._state)
+        top.addLayout(title_box)
+        top.addStretch()
+        overlay.addWidget(self._top_bar, 0, Qt.AlignLeft | Qt.AlignTop)
         overlay.addStretch(1)
 
-        self._subtitle = QLabel()
-        self._subtitle.setAlignment(Qt.AlignCenter)
+        self._subtitle = QLabel(self._surface)
+        self._subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self._subtitle.setWordWrap(True)
-        self._subtitle.setMaximumWidth(660)
-        self._subtitle.setStyleSheet(
-            "color: white; background: rgba(25,20,25,195); border-radius: 11px; padding: 8px 15px;"
-        )
         self._subtitle.hide()
-        overlay.addWidget(self._subtitle, 0, Qt.AlignHCenter)
-        self._hint = QLabel()
-        self._hint.setAlignment(Qt.AlignCenter)
-        self._hint.setStyleSheet("color: rgba(255,220,230,215); padding: 3px;")
-        overlay.addWidget(self._hint, 0, Qt.AlignHCenter)
-        overlay.addStretch(1)
         self._user_tile = _UserTile(avatar, self._surface)
         overlay.addWidget(self._user_tile, 0, Qt.AlignRight)
         self._volume_wave = _VolumeWave(self._surface)
@@ -334,7 +320,7 @@ class VideoCallWindow(QDialog):
         self._surface._media_frame.raise_()
         self._surface._video.lower()
         self._surface._poster.lower()
-        for widget in (self._state, self._duration, self._subtitle, self._hint, self._user_tile):
+        for widget in (self._top_bar, self._subtitle, self._user_tile, self._volume_wave):
             widget.raise_()
 
         controls = QFrame(self)
@@ -352,9 +338,10 @@ class VideoCallWindow(QDialog):
             self._cycle_demo_state if self._preview_mode else self.chat_requested.emit,
         )
         self._hangup = self._button("结束\n通话", self._request_hangup)
+        row.addStretch(1)
         for button in (self._mic, self._speaker, self._subtitles, self._more, self._hangup):
             row.addWidget(button)
-        row.addStretch()
+        row.addStretch(1)
         root.addWidget(controls)
 
     def resizeEvent(self, event):
@@ -363,6 +350,10 @@ class VideoCallWindow(QDialog):
             self._volume_wave.move(
                 max(0, self._surface.width() - self._volume_wave.width() - 42),
                 max(0, int(self._surface.height() * 0.42)),
+            )
+            subtitle_width = min(410, max(250, int(self._surface.width() * 0.40)))
+            self._subtitle.setGeometry(
+                28, max(112, self._surface.height() - 122), subtitle_width, 86
             )
 
     def _button(self, text: str, callback):
@@ -384,12 +375,10 @@ class VideoCallWindow(QDialog):
     def set_state(self, state: str):
         state = state.upper()
         self._state.setText(self._STATE_TEXT.get(state, state))
-        self._hint.setText(self._STATE_HINT.get(state, ""))
         if state in self._video_paths:
             self._surface.play_state(state)
         if state == "USER_SPEAKING":
             self.set_user_speaking(True)
-            self.set_subtitle("你：我正在和莲心通话", "你")
         elif state != "SPEAKING":
             self.set_user_speaking(False)
 
@@ -401,6 +390,12 @@ class VideoCallWindow(QDialog):
         if not self._subtitle_enabled or not text.strip():
             self._subtitle.hide()
             return
+        color = "#FFD2DF" if speaker == "莲心" else "#FFFFFF"
+        self._subtitle.setStyleSheet(
+            f"color: {color}; background: rgba(16,14,18,120); "
+            "border-left: 3px solid rgba(255,210,223,180); "
+            "padding: 8px 12px; border-radius: 4px; font-size: 11pt;"
+        )
         self._subtitle.setText(f"{speaker}：{text.strip()[-160:]}")
         self._subtitle.show()
 
@@ -416,7 +411,6 @@ class VideoCallWindow(QDialog):
     def _update_loading_text(self):
         marks = ("·  ", "·· ", "···", " ··", "  ·")
         self._state.setText("正在接通" + marks[self._loading_phase % len(marks)])
-        self._hint.setText("莲心正在准备语音识别")
         self._loading_phase += 1
 
     def _cycle_demo_state(self):
@@ -454,7 +448,27 @@ class VideoCallWindow(QDialog):
         # must remain visually usable even when Qt's local MP4 backend is not
         # available, so the poster remains the primary fallback.
         self._state.setText("静态画面")
-        self._hint.setText("可以直接说话")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.pos().y() <= 104:
+            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._drag_offset is not None:
+            self._drag_offset = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _request_hangup(self):
         self.hangup_requested.emit()

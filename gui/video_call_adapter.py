@@ -3,6 +3,7 @@
 from PyQt5.QtCore import QObject
 
 from gui.video_call_window import VideoCallWindow
+from utils.resource_path import get_asset_path
 
 
 class VideoCallPresentationAdapter(QObject):
@@ -12,6 +13,8 @@ class VideoCallPresentationAdapter(QObject):
         super().__init__(host)
         self._host = host
         self._window = None
+        self._connecting_sound = None
+        self._connecting_channel = None
 
     @property
     def is_open(self) -> bool:
@@ -32,8 +35,10 @@ class VideoCallPresentationAdapter(QObject):
         self._window.raise_()
         self._window.activateWindow()
         self._window.set_stt_loading(True)
+        self._start_connecting_sound()
 
     def close(self):
+        self._stop_connecting_sound()
         if self._window is not None:
             self._window.close_from_host()
         self._window = None
@@ -45,6 +50,8 @@ class VideoCallPresentationAdapter(QObject):
     def set_stt_loading(self, active: bool):
         if self.is_open:
             self._window.set_stt_loading(active)
+        if not active:
+            self._stop_connecting_sound()
 
     def set_user_speaking(self, active: bool):
         if not self.is_open:
@@ -78,4 +85,31 @@ class VideoCallPresentationAdapter(QObject):
         self._host.activateWindow()
 
     def _clear_window(self):
+        self._stop_connecting_sound()
         self._window = None
+
+    def _start_connecting_sound(self):
+        """Play the call-wait tone on its own pygame channel."""
+        try:
+            import pygame
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            path = get_asset_path("sound", "等待接通电话.mp3")
+            if not path.exists():
+                return
+            self._connecting_sound = pygame.mixer.Sound(str(path))
+            from utils.settings import get_settings
+            self._connecting_sound.set_volume(get_settings().sfx_volume)
+            self._connecting_channel = self._connecting_sound.play()
+        except Exception:
+            self._connecting_sound = None
+            self._connecting_channel = None
+
+    def _stop_connecting_sound(self):
+        if self._connecting_channel is not None:
+            try:
+                self._connecting_channel.stop()
+            except Exception:
+                pass
+        self._connecting_channel = None
+        self._connecting_sound = None
