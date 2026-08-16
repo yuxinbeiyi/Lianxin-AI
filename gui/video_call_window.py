@@ -5,17 +5,20 @@ The preview can therefore be exercised without a microphone or model runtime.
 """
 
 from pathlib import Path
+import random
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QPainter, QPixmap, QImage
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtWidgets import (
     QDialog, QFrame, QGraphicsBlurEffect, QHBoxLayout, QLabel, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget, QFileDialog, QDialogButtonBox,
+    QRadioButton, QLineEdit, QGroupBox,
 )
 
 from utils.resource_path import get_base_dir
+from utils.settings import get_settings
 
 
 class _PortraitSurface(QFrame):
@@ -30,6 +33,14 @@ class _PortraitSurface(QFrame):
         self._poster_pixmap = QPixmap(str(poster_path))
         self._video_paths = video_paths
         self._current_key = None
+        self._animation_mode = False
+        self._startup_path = None
+        self._waiting_paths = []
+        self._last_waiting = None
+        self._current_path = None
+        self._cv_cap = None
+        self._cv_timer = QTimer(self)
+        self._cv_timer.timeout.connect(self._read_cv_frame)
 
         self._background = QLabel(self)
         self._background.setAlignment(Qt.AlignCenter)
@@ -45,6 +56,10 @@ class _PortraitSurface(QFrame):
         self._video = QVideoWidget(self._media_frame)
         self._video.setAspectRatioMode(Qt.KeepAspectRatio)
         self._video.setStyleSheet("background: #111014; border: none;")
+        self._cv_video = QLabel(self._media_frame)
+        self._cv_video.setAlignment(Qt.AlignCenter)
+        self._cv_video.setStyleSheet("background: #111014; border: none;")
+        self._cv_video.hide()
 
         self._poster = QLabel(self._media_frame)
         self._poster.setAlignment(Qt.AlignCenter)
@@ -62,12 +77,14 @@ class _PortraitSurface(QFrame):
         self._background.setGeometry(self.rect())
         self._media_frame.setGeometry(self._portrait_rect())
         self._video.setGeometry(self._media_frame.rect())
+        self._cv_video.setGeometry(self._media_frame.rect())
         self._poster.setGeometry(self._media_frame.rect())
         self._fit_pixmaps()
         super().resizeEvent(event)
 
     def _portrait_rect(self):
-        aspect = 868.0 / 1062.0
+        # The animation assets are portrait 720x1280 videos.
+        aspect = 720.0 / 1280.0
         width = min(self.width(), int(self.height() * aspect))
         height = min(self.height(), int(width / aspect)) if width else 0
         return self.rect().adjusted(
@@ -87,9 +104,16 @@ class _PortraitSurface(QFrame):
             self._media_frame.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
         ))
 
+    def set_background_pixmap(self, pixmap: QPixmap):
+        if not pixmap.isNull():
+            self._background.setPixmap(pixmap.scaled(
+                self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+            ))
+
     def _show_poster(self, visible: bool):
         self._poster.setVisible(visible)
-        self._video.setVisible(not visible)
+        self._video.setVisible(not visible and not self._cv_timer.isActive())
+        self._cv_video.setVisible(not visible and self._cv_timer.isActive())
         self._poster.raise_()
 
     def _on_media_status(self, status):
@@ -98,14 +122,19 @@ class _PortraitSurface(QFrame):
             self._show_poster(True)
             self.media_failed.emit("视频无法播放，已切换为静态画面")
         elif status == QMediaPlayer.EndOfMedia:
-            self._player.setPosition(0)
-            self._player.play()
+            if self._animation_mode and self._waiting_paths:
+                self._play_next_waiting()
+            else:
+                self._player.setPosition(0)
+                self._player.play()
 
     def _on_state_changed(self, state):
         if state == QMediaPlayer.PlayingState:
             self._show_poster(False)
 
     def _on_error(self, *_args):
+        if self._start_cv_fallback():
+            return
         self._show_poster(True)
         self.media_failed.emit("视频播放异常，已切换为静态画面")
 
@@ -123,7 +152,90 @@ class _PortraitSurface(QFrame):
         self._player.setMedia(QMediaContent(QUrl.fromLocalFile(str(path))))
         self._player.play()
 
+    def configure_animation(self, startup_path: Path, waiting_paths: list[Path]):
+        self._animation_mode = True
+        self._startup_path = startup_path
+        self._waiting_paths = [p for p in waiting_paths if p.exists()]
+
+    def configure_static(self, image_path: Path):
+        self._animation_mode = False
+        if image_path.exists():
+            self._poster_pixmap = QPixmap(str(image_path))
+            self._fit_pixmaps()
+            self._show_poster(True)
+
+    def start_animation(self):
+        if not self._animation_mode or not self._startup_path or not self._startup_path.exists():
+            return
+        self._play_path(self._startup_path, "startup")
+
+    def _play_next_waiting(self):
+        candidates = [p for p in self._waiting_paths if p != self._last_waiting]
+        if not candidates:
+            candidates = self._waiting_paths
+        if candidates:
+            path = random.choice(candidates)
+            self._last_waiting = path
+            self._play_path(path, "waiting")
+
+    def _play_path(self, path: Path, key: str):
+        self._current_key = key
+        self._current_path = path
+        self._stop_cv_fallback()
+        self._show_poster(True)
+        self._player.stop()
+        self._player.setMedia(QMediaContent(QUrl.fromLocalFile(str(path))))
+        self._player.play()
+
+    def _start_cv_fallback(self):
+        if not self._current_path or not self._current_path.exists():
+            return False
+        try:
+            import cv2
+            self._stop_cv_fallback()
+            self._cv_cap = cv2.VideoCapture(str(self._current_path))
+            if not self._cv_cap.isOpened():
+                self._stop_cv_fallback()
+                return False
+            fps = self._cv_cap.get(cv2.CAP_PROP_FPS) or 30.0
+            self._show_poster(False)
+            self._cv_timer.start(max(15, int(1000 / min(fps, 60.0))))
+            self._show_poster(False)
+            self._read_cv_frame()
+            return True
+        except Exception:
+            self._stop_cv_fallback()
+            return False
+
+    def _read_cv_frame(self):
+        if self._cv_cap is None:
+            return
+        import cv2
+        ok, frame = self._cv_cap.read()
+        if not ok:
+            if self._animation_mode and self._waiting_paths:
+                self._play_next_waiting()
+            else:
+                self._player.setPosition(0)
+                self._player.play()
+            return
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = QImage(frame.data, frame.shape[1], frame.shape[0],
+                       frame.strides[0], QImage.Format_RGB888).copy()
+        self._cv_video.setPixmap(QPixmap.fromImage(image).scaled(
+            self._cv_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        ))
+
+    def _stop_cv_fallback(self):
+        self._cv_timer.stop()
+        if self._cv_cap is not None:
+            self._cv_cap.release()
+        self._cv_cap = None
+        self._cv_video.clear()
+        self._cv_video.hide()
+
     def stop(self):
+        self._stop_cv_fallback()
         self._player.stop()
         self._player.setMedia(QMediaContent())
         self._show_poster(True)
@@ -247,6 +359,80 @@ class _ConnectionAnimation(QWidget):
             painter.drawLine(first[0], first[1], second[0], second[1])
 
 
+class VideoCallSettingsDialog(QDialog):
+    saved = pyqtSignal(dict)
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("莲心视频形象")
+        self.setMinimumWidth(460)
+        self._config = dict(config)
+        layout = QVBoxLayout(self)
+        mode_box = QGroupBox("莲心视频形象")
+        mode_row = QHBoxLayout(mode_box)
+        self._static = QRadioButton("静态图片")
+        self._animation = QRadioButton("动画状态机")
+        self._static.setChecked(self._config.get("mode") == "static")
+        self._animation.setChecked(not self._static.isChecked())
+        mode_row.addWidget(self._static)
+        mode_row.addWidget(self._animation)
+        layout.addWidget(mode_box)
+
+        image_row = QHBoxLayout()
+        self._image = QLineEdit(self._config.get("static_image_path", ""))
+        image_row.addWidget(self._image, 1)
+        choose_image = QPushButton("选择图片")
+        choose_image.clicked.connect(self._choose_image)
+        image_row.addWidget(choose_image)
+        layout.addLayout(image_row)
+
+        background_row = QHBoxLayout()
+        self._wallpaper = QRadioButton("使用桌面壁纸")
+        self._custom_background = QRadioButton("选择背景图片")
+        self._wallpaper.setChecked(self._config.get("background_mode", "wallpaper") == "wallpaper")
+        self._custom_background.setChecked(not self._wallpaper.isChecked())
+        background_row.addWidget(self._wallpaper)
+        background_row.addWidget(self._custom_background)
+        layout.addLayout(background_row)
+        custom_row = QHBoxLayout()
+        self._background = QLineEdit(self._config.get("background_image_path", ""))
+        custom_row.addWidget(self._background, 1)
+        choose_background = QPushButton("选择背景")
+        choose_background.clicked.connect(self._choose_background)
+        custom_row.addWidget(choose_background)
+        layout.addLayout(custom_row)
+
+        hint = QLabel("动画状态机将播放内置的开机视频和三个随机等待视频。")
+        hint.setStyleSheet("color: #777; padding: 6px 0;")
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _choose_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择莲心图片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if path:
+            self._image.setText(path)
+
+    def _choose_background(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择背景图片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if path:
+            self._background.setText(path)
+            self._custom_background.setChecked(True)
+
+    def _save(self):
+        config = {
+            "mode": "static" if self._static.isChecked() else "animation",
+            "static_image_path": self._image.text().strip(),
+            "background_mode": "wallpaper" if self._wallpaper.isChecked() else "custom",
+            "background_image_path": self._background.text().strip(),
+        }
+        get_settings().update_video_call(**config)
+        self.saved.emit(config)
+        self.accept()
+
+
 class VideoCallWindow(QDialog):
     """Video-call presentation. It remains independent of voice backends."""
 
@@ -255,6 +441,7 @@ class VideoCallWindow(QDialog):
     microphone_toggled = pyqtSignal(bool)
     speaker_toggled = pyqtSignal(bool)
     chat_requested = pyqtSignal()
+    settings_requested = pyqtSignal()
 
     _STATE_TEXT = {
         "CONNECTING": "莲心待机中...",
@@ -282,6 +469,8 @@ class VideoCallWindow(QDialog):
         self._preview_mode = preview_mode
         self._drag_offset = None
         self._user_name = str(user_name or "用户")
+        self._settings = get_settings()
+        self._video_config = self._settings.video_call
         self._loading_phase = 0
         self._loading_timer = QTimer(self)
         self._loading_timer.timeout.connect(self._update_loading_text)
@@ -296,7 +485,15 @@ class VideoCallWindow(QDialog):
             "SPEAKING": video_dir / "normal1.mp4",
             "USER_SPEAKING": video_dir / "normal.mp4",
         }
+        video_dir = base / "assets" / "视频通话" / "兼容"
+        # The checked-in asset is named 开启.mp4; keep the fallback for a
+        # future rename so the state machine remains data-driven.
+        self._startup_video = video_dir / "开启.mp4"
+        if not self._startup_video.exists():
+            self._startup_video = video_dir / "开机.mp4"
+        self._waiting_videos = [video_dir / f"循环等待{i}.mp4" for i in range(1, 4)]
         self._build_ui(poster, asset_dir / "用户头像.jpg")
+        self._apply_video_config()
         self.set_state("CONNECTING")
         if self._preview_mode:
             QTimer.singleShot(500, lambda: self.set_state("LISTENING"))
@@ -383,6 +580,8 @@ class VideoCallWindow(QDialog):
             "•••\n演示状态" if self._preview_mode else "聊天\n窗口",
             self._cycle_demo_state if self._preview_mode else self.chat_requested.emit,
         )
+        self._settings_button = self._button("⚙", self.settings_requested.emit)
+        self._settings_button.setToolTip("莲心视频形象设置")
         self._hangup = self._button("☎", self._request_hangup)
         self._hangup.setToolTip("挂断电话")
         self._hangup.setStyleSheet(
@@ -390,7 +589,8 @@ class VideoCallWindow(QDialog):
             "border-radius: 29px; font-size: 24pt; } QPushButton:hover { background: #ef657c; }"
         )
         row.addStretch(1)
-        for button in (self._mic, self._speaker, self._subtitles, self._more, self._hangup):
+        for button in (self._mic, self._speaker, self._subtitles, self._more,
+                       self._settings_button, self._hangup):
             row.addWidget(button)
         row.addStretch(1)
         root.addWidget(controls)
@@ -436,7 +636,7 @@ class VideoCallWindow(QDialog):
         self._state.setText(self._STATE_TEXT.get(state, state))
         if state != "CONNECTING":
             self._set_connection_overlay(False)
-        if state in self._video_paths:
+        if state in self._video_paths and self._video_config.get("mode", "animation") != "animation":
             self._surface.play_state(state)
         if state == "USER_SPEAKING":
             self.set_user_speaking(True)
@@ -485,6 +685,36 @@ class VideoCallWindow(QDialog):
             self._surface.setStyleSheet("QFrame { background: #050507; border: none; }")
         else:
             self._surface.setStyleSheet("QFrame { background: #09090b; border: none; }")
+
+    def _apply_video_config(self):
+        mode = self._video_config.get("mode", "animation")
+        if mode == "static":
+            path = Path(self._video_config.get("static_image_path", ""))
+            if path.exists():
+                self._surface.configure_static(path)
+        else:
+            self._surface.configure_animation(self._startup_video, self._waiting_videos)
+
+        background = self._video_config.get("background_image_path", "")
+        if self._video_config.get("background_mode") == "wallpaper":
+            background = self._settings.background_source
+        if background and Path(background).exists():
+            self._surface.set_background_pixmap(QPixmap(background))
+
+    def apply_video_config(self, config: dict):
+        self._video_config = dict(config)
+        self._apply_video_config()
+        if self._video_config.get("mode") == "animation" and not self._surface._player.state() == QMediaPlayer.PlayingState:
+            self._surface.start_animation()
+
+    def start_animation_if_ready(self):
+        if self._video_config.get("mode", "animation") == "animation":
+            self._surface.start_animation()
+
+    def open_video_settings(self):
+        dialog = VideoCallSettingsDialog(self._video_config, self)
+        dialog.saved.connect(self.apply_video_config)
+        dialog.exec_()
 
     def _cycle_demo_state(self):
         states = ["USER_SPEAKING", "PROCESSING", "SPEAKING", "LISTENING"]

@@ -47,6 +47,12 @@ _DEFAULT_SETTINGS = {
     "always_on_top": False,
     "reduced_motion": False,
     "desktop_notifications": True,
+    "video_call": {
+        "mode": "animation",
+        "static_image_path": "",
+        "background_mode": "wallpaper",
+        "background_image_path": "",
+    },
     # 桌面端聊天分段停顿（秒）
     "segment_pause_chat_min": 0.45,
     "segment_pause_chat_max": 1.1,
@@ -76,6 +82,17 @@ class SettingsManager:
             json.dumps(self._settings, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
+
+    @property
+    def video_call(self) -> dict:
+        value = self._settings.get("video_call", {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    def update_video_call(self, **values):
+        config = self.video_call
+        config.update(values)
+        self._settings["video_call"] = config
+        self.save()
 
     @property
     def silent_mode(self) -> bool:

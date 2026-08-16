@@ -33,6 +33,7 @@ class VideoCallPresentationAdapter(QObject):
         self._window.microphone_toggled.connect(self._host._on_video_call_mic_toggled)
         self._window.speaker_toggled.connect(self._host._on_video_call_speaker_toggled)
         self._window.chat_requested.connect(self._show_chat)
+        self._window.settings_requested.connect(self._show_video_settings)
         self._window.closed.connect(self._clear_window)
         self._window.show()
         self._window.raise_()
@@ -55,6 +56,8 @@ class VideoCallPresentationAdapter(QObject):
             self._window.set_stt_loading(active)
         if not active:
             self._stop_connecting_sound()
+            if self.is_open:
+                self._window.start_animation_if_ready()
 
     def set_user_speaking(self, active: bool):
         if not self.is_open:
@@ -86,6 +89,10 @@ class VideoCallPresentationAdapter(QObject):
         self._host.showNormal()
         self._host.raise_()
         self._host.activateWindow()
+
+    def _show_video_settings(self):
+        if self.is_open:
+            self._window.open_video_settings()
 
     def _clear_window(self):
         self._stop_connecting_sound()
