@@ -292,37 +292,35 @@ class ProactiveWorker(QThread):
                 city = (qw_cfg.get("default_city") or "").strip()
                 if not city:
                     city = get_user_city_from_memory()
-                t0 = time.monotonic()
                 if city:
-                    weather_text = get_full_weather(city, api_key=api_key)
+                    t0 = time.monotonic()
+                    weather_text = self._get_cached_weather(city, api_key, get_full_weather)
                     elapsed = (time.monotonic() - t0) * 1000
                     if weather_text and "错误" not in weather_text:
                         parts.append(f"【当前天气信息】\n{weather_text}")
                         self.data_source_called.emit("get_weather", f"获取到 {city} 天气", False, elapsed)
                     else:
-                        self.data_source_called.emit("get_weather", f"获取失败", True, elapsed)
+                        # 天气获取失败静默跳过，不显示错误卡片打扰用户
+                        print(f"[主动聊天] 天气查询失败（静默跳过）: {weather_text}")
                 else:
-                    self.data_source_called.emit("get_weather", "未设置城市", True, 0)
+                    print(f"[主动聊天] 未设置城市，跳过天气查询")
             else:
-                self.data_source_called.emit("get_weather", "未配置 API Key", True, 0)
+                print(f"[主动聊天] 未配置天气 API Key，跳过")
         except Exception as e:
-            self.data_source_called.emit("get_weather", f"查询异常: {e}", True, 0)
+            print(f"[主动聊天] 天气查询异常（静默跳过）: {e}")
 
-        # 长期记忆（按分类组织）
-        all_mem = list_all_facts()
-        mem_lines = []
-        from brain.persona.authority import is_assistant_identity_fact
-        for cat in ALL_CATEGORIES:
-            items = all_mem.get(cat, [])
-            for item in items[:5]:  # 每类最多5条
-                if is_assistant_identity_fact(
-                    item.get("content", ""), getattr(self, "_persona_snapshot", None)
-                ):
-                    continue
-                mem_lines.append(f"- [{cat}] {item['content']}")
-        if mem_lines:
-            parts.append(f"【你记得的事情】\n" + "\n".join(mem_lines[:20]))
-            self.data_source_called.emit("get_memory_facts", f"找到 {len(mem_lines)} 条记忆", False, 0)
+        # ── 长期记忆（基于最近话题的语义检索） ──
+        try:
+            memory_lines = self._retrieve_relevant_memory()
+            if memory_lines:
+                parts.append(f"【你记得的事情】\n" + "\n".join(memory_lines))
+                self.data_source_called.emit(
+                    "get_memory_facts",
+                    f"召回 {len(memory_lines)} 条相关记忆",
+                    False, 0,
+                )
+        except Exception as e:
+            print(f"[主动聊天] 记忆检索异常: {e}")
 
         # 最近聊天记录
         sessions = self._history_mgr.get_sessions()
@@ -350,6 +348,88 @@ class ProactiveWorker(QThread):
         user_name = _get_user_name()
         return f"（暂无历史对话和记忆，请根据莲心的性格随机发起一个话题，例如关心{user_name}在做什么，或者分享一个有趣的想法）"
 
+    # 天气缓存（模块级，30 分钟 TTL）
+    _weather_cache: dict[str, tuple[float, str]] = {}  # city → (timestamp, text)
+    _WEATHER_CACHE_TTL = 1800  # 30 分钟
+
+    @classmethod
+    def _get_cached_weather(cls, city: str, api_key: str, fetch_fn) -> str | None:
+        """带缓存的天气查询，30 分钟内同一城市不重复请求。"""
+        now = time.monotonic()
+        cache_key = f"{city}|{api_key[-8:]}"  # 用 api_key 尾缀区分不同配置
+        if cache_key in cls._weather_cache:
+            ts, text = cls._weather_cache[cache_key]
+            if now - ts < cls._WEATHER_CACHE_TTL:
+                return text  # 缓存命中
+        # 缓存未命中，真实请求
+        result = fetch_fn(city, api_key=api_key)
+        if result and "错误" not in result:
+            cls._weather_cache[cache_key] = (now, result)
+        return result
+
+    def _retrieve_relevant_memory(self) -> list[str]:
+        """基于最近聊天记录做记忆语义检索，返回最相关的记忆条目。
+
+        比旧的 list_all_facts 全量加载更精准、更省 token。
+        如果最近没聊过天或搜索不到结果，回退为按强度取前几条。
+        """
+        from brain.graph_memory import search_facts, unified_search, format_unified_search_result
+        from brain.persona.authority import is_assistant_identity_fact
+        snapshot = getattr(self, "_persona_snapshot", None)
+
+        # 从最近聊天记录提取关键词（取用户最后3条消息的关键词）
+        sessions = self._history_mgr.get_sessions()
+        keywords: list[str] = []
+        if sessions:
+            msgs = self._history_mgr.get_messages(sessions[0]["id"])
+            user_msgs = [m["content"] for m in msgs[-12:] if m["role"] == "user"]
+            # 简单关键词提取：取每条消息的有意义片段（长度>2的词）
+            for msg in user_msgs[-3:]:
+                # 用标点和空格切分，取长度适中的片段
+                import re
+                fragments = [f.strip() for f in re.split(r"[，。！？、\s,.!?]", msg) if len(f.strip()) >= 2]
+                keywords.extend(fragments[:2])
+
+        results: list[str] = []
+        if keywords:
+            # 用最有代表性的关键词做联合搜索
+            search_kw = " ".join(keywords[:3])
+            try:
+                search_result = unified_search(search_kw)
+                # 格式化后拆成条目
+                formatted = format_unified_search_result(search_result)
+                lines = [l.strip() for l in formatted.splitlines()
+                         if l.strip() and not l.startswith("=") and "未找到" not in l]
+                for line in lines[:8]:
+                    if not is_assistant_identity_fact(line, snapshot):
+                        results.append(f"• {line[:120]}")
+            except Exception:
+                pass
+
+        # 搜索结果太少时，补一些高权重记忆作为背景
+        if len(results) < 4:
+            try:
+                from brain.graph_memory import list_all_facts, ALL_CATEGORIES
+                all_mem = list_all_facts()
+                # 按分类各取几条强度最高的
+                for cat in ALL_CATEGORIES:
+                    items = all_mem.get(cat, [])
+                    for fact in items[:3]:
+                        content = fact.get("content", "")
+                        if not content or is_assistant_identity_fact(content, snapshot):
+                            continue
+                        line = f"- [{cat}] {content}"
+                        if line not in results:
+                            results.append(line)
+                        if len(results) >= 8:
+                            break
+                    if len(results) >= 8:
+                        break
+            except Exception:
+                pass
+
+        return results[:8]
+
     def _get_client(self):
         """根据当前 provider 获取 OpenAI 客户端。"""
         cfg = get_api_config()
@@ -361,7 +441,14 @@ class ProactiveWorker(QThread):
 
     def _generate(self, context: str, is_observation: bool = False,
                   is_shoulder_explore: bool = False) -> str:
-        """调用 API 生成一条主动消息。"""
+        """调用 API 生成一条主动消息。
+
+        生成策略（层层递进，尽量保证能产出文本）：
+        1. 正常请求（max_tokens=768，给 reasoning 留足空间）
+        2. 如果模型返回了 tool_calls → 执行天气/记忆工具，回填结果后再生成一轮
+        3. 如果 content 仍为空 → 用更精简的纯文本 prompt 重试
+        4. 最后兜底文案（保留，便于用户感知问题）
+        """
         client, model = self._get_client()
 
         if self._memory_cue:
@@ -395,36 +482,186 @@ class ProactiveWorker(QThread):
             {"role": "system", "content": system},
             {"role": "user", "content": user_prompt},
         ]
+
+        # ── 第 1 轮：正常生成 ──
         response = client.chat.completions.create(
-            model=model, max_tokens=256, messages=messages, timeout=30,
+            model=model, max_tokens=768, messages=messages, timeout=30,
         )
         message = response.choices[0].message
         text = self._response_text(message)
-        if text:
+        if text and not self._has_tool_calls(message):
             return text
 
-        # Some OpenAI-compatible gateways return only tool_calls/reasoning and
-        # leave content empty. The proactive path has no tool-result roundtrip,
-        # so ask once for plain text instead of silently dropping the message.
-        retry_messages = messages + [{
-            "role": "user",
-            "content": "请直接输出要发给用户的一到两句话，不要调用工具，不要返回空内容。",
-        }]
-        retry = client.chat.completions.create(
-            model=model, max_tokens=256, messages=retry_messages, timeout=30,
-        )
-        text = self._response_text(retry.choices[0].message)
-        if text:
-            return text
+        # ── 第 2 轮：如果模型想调用工具，执行一次真实回环 ──
+        if self._has_tool_calls(message):
+            print(f"[主动聊天] 模型返回了 tool_calls，执行单轮回环")
+            try:
+                tool_results = self._execute_proactive_tools(message.tool_calls)
+                if tool_results:
+                    # 把助手的 tool_calls 消息和工具结果追加到对话
+                    messages.append({
+                        "role": "assistant",
+                        "content": text or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in message.tool_calls
+                        ],
+                    })
+                    for tr in tool_results:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr["id"],
+                            "content": tr["content"],
+                        })
+                    retry = client.chat.completions.create(
+                        model=model, max_tokens=768, messages=messages, timeout=30,
+                    )
+                    text = self._response_text(retry.choices[0].message)
+                    if text:
+                        return text
+            except Exception as exc:
+                print(f"[主动聊天] 工具回环执行失败: {exc}")
+
+        # ── 第 3 轮：精简 prompt 纯文本重试 ──
+        # 用更短、更明确的指令，降低模型走工具/纯思考的概率
+        fallback_messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"你是{assistant_name}。只输出要发给{user_name}的一句话，"
+                    "不要思考过程，不要调用工具，不要解释，直接说人话。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"用一句话主动和{user_name}打个招呼或者聊点什么。",
+            },
+        ]
+        try:
+            retry = client.chat.completions.create(
+                model=model, max_tokens=512, messages=fallback_messages, timeout=20,
+            )
+            text = self._response_text(retry.choices[0].message)
+            if text:
+                return text
+        except Exception as exc:
+            print(f"[主动聊天] 纯文本重试失败: {exc}")
+
+        # ── 兜底：都失败了才返回提示文案 ──
+        print(f"[主动聊天] 警告：所有生成策略均失败（模型={model}），返回兜底文案")
         return "我刚刚想和你聊点什么，但这次没有生成出文字，等我一下再试。"
+
+    def _execute_proactive_tools(self, tool_calls) -> list[dict]:
+        """执行主动聊天路径下支持的工具调用（单轮）。
+
+        仅支持安全的只读工具：天气查询、记忆检索。
+        返回 [{id, name, content}] 列表，用于回填到 messages。
+        """
+        results = []
+        for tc in tool_calls:
+            tc_id = getattr(tc, "id", "")
+            name = getattr(tc.function, "name", "")
+            try:
+                import json
+                args = json.loads(getattr(tc.function, "arguments", "{}") or "{}")
+            except Exception:
+                args = {}
+
+            try:
+                content = self._run_tool(name, args)
+                results.append({"id": tc_id, "name": name, "content": content})
+                print(f"[主动聊天] 工具回环: {name} → 成功, {len(content)}字")
+            except Exception as exc:
+                results.append({
+                    "id": tc_id, "name": name,
+                    "content": f"工具执行失败: {exc}"
+                })
+                print(f"[主动聊天] 工具回环: {name} → 失败: {exc}")
+        return results
+
+    def _run_tool(self, name: str, args: dict) -> str:
+        """执行单个工具，返回文本结果。"""
+        name_lower = name.lower()
+
+        # ── 天气查询 ──
+        if name_lower in ("get_weather", "weather", "query_weather"):
+            from config import get_qweather_config
+            from brain.weather import get_user_city_from_memory, get_full_weather
+            qw_cfg = get_qweather_config()
+            api_key = qw_cfg.get("api_key", "").strip()
+            if not api_key:
+                return "未配置天气 API"
+            city = args.get("city", "").strip()
+            if not city:
+                city = (qw_cfg.get("default_city") or "").strip()
+            if not city:
+                city = get_user_city_from_memory()
+            if not city:
+                return "未指定城市"
+            result = get_full_weather(city, api_key=api_key)
+            if result and "错误" not in result:
+                return result
+            return f"天气查询失败: {result or '未知错误'}"
+
+        # ── 记忆检索 ──
+        if name_lower in ("search_memory", "query_memory", "recall_memory",
+                           "get_memory", "memory_search", "search_facts"):
+            keyword = args.get("query", "") or args.get("keyword", "") or args.get("q", "")
+            if not keyword:
+                keyword = args.get("category", "")
+            if not keyword:
+                from brain.graph_memory import list_all_facts, ALL_CATEGORIES
+                all_mem = list_all_facts()
+                facts = []
+                for cat in ALL_CATEGORIES:
+                    for item in all_mem.get(cat, [])[:3]:
+                        facts.append(item["content"])
+                return "\n".join(facts[:10]) if facts else "没有记忆"
+            from brain.graph_memory import unified_search, format_unified_search_result
+            result = unified_search(str(keyword))
+            formatted = format_unified_search_result(result)
+            return formatted[:1500]
+
+        # 不支持的工具
+        return f"工具「{name}」在主动聊天模式下不可用"
+
+    @staticmethod
+    def _has_tool_calls(message) -> bool:
+        """判断响应是否包含 tool_calls（某些网关即使没传 tools 也会返回）。"""
+        tool_calls = getattr(message, "tool_calls", None)
+        return bool(tool_calls)
 
     @staticmethod
     def _response_text(message) -> str:
-        """兼容不同 OpenAI 网关的文本字段，避免 content=None 静默丢消息。"""
+        """兼容不同 OpenAI 网关的文本字段，避免 content=None 静默丢消息。
+
+        优先级：content > text > output_text > reasoning_content（从思考末尾提取）
+        有些网关/模型会把答案放在 reasoning_content 里而 content 为空。
+        """
         for field in ("content", "text", "output_text"):
             value = getattr(message, field, None)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+        # 回退：从 reasoning_content 末尾提取可用句子
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            # 取思考的最后一段，过滤掉明显是"工具调用计划"的内容
+            lines = [l.strip() for l in reasoning.strip().splitlines() if l.strip()]
+            for line in reversed(lines[-5:]):  # 只看最后5行
+                line = line.strip(" -•*")
+                if (line and len(line) > 5
+                        and "工具" not in line and "调用" not in line
+                        and "search" not in line.lower()
+                        and "function" not in line.lower()
+                        and not line.startswith("{")):
+                    return line
         return ""
 
     # ── B站冲浪 ──────────────────────────────────────────────
