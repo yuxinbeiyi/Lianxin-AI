@@ -480,12 +480,14 @@ class MainWindow(QMainWindow):
         self._progress_timer = None      # 用于更新进度的定时器
         self.current_offset = 0          # 当前歌曲播放起始偏移（秒），用于 seek
         self.current_position = 0        # 当前播放进度（秒）
+        self._favorite_stems = set()   # 收藏歌曲（stem 集合）
+        self._load_favorite_stems()
         self._load_music_playlist()
         self._restore_music_state()
         self.music_stats = MusicStats()
         self.current_song_start_time = None
-        self._favorite_stems = set()   # 收藏歌曲（stem 集合）
-        self._load_favorite_stems()
+        self._music_error = ""           # 当前播放错误提示（显示给用户）
+        self._consecutive_play_failures = 0  # 连续播放失败计数，防止死循环跳歌
 
     def _on_route_ready(self, text: str, is_chat: bool, route_result):
         # IntentRouter 仅用于快速 UI 分类；真正的工具边界由 AgentCore 的
@@ -3986,17 +3988,54 @@ class MainWindow(QMainWindow):
         self._setup_diary_timer()
 
     def _load_music_playlist(self):
-        """扫描 assets/music/ 目录下的 mp3 文件"""
+        """扫描 assets/music/ 目录，自动归一化后加入播放列表。
+
+        支持 .mp3/.m4a/.flac/.wav/.ogg/.aac，非 MP3 格式会自动用 ffmpeg
+        转码缓存到 music_library/normalized/，下次启动直接复用缓存。
+
+        按 stem（不含扩展名的文件名）去重，assets/music/ 中的优先级最高
+        （用户直接管理的目录，名称最干净）。
+        """
         from utils.resource_path import get_asset_path
+        from utils.music_library import SUPPORTED_EXTENSIONS
         music_dir = get_asset_path("music")
         user_dir = getattr(self, "_music_library", None)
+        self.playlist = []
+        seen_stems = set()  # 按 stem 去重，避免同名歌曲重复显示
+
+        def _add_if_unique(path):
+            stem_lower = path.stem.lower()
+            if stem_lower not in seen_stems:
+                self.playlist.append(path)
+                seen_stems.add(stem_lower)
+
         if music_dir.exists():
-            self.playlist = sorted(music_dir.glob("*.mp3"))
-        else:
-            self.playlist = []
+            # 收集所有支持的音频文件
+            asset_tracks = []
+            for ext in SUPPORTED_EXTENSIONS:
+                asset_tracks.extend(music_dir.glob(f"*{ext}"))
+            # 去重并排序
+            asset_tracks = sorted(set(asset_tracks), key=lambda p: p.name.lower())
+            # 逐一归一化（真 MP3 直接返回，其他格式转码缓存）
+            for track in asset_tracks:
+                if user_dir is not None:
+                    result = user_dir.normalize_path(track)
+                    if result is not None:
+                        _add_if_unique(result)
+                    else:
+                        print(f"[音乐盒] 跳过不支持的文件: {track.name}")
+                else:
+                    # 没有 music_library 时退化为只加载真 MP3
+                    from utils.music_library import is_mp3_file
+                    if is_mp3_file(track):
+                        _add_if_unique(track)
         if user_dir is not None and user_dir.normalized.exists():
-            self.playlist.extend(sorted(user_dir.normalized.glob("*.mp3")))
-            self.playlist.sort(key=lambda path: path.name.lower())
+            # 用户手动导入的音乐（补充 assets 中没有的）
+            imported = sorted(user_dir.normalized.glob("*.mp3"), key=lambda x: x.name.lower())
+            for p in imported:
+                _add_if_unique(p)
+        # 最终按文件名排序
+        self.playlist.sort(key=lambda path: path.name.lower())
         self._update_music_ui()
 
     def _import_music_files(self):
@@ -4102,12 +4141,21 @@ class MainWindow(QMainWindow):
             pygame.mixer.music.load(str(self.playlist[self.current_track_index]))
         except pygame.error as exc:
             failed = self.playlist[self.current_track_index]
+            failed_name = failed.stem if hasattr(failed, "stem") else str(failed)
             print(f"[音乐盒] 跳过无法播放的歌曲: {failed} ({exc})")
             self.music_playing = False
+            self._consecutive_play_failures += 1
+            # 连续失败超过 3 首，停止自动跳转并提示用户
+            if self._consecutive_play_failures >= 3 or len(self.playlist) <= 1:
+                self._music_error = f"无法播放「{failed_name}」，文件格式可能不支持"
+                self._push_music_state()
+                return
+            self._music_error = f"无法播放「{failed_name}」，已自动跳过"
             self._push_music_state()
-            if len(self.playlist) > 1:
-                self._next_track()
+            self._next_track()
             return
+        self._consecutive_play_failures = 0
+        self._music_error = ""
         pygame.mixer.music.set_volume(self._global_settings.music_volume)
         pygame.mixer.music.play(start=start_sec)
         self.music_playing = True
@@ -4257,6 +4305,7 @@ class MainWindow(QMainWindow):
             volume = float(getattr(self._global_settings, "music_volume", 0.5))
         except Exception:
             volume = 0.5
+        favorite_stems = getattr(self, "_favorite_stems", None) or set()
         playlist_items = []
         for idx, path in enumerate(playlist):
             dur = current_duration if idx == current_index and current_duration else 0
@@ -4264,7 +4313,7 @@ class MainWindow(QMainWindow):
                 name = path.stem
             except Exception:
                 name = str(path)
-            playlist_items.append({"title": name, "duration": dur, "index": idx, "favorite": (name in self._favorite_stems)})
+            playlist_items.append({"title": name, "duration": dur, "index": idx, "favorite": (name in favorite_stems)})
         title = ""
         if playlist and 0 <= current_index < len(playlist):
             try:
@@ -4283,8 +4332,8 @@ class MainWindow(QMainWindow):
             "loop_mode": loop_mode,
             "volume": volume,
             "has_playlist": bool(playlist),
-            "error": "",
-            "favorite": (title in self._favorite_stems),
+            "error": getattr(self, "_music_error", "") or "",
+            "favorite": (title in favorite_stems),
             "space_background": self._music_space_background(),
             "wallpaper": self._music_box_wallpaper(),
             "space_settings": self._music_space_settings(),
