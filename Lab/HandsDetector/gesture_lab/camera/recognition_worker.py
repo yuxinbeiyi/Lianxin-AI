@@ -13,6 +13,8 @@ from ..vision.gesture_classifier import GestureClassifier
 from ..vision.gesture_state import GestureState
 from .camera_manager import CameraManager
 from ..vision.hand_detector import HandDetector
+from ..config import DIGIT_MODEL_PATH, DIGIT_LABELS_PATH
+from ..vision.tflite_keypoint_classifier import TFLiteKeypointClassifier
 
 
 class RecognitionWorker(QObject):
@@ -28,6 +30,8 @@ class RecognitionWorker(QObject):
         self._detector = HandDetector()
         self._classifier = GestureClassifier()
         self._state = GestureState()
+        self._digit_classifier = TFLiteKeypointClassifier(
+            DIGIT_MODEL_PATH, DIGIT_LABELS_PATH)
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
 
@@ -64,6 +68,7 @@ class RecognitionWorker(QObject):
                 landmarks = self._detector.get_landmarks(0)
                 hand_count = self._detector.get_hands_count()
                 gesture, confidence = self._classifier.update(landmarks)
+                model_gesture, model_confidence = self._digit_classifier.predict(landmarks)
                 self._state.update(gesture, confidence)
                 info = self._state.get_info()
                 if self._state.should_trigger():
@@ -87,6 +92,8 @@ class RecognitionWorker(QObject):
                 "confidence": round(info.confidence, 2),
                 "event_state": info.state,
                 "cooldown": round(info.cooldown_remaining, 2),
+                "model_gesture": model_gesture if model_confidence >= 0.6 else "NONE",
+                "model_confidence": round(model_confidence, 2),
             })
             remaining = interval - (time.monotonic() - started_at)
             if remaining > 0:

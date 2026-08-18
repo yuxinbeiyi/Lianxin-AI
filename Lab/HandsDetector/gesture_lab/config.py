@@ -10,6 +10,8 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 LOGS_DIR = BASE_DIR / "logs"
 MODEL_PATH = MODELS_DIR / "hand_landmarker.task"
+DIGIT_MODEL_PATH = MODELS_DIR / "keypoint_classifier.tflite"
+DIGIT_LABELS_PATH = MODELS_DIR / "keypoint_classifier_label.csv"
 
 # ── 摄像头 ────────────────────────────────────────────
 CAMERA_INDEX = 0               # 默认前置摄像头

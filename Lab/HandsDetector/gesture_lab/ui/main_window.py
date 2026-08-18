@@ -88,6 +88,8 @@ class GestureLabWindow(QMainWindow):
             "confidence": 0.0,
             "event_state": "READY",
             "cooldown": 0.0,
+            "model_gesture": "NONE",
+            "model_confidence": 0.0,
         })
 
     # ─────────────────────────────────────────────────────
@@ -151,6 +153,20 @@ class GestureLabWindow(QMainWindow):
             ("cooldown", "冷却剩余"),
         ]
         for key, label in rows:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(label)
+            lbl.setObjectName("statusKey")
+            lbl.setMinimumWidth(70)
+            val = QLabel("-")
+            val.setObjectName(f"statusVal_{key}")
+            row.addWidget(lbl)
+            row.addWidget(val, stretch=1)
+            status_layout.addLayout(row)
+            self._status_labels[key] = val
+
+        for key, label in (("model_gesture", "Model gesture"),
+                           ("model_confidence", "Model confidence")):
             row = QHBoxLayout()
             row.setSpacing(8)
             lbl = QLabel(label)
@@ -524,6 +540,8 @@ class GestureLabWindow(QMainWindow):
             "confidence": lambda v: f"{v*100:.0f}%" if v else "-",
             "event_state": lambda v: v,
             "cooldown": lambda v: f"{v:.1f}s" if v and v > 0 else "READY",
+            "model_gesture": lambda v: str(v),
+            "model_confidence": lambda v: f"{v*100:.0f}%" if v else "-",
         }
         for key, formatter in label_map.items():
             if key in self._status_labels:

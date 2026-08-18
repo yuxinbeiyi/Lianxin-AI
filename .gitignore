@@ -28,6 +28,8 @@ env/
 
 # 大模型文件
 models/
+!Lab/HandsDetector/gesture_lab/models/keypoint_classifier.tflite
+!Lab/HandsDetector/gesture_lab/models/keypoint_classifier_label.csv
 # 保留视觉模型（MediaPipe 面部/手势检测）
 # Visual runtime models are downloaded locally; only the setup guide is public.
 !vision/models/
