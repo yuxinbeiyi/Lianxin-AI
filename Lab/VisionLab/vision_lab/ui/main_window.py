@@ -3,7 +3,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
     QMessageBox, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
-    QInputDialog,
+    QInputDialog, QComboBox,
 )
 
 from ..camera.vision_worker import VisionWorker
@@ -33,17 +33,38 @@ class VisionLabWindow(QMainWindow):
         layout.addWidget(title)
 
         body = QHBoxLayout()
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
         self.video = QLabel("摄像头尚未启动")
         self.video.setAlignment(Qt.AlignCenter)
         self.video.setMinimumSize(560, 420)
         self.video.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video.setObjectName("video")
-        body.addWidget(self.video, 3)
+        left_layout.addWidget(self.video, 1)
+        log_title = QLabel("实时事件日志")
+        log_title.setObjectName("logTitle")
+        left_layout.addWidget(log_title)
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMinimumHeight(120)
+        self.log.setMaximumHeight(190)
+        self.log.setPlaceholderText("启动、功能切换、模型状态和识别事件会显示在这里")
+        left_layout.addWidget(self.log)
+        body.addWidget(left, 3)
 
         side = QVBoxLayout()
         feature_frame = QFrame()
         feature_layout = QVBoxLayout(feature_frame)
         feature_layout.addWidget(QLabel("功能开关"))
+        device_row = QHBoxLayout()
+        device_row.addWidget(QLabel("人脸推理"))
+        self.face_device = QComboBox()
+        self.face_device.addItems(["CPU", "GPU"])
+        self.face_device.currentTextChanged.connect(self._on_face_device_changed)
+        device_row.addWidget(self.face_device)
+        feature_layout.addLayout(device_row)
         for key, label in (("face", "人脸识别"), ("gesture", "手势识别"), ("companion", "陪伴检测")):
             check = QCheckBox(label)
             check.stateChanged.connect(lambda state, name=key: self._toggle(name, state))
@@ -66,14 +87,6 @@ class VisionLabWindow(QMainWindow):
 
         log_title = QLabel("实时事件日志")
         log_title.setObjectName("logTitle")
-        layout.addWidget(log_title)
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMinimumHeight(150)
-        self.log.setMaximumHeight(220)
-        self.log.setPlaceholderText("启动、功能切换、模型状态和识别事件会显示在这里")
-        layout.addWidget(self.log)
-
         buttons = QHBoxLayout()
         self.start_button = QPushButton("启动摄像头")
         self.start_button.clicked.connect(self.start)
@@ -119,11 +132,18 @@ class VisionLabWindow(QMainWindow):
         if self.worker is not None:
             self.worker.set_feature_enabled(name, enabled)
 
+    def _on_face_device_changed(self, device):
+        self._append(f"选择人脸推理设备：{device}")
+        if self.worker is not None:
+            self.worker.set_face_device(device)
+
     def start(self):
         if self.thread is not None:
             return
         self.thread = QThread(self)
         self.worker = VisionWorker()
+        self.worker.face_device = self.face_device.currentText()
+        self.worker.face.set_device(self.worker.face_device)
         for name, check in self.checks.items():
             self.worker.enabled[name] = check.isChecked()
         self.worker.moveToThread(self.thread)

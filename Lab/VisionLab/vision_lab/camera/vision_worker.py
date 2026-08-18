@@ -23,7 +23,8 @@ class VisionWorker(QObject):
         self.camera = CameraManager()
         self.enabled = {"face": False, "gesture": False, "companion": False}
         self.gesture = GestureFeature()
-        self.face = FaceFeature()
+        self.face_device = "CPU"
+        self.face = FaceFeature(self.face_device)
         self.companion = CompanionFeature()
         self.pose = PoseFeature()
         self.database = VisionDatabase(Path(__file__).resolve().parents[2] / "data" / "vision.db")
@@ -42,6 +43,8 @@ class VisionWorker(QObject):
         if self.enabled["face"] and not self.face.start():
             self.event_ready.emit(f"人脸识别不可用：{self.face.error}")
             self.enabled["face"] = False
+        elif self.enabled["face"]:
+            self.event_ready.emit(f"人脸推理设备：{self.face.provider or 'CPU'}")
         if self.enabled["companion"] and not self.pose.start():
             self.event_ready.emit(f"姿态检测不可用：{self.pose.error}")
         self._stop = False
@@ -110,6 +113,16 @@ class VisionWorker(QObject):
             if name == "face" and enabled and self.camera.running:
                 if not self.face.start():
                     self.event_ready.emit(f"人脸识别启动失败：{self.face.error}")
+
+    @pyqtSlot(str)
+    def set_face_device(self, device):
+        self.face_device = device.upper()
+        self.face.set_device(self.face_device)
+        if self.enabled["face"] and self.camera.running:
+            if self.face.start():
+                self.event_ready.emit(f"人脸推理设备：{self.face.provider or 'CPUExecutionProvider'}")
+            else:
+                self.event_ready.emit(f"人脸设备切换失败：{self.face.error}")
 
     @pyqtSlot(str)
     def begin_face_enrollment(self, name):
