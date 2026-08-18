@@ -23,6 +23,7 @@ STATE_CANDIDATE = "CANDIDATE"   # 候选帧，等待连续确认
 STATE_CONFIRMED = "CONFIRMED"   # 已确认，准备触发
 STATE_TRIGGERED = "TRIGGERED"   # 刚触发事件
 STATE_COOLDOWN = "COOLDOWN"     # 冷却中
+STATE_WAIT_RELEASE = "WAIT_RELEASE"  # 冷却后等待用户松手
 
 
 @dataclass
@@ -81,6 +82,16 @@ class GestureState:
         self._should_trigger = False
         return result
 
+    def reset(self):
+        self._state = STATE_READY
+        self._gesture = GESTURE_NONE
+        self._confidence = 0.0
+        self._candidate_gesture = GESTURE_NONE
+        self._candidate_frames = 0
+        self._trigger_time = 0.0
+        self._trigger_gesture = GESTURE_NONE
+        self._should_trigger = False
+
     def get_info(self) -> GestureStateInfo:
         """获取当前状态快照（供 UI 显示）。"""
         remaining = 0.0
@@ -108,14 +119,20 @@ class GestureState:
         # ── 冷却状态 ──
         if self._state == STATE_COOLDOWN:
             if now - self._trigger_time >= self.cooldown:
-                # 冷却结束，回到就绪状态
-                self._state = STATE_READY
-                self._gesture = GESTURE_NONE
+                self._state = STATE_WAIT_RELEASE
+                self._gesture = self._trigger_gesture
                 self._candidate_gesture = GESTURE_NONE
                 self._candidate_frames = 0
             else:
                 # 仍在冷却中，不处理新手势
                 return
+
+        if self._state == STATE_WAIT_RELEASE:
+            if gesture == GESTURE_NONE or confidence < 0.3:
+                self._state = STATE_READY
+                self._gesture = GESTURE_NONE
+                self._trigger_gesture = GESTURE_NONE
+            return
 
         # ── 就绪/候选/已确认状态 ──
         if gesture == GESTURE_NONE or confidence < 0.3:

@@ -221,6 +221,7 @@ class WaveDetector:
         # 轨迹：[(timestamp, palm_center_x, palm_center_y, palm_area), ...]
         self._trajectory: deque = deque()
         self._last_gesture = GESTURE_NONE
+        self._last_seen = 0.0
 
     def update(self, landmarks) -> tuple[str, float]:
         """更新一帧数据，返回 (gesture, confidence)。"""
@@ -228,7 +229,13 @@ class WaveDetector:
 
         if landmarks is None or len(landmarks) < 21:
             self._last_gesture = GESTURE_NONE
+            if self._last_seen and now - self._last_seen > 0.25:
+                self._trajectory.clear()
             return GESTURE_NONE, 0.0
+
+        if self._last_seen and now - self._last_seen > 0.25:
+            self._trajectory.clear()
+        self._last_seen = now
 
         cx, cy = _palm_center(landmarks)
         area = _palm_area_approx(landmarks)
@@ -312,6 +319,7 @@ class WaveDetector:
         """重置轨迹。"""
         self._trajectory.clear()
         self._last_gesture = GESTURE_NONE
+        self._last_seen = 0.0
 
 
 class GestureClassifier:

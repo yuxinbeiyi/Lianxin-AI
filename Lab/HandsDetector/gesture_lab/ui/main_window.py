@@ -21,9 +21,10 @@ from ..config import (
     VIDEO_WIDTH_RATIO, MAX_LOG_COUNT,
 )
 from ..camera.camera_manager import CameraManager
+from ..camera.recognition_worker import RecognitionWorker
 from ..vision.hand_detector import HandDetector
 from ..vision.gesture_classifier import GestureClassifier
-from ..vision.gesture_state import GestureState, STATE_READY, STATE_COOLDOWN, STATE_CANDIDATE, STATE_TRIGGERED
+from ..vision.gesture_state import GestureState, STATE_READY, STATE_COOLDOWN, STATE_CANDIDATE, STATE_TRIGGERED, STATE_WAIT_RELEASE
 from ..events.event_manager import EventManager
 from ..events.gesture_event import GestureEvent, GESTURE_NAMES, GESTURE_NONE
 from ..mock.mock_lianxin import MockLianXin
@@ -59,6 +60,8 @@ class GestureLabWindow(QMainWindow):
         self._gesture_state = GestureState()
         self._event_mgr = EventManager()
         self._mock = MockLianXin()
+        self._worker_thread = None
+        self._worker = None
 
         # 注册事件处理器
         self._event_mgr.add_handler("mock_lianxin", self._mock)
@@ -311,35 +314,35 @@ class GestureLabWindow(QMainWindow):
     # ─────────────────────────────────────────────────────
 
     def _on_start_clicked(self):
-        # 初始化手部检测
-        if not self._detector.initialized:
-            ok = self._detector.initialize()
-            if not ok:
-                QMessageBox.critical(self, "初始化失败", self._detector.init_error)
-                return
-
-        # 启动摄像头
-        ok = self._camera.start()
-        if not ok:
-            QMessageBox.warning(self, "摄像头启动失败", self._camera.error)
+        if self._worker_thread is not None:
             return
-
-        # 启动定时器
+        from PyQt5.QtCore import QThread
+        self._worker_thread = QThread(self)
+        self._worker = RecognitionWorker()
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.started.connect(self._on_worker_started)
+        self._worker.frame_ready.connect(self._show_frame)
+        self._worker.status_ready.connect(self._update_status_panel)
+        self._worker.gesture_event.connect(self._on_gesture_event_signal)
+        self._worker.stopped.connect(self._on_worker_stopped)
+        self._worker.stopped.connect(self._worker_thread.quit)
+        self._worker_thread.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._worker_thread.deleteLater)
+        self._worker_thread.finished.connect(self._clear_worker)
+        self._worker_thread.start()
         self._paused = False
-        self._timer.start(16)  # ~60 FPS 刷新
-        self._classifier.reset()
-
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._btn_pause.setEnabled(True)
         self._btn_pause.setText("暂停识别")
 
-        self._append_log("系统", "摄像头已启动，手势识别开始运行")
-
     def _on_stop_clicked(self):
+        if self._worker is not None:
+            self._worker.stop()
+        else:
+            self._camera.stop()
         self._timer.stop()
-        self._camera.stop()
-        self._classifier.reset()
         self._paused = False
 
         self._btn_start.setEnabled(True)
@@ -364,10 +367,29 @@ class GestureLabWindow(QMainWindow):
             self._btn_pause.setText("暂停识别")
             self._classifier.reset()
             self._append_log("系统", "识别已恢复")
+        if self._worker is not None:
+            self._worker.set_paused(self._paused)
 
     def _on_clear_clicked(self):
         self._log_view.clear()
         self._event_mgr.clear_history()
+
+    @pyqtSlot(bool, str)
+    def _on_worker_started(self, ok: bool, message: str):
+        if ok:
+            self._append_log("系统", "摄像头已启动，CPU 手势识别开始运行")
+        else:
+            self._on_stop_clicked()
+            QMessageBox.warning(self, "识别启动失败", message)
+
+    @pyqtSlot()
+    def _on_worker_stopped(self):
+        self._append_log("系统", "摄像头已关闭")
+
+    @pyqtSlot()
+    def _clear_worker(self):
+        self._worker = None
+        self._worker_thread = None
 
     # ─────────────────────────────────────────────────────
     # 主循环
@@ -571,6 +593,11 @@ class GestureLabWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭时释放资源。"""
         self._timer.stop()
+        if self._worker is not None:
+            self._worker.stop()
+        if self._worker_thread is not None:
+            self._worker_thread.quit()
+            self._worker_thread.wait(3000)
         self._camera.stop()
         self._detector.close()
         super().closeEvent(event)
