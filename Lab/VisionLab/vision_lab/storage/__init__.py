@@ -1,0 +1,1 @@
+"""Local VisionLab persistence."""
