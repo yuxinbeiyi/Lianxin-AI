@@ -1216,7 +1216,7 @@ class QQBridgeWorker(QThread):
                 del self._sessions[session_key]
 
             # ── 确定用户上下文（让 AI 知道在跟谁说话） ─────
-            disable_tools = not is_owner
+            disable_tools = False  # guest sessions use whitelist-filtered tools
 
             # ── 判断是群聊还是私聊 ──────────────────────────
             is_group = session_key.startswith("qq_group_")
@@ -1297,7 +1297,9 @@ class QQBridgeWorker(QThread):
                     f"对方不是你的主人；禁止透露主人的姓名、账号、联系方式和私人信息，"
                     f"也禁止透露主人与你（莲心）之间的聊天内容、记忆或个人档案。"
                     f"如果对方询问主人或你与主人之间的隐私，请委婉拒绝，可以说「这是我和主人之间的秘密」。"
-                    f"注意：你无法为对方使用任何工具（如打开软件、搜索网页、读写文件等），只能进行纯文本聊天。"
+                    f"你可以为对方使用以下工具：查询时间(get_current_time)、查询天气(get_weather，必须先问对方在哪个城市)、"
+                    f"联网搜索(web_search)、读取网页(fetch_webpage)、B站搜索(bilibili_search)。"
+                    f"其他工具（如打开软件、读写文件、记忆管理等）仅限主人使用。"
                     f"{group_note}"
                     f"{qq_platform_note}"
                 )

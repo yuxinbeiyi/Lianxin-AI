@@ -191,6 +191,12 @@ _OWNER_MEMORY_TOOLS = {
     "query_recent_contacts", "query_qq_friend_list",
     "read_diary", "write_diary",
 }
+_GUEST_ALLOWED_TOOLS = {
+    "get_current_time", "get_weather",
+    "web_search", "fetch_webpage", "fetch_webpage_via_api",
+    "fetch_webpage_browser", "fetch_webpage_stealth",
+    "bilibili_search",
+}
 
 def _get_group_lock(group: str) -> threading.Lock:
     if group not in _resource_locks:
@@ -1492,9 +1498,9 @@ class AgentCore:
         for tc in tool_calls:
             name = tc.function.name
             if (not getattr(self, "_owner_scope", True)
-                    and name in _OWNER_MEMORY_TOOLS):
-                result = "当前不是主人会话，代码层已阻止访问或修改主人记忆。"
-                print(f"  [隐私边界] 已阻止非主人记忆工具: {name}", flush=True)
+                    and name not in _GUEST_ALLOWED_TOOLS):
+                result = "当前不是主人会话，此工具不可用。"
+                print(f"  [权限边界] 已阻止非主人工具: {name}", flush=True)
                 messages.append({
                     "role": "tool", "tool_call_id": tc.id, "content": result,
                 })
@@ -1527,6 +1533,19 @@ class AgentCore:
                     "role": "tool", "tool_call_id": tc.id,
                     "content": f"参数解析失败，原始参数: {raw_args}。请修正 JSON 格式后重试。",
                 })
+                continue
+
+            # guest weather privacy guard: non-owner must provide a city
+            if (not getattr(self, "_owner_scope", True)
+                    and name == "get_weather"
+                    and not str((args or {}).get("city", "") or "").strip()):
+                result = "请告诉我你想查询哪个城市的天气？"
+                print(f"  [隐私保护] 非主人查天气未指定城市，已拦截", flush=True)
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.id, "content": result,
+                })
+                if on_tool_result:
+                    on_tool_result(name, result, True, 0.0)
                 continue
 
             if name == "request_tools":
@@ -2790,6 +2809,9 @@ class AgentCore:
                 runtime_disabled_names.update(_MEMORY_WRITE_TOOLS)
             if not getattr(self, "_owner_scope", True):
                 runtime_disabled_names.update(_OWNER_MEMORY_TOOLS)
+                # guest session: only whitelisted tools are allowed
+                all_tool_names = {t.get("function", {}).get("name", "") for t in all_tools}
+                runtime_disabled_names.update(all_tool_names - _GUEST_ALLOWED_TOOLS)
             if runtime_disabled_names:
                 all_tools = [
                     t for t in all_tools
