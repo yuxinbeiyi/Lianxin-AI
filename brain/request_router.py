@@ -402,9 +402,10 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if github_specific_task:
         capabilities.add("github")
         reasons.append("明确要求 GitHub 仓库数据或文件内容")
-        # A specific GitHub API task must not be diverted to generic webpage
-        # extraction. Bare repository explanations retain fetch_webpage below.
         capabilities.discard("web_fetch")
+    elif github_reference:
+        capabilities.add("web_search")
+        reasons.append("提及仓库/项目但无具体 GitHub 操作，需要联网搜索")
     if _URL_RE.search(text) and not github_specific_task:
         capabilities.add("web_fetch")
         reasons.append("包含 URL")

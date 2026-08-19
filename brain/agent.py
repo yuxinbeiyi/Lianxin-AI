@@ -3685,11 +3685,15 @@ class AgentCore:
                 if _breaker_reason:
                     print(f"  [熔断器] {_breaker_reason}，下一轮强制 tool_choice=none", flush=True)
                     _force_text_response = True
+                    _breaker_hint = ""
+                    if _same_tool_streak_name == "run_command":
+                        _breaker_hint = "（注意：run_command 不能调用其他工具。如果需要搜索请用 web_search，需要读取网页请用 fetch_webpage。）"
                     messages.append({
                         "role": "system",
                         "content": (
                             f"检测到{_breaker_reason}，判定为陷入循环。"
                             "下一轮你必须停止调用工具，基于已有信息直接给出最终回答。"
+                            f"{_breaker_hint}"
                         ),
                     })
 

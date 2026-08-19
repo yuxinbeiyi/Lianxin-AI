@@ -3190,7 +3190,15 @@ def run_command(command: str) -> str:
     from config import ALLOWED_COMMANDS
     cmd_lower = command.strip().lower()
     if not any(cmd_lower.startswith(c) for c in ALLOWED_COMMANDS):
-        return f"拒绝执行：'{command}' 不在允许的命令白名单中"
+        _hint = ""
+        _cmd = command.strip().lower()
+        if _cmd.startswith(("web_search", "search_web")):
+            _hint = " 提示：web_search 是独立工具，请直接调用 web_search 而非通过 run_command。"
+        elif _cmd.startswith(("fetch_webpage", "fetch_url")):
+            _hint = " 提示：fetch_webpage 是独立工具，请直接调用 fetch_webpage 而非通过 run_command。"
+        elif _cmd.startswith(("github_", )):
+            _hint = " 提示：GitHub 相关操作有专用工具（如 github_search_repositories），请直接调用对应工具。"
+        return f"拒绝执行：'{command}' 不在允许的命令白名单中。{_hint}"
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True,

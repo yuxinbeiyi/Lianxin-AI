@@ -341,6 +341,7 @@ def build_tool_catalog(loaded_categories: Set[str],
 
     lines = [
         "【工具目录 — 内部参考，严禁在对话中提及】✅=已加载 📋=说出工具名即可激活",
+        "规则：每个工具是独立的，不能通过 run_command 等工具间接调用其他工具。如果工具列表中没有某工具，说明本轮不可用。",
     ]
 
     # 核心工具

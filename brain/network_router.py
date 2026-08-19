@@ -324,6 +324,24 @@ def _format_results(source: str, query: str, rows: list[dict], title: str, url: 
     return "\n".join(lines)
 
 
+_SPA_SHELL_MARKERS = (
+    "Skip to content",
+    "You signed in with another tab",
+    "We read every piece of feedback",
+    "Sign in",
+    "Loading...",
+)
+
+
+def _is_spa_shell(markdown: str) -> bool:
+    """检测 Firecrawl 返回的是否仅为 SPA 外壳（导航栏等），无实质内容。"""
+    if not markdown or len(markdown.strip()) < 80:
+        return True
+    lines = [l.strip() for l in markdown.splitlines() if l.strip()]
+    shell_count = sum(1 for l in lines if any(m in l for m in _SPA_SHELL_MARKERS))
+    return shell_count >= 2 and len(lines) <= 20
+
+
 def _fetch_firecrawl(url: str, max_length: int) -> str | None:
     import requests
     from config import get_firecrawl_config
@@ -335,5 +353,8 @@ def _fetch_firecrawl(url: str, max_length: int) -> str | None:
     payload = response.json()
     markdown = str((payload.get("data") or {}).get("markdown") or "")
     if not markdown:
+        return None
+    if _is_spa_shell(markdown):
+        logger.info("Firecrawl 返回 SPA 外壳（%d 行），视为空结果以触发降级", len(markdown.splitlines()))
         return None
     return "[Firecrawl Markdown]\n\n" + markdown[:max_length]
