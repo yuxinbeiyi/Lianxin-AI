@@ -3,7 +3,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
     QMessageBox, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
-    QInputDialog, QComboBox,
+    QInputDialog, QComboBox, QSplitter,
 )
 
 from ..camera.vision_worker import VisionWorker
@@ -14,7 +14,7 @@ class VisionLabWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("莲心视觉感知实验室")
         self.resize(1200, 720)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1120, 720)
         self.thread = None
         self.worker = None
         self.checks = {}
@@ -32,29 +32,37 @@ class VisionLabWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        body = QHBoxLayout()
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(4)
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(0, 0, 0, 0)
         self.video = QLabel("摄像头尚未启动")
         self.video.setAlignment(Qt.AlignCenter)
         self.video.setMinimumSize(560, 420)
         self.video.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video.setObjectName("video")
-        left_layout.addWidget(self.video, 1)
+        video_panel = QWidget()
+        video_layout = QVBoxLayout(video_panel)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.addWidget(self.video)
+        video_panel.setMinimumWidth(620)
+        splitter.addWidget(log_panel)
+        splitter.addWidget(video_panel)
         log_title = QLabel("实时事件日志")
         log_title.setObjectName("logTitle")
-        left_layout.addWidget(log_title)
+        log_layout.addWidget(log_title)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(120)
         self.log.setMaximumHeight(190)
         self.log.setPlaceholderText("启动、功能切换、模型状态和识别事件会显示在这里")
-        left_layout.addWidget(self.log)
-        body.addWidget(left, 3)
+        log_layout.addWidget(self.log, 1)
+        log_panel.setMinimumWidth(280)
 
-        side = QVBoxLayout()
+        side_widget = QWidget()
+        side_widget.setMinimumWidth(360)
+        side = QVBoxLayout(side_widget)
         feature_frame = QFrame()
         feature_layout = QVBoxLayout(feature_frame)
         feature_layout.addWidget(QLabel("功能开关"))
@@ -75,15 +83,32 @@ class VisionLabWindow(QMainWindow):
         status_frame = QFrame()
         status_layout = QGridLayout(status_frame)
         status_layout.addWidget(QLabel("当前状态"), 0, 0, 1, 2)
-        for row, (key, label) in enumerate((("camera", "摄像头"), ("fps", "FPS"), ("hands", "双手"), ("gesture", "手势"), ("gesture_confidence", "手势置信度"), ("gesture_state", "手势状态"), ("face", "人脸"), ("face_count", "人脸数量"), ("face_confidence", "人脸置信度"), ("companion", "陪伴"), ("pose_confidence", "姿态置信度"), ("work_duration", "陪伴时长")), 1):
+        for row, (key, label) in enumerate((("camera", "摄像头"), ("fps", "FPS"), ("hands", "双手"), ("gesture", "手势"), ("gesture_confidence", "手势置信度"), ("gesture_state", "手势状态"), ("face", "人脸"), ("face_count", "人脸数量"), ("face_confidence", "人脸置信度"), ("companion", "陪伴"), ("pose_confidence", "姿态置信度"), ("work_duration", "当前陪伴时长"), ("today_presence", "今日陪伴总时长"), ("today_sessions", "今日陪伴次数")), 1):
             value = QLabel("-")
+            value.setObjectName("statusValue")
             self.status[key] = value
-            status_layout.addWidget(QLabel(label), row, 0)
+            key_label = QLabel(label)
+            key_label.setObjectName("statusLabel")
+            status_layout.addWidget(key_label, row, 0)
             status_layout.addWidget(value, row, 1)
+        for key, label in (("model_gesture", "Model gesture"),
+                           ("model_confidence", "Model confidence")):
+            row_index = status_layout.rowCount()
+            key_label = QLabel(label)
+            key_label.setObjectName("statusLabel")
+            value = QLabel("-")
+            value.setObjectName("statusValue")
+            status_layout.addWidget(key_label, row_index, 0)
+            status_layout.addWidget(value, row_index, 1)
+            self.status[key] = value
         side.addWidget(status_frame)
         side.addStretch()
-        body.addLayout(side, 1)
-        layout.addLayout(body, 1)
+        splitter.addWidget(side_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([300, 700, 380])
+        layout.addWidget(splitter, 1)
 
         log_title = QLabel("实时事件日志")
         log_title.setObjectName("logTitle")
@@ -121,6 +146,9 @@ class VisionLabWindow(QMainWindow):
             #video, QFrame, QTextEdit { background: #19212d; border: 1px solid #334155; border-radius: 6px; }
             QFrame { padding: 8px; }
             #logTitle { color: #94a3b8; font-weight: bold; padding-top: 4px; }
+            #statusLabel { color: #cbd5e1; font-size: 12px; }
+            #statusValue { color: #f8fafc; font-size: 13px; font-weight: 600; }
+            QFrame QLabel { color: #e2e8f0; }
             QCheckBox { padding: 8px 2px; }
             QPushButton { padding: 8px 22px; background: #334155; border: 0; border-radius: 4px; }
             QPushButton:hover { background: #475569; }
@@ -196,6 +224,8 @@ class VisionLabWindow(QMainWindow):
             if key in self.status:
                 if key == "work_duration":
                     value = f"{int(value) // 60:02d}:{int(value) % 60:02d}"
+                elif key == "today_presence":
+                    value = f"{int(value) // 3600:02d}:{int(value) % 3600 // 60:02d}"
                 self.status[key].setText(str(value))
 
     def _append(self, message):

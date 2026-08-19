@@ -7,6 +7,14 @@ let shellStatus = '全部';
 let shellSort = 'recent';
 let shellLayout = 'grid';
 let weeklyRows = [];
+let coastStatIndex = 0;
+let musicSecondsForStat = 0;
+const fmtMusicDuration = value => {
+  const totalMinutes = Math.max(0, Math.floor(Number(value || 0) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours}h${String(minutes).padStart(2, '0')}min` : `${minutes}min`;
+};
 
 const art = { shell: '◔', star: '✦', bottle: '◒', boat: '△', scope: '◉', anchor: '⚓', pearl: '○', music: '♫' };
 const twoDigit = value => value < 10 ? `0${value}` : String(value);
@@ -18,7 +26,13 @@ const fmtSec = value => {
   if (hours) return `${hours}h ${minutes < 10 ? '0' : ''}${minutes}min`;
   return `${minutes}min`;
 };
-const stat = (label, value, sub = '') => `<section class="card metric-card"><div class="label">${label}</div><div class="number">${value}</div><div class="label">${sub}</div></section>`;
+const stat = (label, value, sub = '') => {
+  coastStatIndex += 1;
+  if (coastStatIndex === 4) {
+    return `<section class="card metric-card"><div class="label">耳机另一半</div><div class="number">${fmtMusicDuration(musicSecondsForStat)}</div><div class="label">陪你听歌的总时长</div></section>`;
+  }
+  return `<section class="card metric-card"><div class="label">${label}</div><div class="number">${value}</div><div class="label">${sub}</div></section>`;
+};
 function hero(title, copy, extra = '') { return `<section class="hero"><div><p class="eyebrow">莲心</p><h1>${title}</h1><p>${copy}</p></div>${extra}</section>`; }
 
 function dateKey(value) { return String(value || '').slice(0, 10); }
@@ -41,6 +55,8 @@ function recentEvents() {
   return (state.events || []).slice(0, 5).map(event => `<article class="event recent-event" data-journal-event="${esc(event.event_id || event.id || '')}"><time>${esc((event.occurred_at || '').slice(0, 16).replace('T', ' '))}</time><h3>${esc(event.title || '一段共同旅程')}</h3><p>${esc(event.summary || '这一刻被轻轻记录在数据潮汐里。')}</p></article>`).join('') || '<p class="empty-state">潮水刚刚开始，新的共同回忆会慢慢写在这里。</p>';
 }
 function coast() {
+  coastStatIndex = 0;
+  musicSecondsForStat = Number((state.metrics || {}).music_seconds || 0);
   const today = state.today || {};
   const metrics = state.metrics || {};
   const achievements = state.achievements || [];

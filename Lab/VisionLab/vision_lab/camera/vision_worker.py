@@ -65,10 +65,16 @@ class VisionWorker(QObject):
             if self.enabled["companion"]:
                 frame, pose_status = self.pose.process(frame)
                 present = pose_status["pose_present"] if self.pose.initialized else face_status["face_count"] > 0
-                companion_state, events, work_duration = self.companion.update(1 if present else 0)
+                identity = face_status.get("identity", "UNKNOWN") if present else "UNKNOWN"
+                companion_state, events, work_duration = self.companion.update(
+                    1 if present else 0, identity)
                 for event in events:
                     self.event_ready.emit(event)
                     self.database.record_event(event)
+                    if event in ("USER_ENTER", "USER_RETURN"):
+                        self.database.add_presence_time(0, session_started=True)
+                    elif event == "USER_LEAVE":
+                        self.database.add_presence_time(work_duration, left_at=None)
             if self.enabled["gesture"]:
                 frame, gesture_status = self.gesture.process(frame)
             self.frame_ready.emit(frame)
@@ -87,6 +93,9 @@ class VisionWorker(QObject):
                 "work_duration": round(work_duration),
                 "pose_confidence": pose_status["pose_confidence"] if self.enabled["companion"] else 0.0,
             }
+            summary = self.database.today_summary()
+            status["today_presence"] = round(summary["total_seconds"])
+            status["today_sessions"] = summary["session_count"]
             self.status_ready.emit(status)
             remaining = 1 / 30 - (time.monotonic() - started)
             if remaining > 0:

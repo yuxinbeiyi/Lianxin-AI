@@ -34,7 +34,7 @@ class FaceFeature:
         self.provider = ""
         self._last_inference = 0.0
         self._last_status = {"face": "未检测到人脸", "face_count": 0,
-                             "face_confidence": 0.0}
+                             "face_confidence": 0.0, "identity": "UNKNOWN"}
         self._last_boxes = []
 
     def _load_profile(self):
@@ -119,7 +119,7 @@ class FaceFeature:
     def process(self, frame):
         if not self.initialized or self.analysis is None:
             return frame, {"face": "未初始化", "face_count": 0,
-                            "face_confidence": 0.0}
+                            "face_confidence": 0.0, "identity": "UNKNOWN"}
         now = time.monotonic()
         if now - self._last_inference < self.INFERENCE_INTERVAL:
             self._draw_boxes(frame)
@@ -136,6 +136,7 @@ class FaceFeature:
                 label = self.user_name if is_user else "陌生人"
                 box = np.asarray(face.bbox, dtype=np.int32).tolist()
                 self._last_boxes.append((box, label, is_user))
+            identity = "UNKNOWN"
             if self.enrolling:
                 if faces:
                     self.enroll_embeddings.append(np.asarray(faces[0].embedding, dtype=np.float32))
@@ -143,22 +144,26 @@ class FaceFeature:
                 if len(self.enroll_embeddings) >= 15:
                     self._finish_enrollment()
                     state = f"已录入 {self.user_name}"
+                    identity = "USER"
             elif count == 0:
                 state = "未检测到人脸"
             elif self.user_embedding is None:
                 state = "检测到人脸（未录入本人）"
+                identity = "STRANGER"
             else:
                 similarity = self._similarity(faces[0].embedding)
                 state = (f"本人：{self.user_name}" if similarity >= 0.45
                          else "陌生人")
+                identity = "USER" if similarity >= 0.45 else "STRANGER"
             self._last_status = {"face": state, "face_count": count,
-                                 "face_confidence": round(confidence, 2)}
+                                 "face_confidence": round(confidence, 2),
+                                 "identity": identity}
             self._draw_boxes(frame)
             return frame, dict(self._last_status)
         except Exception as exc:
             self.error = str(exc)
             self._last_status = {"face": "检测异常", "face_count": 0,
-                                 "face_confidence": 0.0}
+                                 "face_confidence": 0.0, "identity": "UNKNOWN"}
             return frame, dict(self._last_status)
 
     def _draw_boxes(self, frame):
