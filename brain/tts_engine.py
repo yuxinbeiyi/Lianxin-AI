@@ -546,19 +546,42 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
     """Edge-TTS 语音合成（原 generate_audio.py 实现）。返回 bool。"""
     import asyncio
     import edge_tts
+    import random
     from brain.audio_utils import _configure_pydub_ffmpeg
 
     mp3_path = output_path + ".mp3"
+    max_retries = 3
+    last_error = None
     try:
         _configure_pydub_ffmpeg()
         from pydub import AudioSegment
-        asyncio.run(edge_tts.Communicate(text, voice).save(mp3_path))
-        audio = AudioSegment.from_mp3(mp3_path)
-        audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)
-        audio.export(output_path, format="wav")
-        return True
-    except Exception as e:
-        logger.error(f"Edge-TTS 合成失败: {e}")
+        for attempt in range(max_retries + 1):
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(
+                        edge_tts.Communicate(text, voice).save(mp3_path)
+                    )
+                finally:
+                    loop.close()
+                if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 256:
+                    raise RuntimeError("Edge-TTS returned an empty audio file")
+                audio = AudioSegment.from_mp3(mp3_path)
+                audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)
+                audio.export(output_path, format="wav")
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt < max_retries:
+                    base_delay = 1.5 * (2 ** attempt)
+                    jitter = random.uniform(0, 0.5)
+                    delay = base_delay + jitter
+                    logger.warning(
+                        "Edge-TTS 暂时失败（第 %s/%s 次）：%s；%.1fs 后重试",
+                        attempt + 1, max_retries, exc, delay,
+                    )
+                    time.sleep(delay)
+        logger.error(f"Edge-TTS 合成失败: {last_error}")
         return False
     finally:
         for p in (mp3_path,):

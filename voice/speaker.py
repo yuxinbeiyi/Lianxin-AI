@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 import edge_tts
 import pygame
 
@@ -331,6 +332,9 @@ class VoiceSpeaker:
         except OSError:
             pass
 
+    _last_edge_tts_time: float = 0.0
+    _edge_tts_min_interval: float = 0.5
+
     def _synthesize_sentence(self, text: str, engine, mood: str,
                              speed: float, sequence: int | None = None) -> str | None:
         """合成单句并返回可播放文件。
@@ -347,15 +351,21 @@ class VoiceSpeaker:
             self._remove_temp_file(wav_path)
             logger.warning("GPT-SoVITS 合成失败，回退 Edge-TTS")
 
+        now = time.monotonic()
+        elapsed = now - VoiceSpeaker._last_edge_tts_time
+        if elapsed < VoiceSpeaker._edge_tts_min_interval:
+            time.sleep(VoiceSpeaker._edge_tts_min_interval - elapsed)
+
         mp3_path = self._new_temp_path(f"{tag}.mp3")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(self._async_synthesize(text, mp3_path))
+            VoiceSpeaker._last_edge_tts_time = time.monotonic()
             logger.info(f"TTS 使用 Edge-TTS（MP3，text_len={len(text)}）")
             return mp3_path
         except Exception as e:
-            logger.error(f"Edge-TTS 合成失败: {e}")
+            logger.error(f"Edge-TTS 合成失败（已丢弃分句「{text[:30]}」）: {e}")
             self._remove_temp_file(mp3_path)
             return None
         finally:
@@ -377,11 +387,10 @@ class VoiceSpeaker:
             return None
 
     async def _async_synthesize(self, text: str, path: str):
-        # Edge-TTS uses a short-lived websocket. 503/empty responses are often
-        # transient service throttling, so retry with a fresh connection before
-        # surfacing the failure to the caller.
+        import random
         last_error = None
-        for attempt in range(3):
+        max_retries = 3
+        for attempt in range(max_retries + 1):
             try:
                 self._remove_temp_file(path)
                 communicate = edge_tts.Communicate(text, self._voice)
@@ -391,9 +400,14 @@ class VoiceSpeaker:
                 return
             except Exception as exc:
                 last_error = exc
-                if attempt < 2:
-                    delay = 0.8 * (attempt + 1)
-                    logger.warning("Edge-TTS 暂时失败（第 %s/2 次）：%s；%.1fs 后重试", attempt + 1, exc, delay)
+                if attempt < max_retries:
+                    base_delay = 1.5 * (2 ** attempt)
+                    jitter = random.uniform(0, 0.5)
+                    delay = base_delay + jitter
+                    logger.warning(
+                        "Edge-TTS 暂时失败（第 %s/%s 次）：%s；%.1fs 后重试",
+                        attempt + 1, max_retries, exc, delay,
+                    )
                     await asyncio.sleep(delay)
         raise last_error
 
