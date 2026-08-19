@@ -213,20 +213,22 @@ _TEXT_FUNCTION_CALL_RE = re.compile(
 )
 
 
-def contains_textual_tool_protocol(content: Any) -> bool:
+def contains_textual_tool_protocol(content: Any, *, has_real_tool_result: bool = False) -> bool:
     """检测被模型写进普通正文的内部工具协议，包括未闭合的流式前缀。"""
+    # 当 has_real_tool_result=True 时，本轮已有真实工具结果，模型提及工具名属正常总结，仅检测 XML/DSML 标签形式伪调用。
     text = _content_text(content)
     if not text:
         return False
     lowered = text.lower()
-    return bool(
-        _TEXT_TOOL_PROTOCOL_RE.search(text)
-        or "<tool" in lowered
-        or "<function" in lowered
-        or "<parameter" in lowered
-        or "dsml" in lowered and ("tool_call" in lowered or "<｜" in text)
-        or _TEXT_FUNCTION_CALL_RE.match(text) is not None
-    )
+    if _TEXT_TOOL_PROTOCOL_RE.search(text):
+        return True
+    if "<tool" in lowered or "<function" in lowered or "<parameter" in lowered:
+        return True
+    if "dsml" in lowered and ("tool_call" in lowered or "<｜" in text):
+        return True
+    if has_real_tool_result:
+        return False
+    return _TEXT_FUNCTION_CALL_RE.match(text) is not None
 
 
 _MEMORY_BLOCK_RE = re.compile(

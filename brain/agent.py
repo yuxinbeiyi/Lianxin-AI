@@ -2818,6 +2818,29 @@ class AgentCore:
                     if t.get("function", {}).get("name", "") not in runtime_disabled_names
                 ]
 
+                # 注入当前可用工具摘要，避免模型凭记忆误判工具状态。
+                _tool_names = [t.get("function", {}).get("name", "") for t in all_tools]
+                if _tool_names and not route.is_light:
+                    _tool_summary_lines = []
+                    _search_tools = [n for n in _tool_names if n in ("web_search", "bilibili_search")]
+                    _fetch_tools = [n for n in _tool_names if n in ("fetch_webpage", "fetch_webpage_via_api", "fetch_webpage_browser", "fetch_webpage_stealth")]
+                    _github_tools = [n for n in _tool_names if n.startswith("github_")]
+                    _other_tools = [n for n in _tool_names if n not in _search_tools and n not in _fetch_tools and n not in _github_tools and n not in ("request_tools", "query_capabilities")]
+                    if _search_tools:
+                        _tool_summary_lines.append(f"搜索类: {', '.join(_search_tools)}")
+                    if _fetch_tools:
+                        _tool_summary_lines.append(f"网页读取类: {', '.join(_fetch_tools)}")
+                    if _github_tools:
+                        _tool_summary_lines.append(f"GitHub类: {', '.join(_github_tools)}")
+                    if _other_tools:
+                        _tool_summary_lines.append(f"其他: {', '.join(_other_tools[:8])}")
+                    if _tool_summary_lines:
+                        _tool_summary = "；".join(_tool_summary_lines)
+                        messages.append({
+                            "role": "system",
+                            "content": f"【当前可用工具】{_tool_summary}。不要声称工具已停用，如果工具在上面的列表中就是可用的。",
+                        })
+
             # Keep light chat tool-free, except for an explicit question about
             # Lianxin's own capabilities.  That answer must come from the live
             # catalog rather than the model's memory.
@@ -3080,6 +3103,7 @@ class AgentCore:
         self._search_budget_exhausted = False
         _evidence_signatures: set[tuple[int, str]] = set()
         _no_new_evidence_count = 0
+        _has_real_tool_result = False  # 本轮任务中是否已有真实工具结果
         _SEARCH_READ_TOOLS = {
             "search_files_everything", "search_graph_memory", "search_conversation_history",
             "search_cross_session", "query_recent_contacts", "query_qq_friend_list",
@@ -3399,7 +3423,7 @@ class AgentCore:
                         and not has_successful_network_change(request_audit)):
                     return "联网工具配置没有修改成功，因此我没有把它当成已停用或已调整；本轮后续搜索也已停止。"
 
-                if contains_textual_tool_protocol(content):
+                if contains_textual_tool_protocol(content, has_real_tool_result=_has_real_tool_result):
                     _text_protocol_retry_count += 1
                     print(
                         "[协议防泄漏] 检测到正文伪工具调用，已丢弃并请求安全收尾",
@@ -3611,6 +3635,7 @@ class AgentCore:
                 _evidence_signatures.update(_usable_evidence)
                 if _new_evidence:
                     _no_new_evidence_count = 0
+                    _has_real_tool_result = True
                 elif new_summaries:
                     _no_new_evidence_count += 1
 
@@ -3644,7 +3669,7 @@ class AgentCore:
                         "role": "system",
                         "content": (
                             "检测到连续多轮返回相同结果，判定为死循环。"
-                            "下一轮你必须停止调用工具，基于已有信息直接给出最终回答。"
+                            "系统已强制关闭本轮工具调用能力（tool_choice=none），你无法再调用任何工具。请基于已有信息直接给出最终回答，不要尝试调用工具。"
                         ),
                     })
 

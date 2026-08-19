@@ -356,5 +356,19 @@ def _fetch_firecrawl(url: str, max_length: int) -> str | None:
         return None
     if _is_spa_shell(markdown):
         logger.info("Firecrawl 返回 SPA 外壳（%d 行），视为空结果以触发降级", len(markdown.splitlines()))
+        # GitHub 仓库页面常被 SPA 外壳包裹，自动降级到 raw README 重试一次。
+        import re as _re
+        _GITHUB_REPO_RE = _re.compile(r"https?://github\.com/([^/]+/[^/]+)(?:/.*)?$")
+        _m = _GITHUB_REPO_RE.match(url.split("?")[0].split("#")[0])
+        if _m:
+            _repo = _m.group(1)
+            for _branch in ("main", "master"):
+                _raw_url = f"https://raw.githubusercontent.com/{_repo}/{_branch}/README.md"
+                try:
+                    _raw_resp = requests.get(_raw_url, timeout=10)
+                    if _raw_resp.ok and len(_raw_resp.text.strip()) > 80:
+                        return "[Firecrawl Markdown]\n\n" + _raw_resp.text[:max_length]
+                except Exception:
+                    pass
         return None
     return "[Firecrawl Markdown]\n\n" + markdown[:max_length]

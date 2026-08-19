@@ -18,7 +18,7 @@ NETWORK_READ_TOOLS = {
     "web_search", "fetch_webpage", "fetch_webpage_via_api",
     "fetch_webpage_stealth", "fetch_webpage_browser",
 }
-URL_FETCH_TOOLS = {"fetch_webpage"}
+URL_FETCH_TOOLS = {"fetch_webpage", "web_search", "bilibili_search"}
 GITHUB_READ_TOOLS = {
     "github_search_repositories", "github_get_readme", "github_get_file",
     "github_list_directory", "github_list_commits",
@@ -216,7 +216,7 @@ def authorize_tool_call(name: str, args: dict, request_text: str,
                 "请使用 browser_navigate/browser_snapshot/browser_click/browser_fill/browser_press/browser_scroll/browser_wait/browser_tabs 完成浏览器交互；"
                 "如用户明确要求接管已打开浏览器，可使用 browser_connect。"
                 if _BROWSER_INTERACTION_RE.search(request)
-                else "请仅使用 fetch_webpage 获取该 URL 的正文。"
+                else "请使用 fetch_webpage 获取该 URL 的正文；如抓取失败，可改用 web_search 搜索相关信息。"
             )
         )
 
