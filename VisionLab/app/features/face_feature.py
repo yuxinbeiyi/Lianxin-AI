@@ -11,10 +11,11 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont
 
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
 EMBEDDING_PATH = DATA_DIR / "user_embedding.npy"
 PROFILE_PATH = DATA_DIR / "user_profile.json"
-INSIGHTFACE_ROOT = Path(__file__).resolve().parents[1] / "models" / "insightface"
+INSIGHTFACE_ROOT = PROJECT_ROOT / "models" / "face"
 
 
 class FaceFeature:
@@ -66,8 +67,10 @@ class FaceFeature:
                         self.error = "onnxruntime-gpu 不可用，已回退 CPU"
                 except Exception:
                     self.error = "无法检测 CUDA Provider，已回退 CPU"
-            self.analysis = FaceAnalysis(name="buffalo_l",
-                                          root=str(INSIGHTFACE_ROOT),
+            # InsightFace resolves models as ``root/models/<name>``.  The
+            # reorganized lab stores the bundle at ``models/face/buffalo_l``.
+            self.analysis = FaceAnalysis(name="face/buffalo_l",
+                                          root=str(PROJECT_ROOT),
                                           providers=requested)
             self.analysis.prepare(ctx_id=ctx_id, det_size=(640, 640))
             models = self.analysis.models.values() if isinstance(self.analysis.models, dict) else self.analysis.models

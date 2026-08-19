@@ -6,8 +6,8 @@
 from pathlib import Path
 
 # ── 路径 ──────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parent
-MODELS_DIR = BASE_DIR / "models"
+BASE_DIR = Path(__file__).resolve().parents[3]
+MODELS_DIR = BASE_DIR / "models" / "hand"
 LOGS_DIR = BASE_DIR / "logs"
 MODEL_PATH = MODELS_DIR / "hand_landmarker.task"
 DIGIT_MODEL_PATH = MODELS_DIR / "keypoint_classifier.tflite"

@@ -12,7 +12,7 @@ import time
 from collections import deque
 from typing import Optional
 
-from ..config import (
+from .config import (
     OK_DISTANCE_RATIO,
     OK_FINGER_EXTEND_RATIO,
     THUMBS_UP_RATIO,
@@ -22,7 +22,7 @@ from ..config import (
     WAVE_MIN_DISPLACEMENT_RATIO,
     WAVE_AREA_STABILITY,
 )
-from ..events.gesture_event import GESTURE_NONE, GESTURE_OK, GESTURE_THUMBS_UP, GESTURE_WAVE
+from .gesture_event import GESTURE_NONE, GESTURE_OK, GESTURE_THUMBS_UP, GESTURE_WAVE
 
 
 # MediaPipe 手部 21 点索引

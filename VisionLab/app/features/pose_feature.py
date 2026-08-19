@@ -14,8 +14,7 @@ except Exception as exc:
 
 _VISIONLAB_ROOT = Path(__file__).resolve().parents[2]
 _MODEL_CANDIDATES = (
-    _VISIONLAB_ROOT / "models" / "pose_landmarker_full.task",
-    _VISIONLAB_ROOT / "vision_lab" / "models" / "pose_landmarker_full.task",
+    _VISIONLAB_ROOT / "models" / "pose" / "pose_landmarker_full.task",
 )
 MODEL_PATH = next((path for path in _MODEL_CANDIDATES if path.exists()),
                   _MODEL_CANDIDATES[0])

@@ -167,3 +167,11 @@ docx_backup/"skills/锟姐法锟斤拷锟斤拷/"
 鑾插績鏀硅繘寤鸿.md
 Lab/HandsDetector/手势识别.md
 Lab/HandsDetector/手势识别.md
+
+# VisionLab local models, data and documentation
+/VisionLab/models/
+/VisionLab/data/
+/VisionLab/logs/
+/VisionLab/docs/
+/VisionLab/**/__pycache__/
+/VisionLab/**/*.pyc

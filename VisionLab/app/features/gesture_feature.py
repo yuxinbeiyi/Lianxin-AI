@@ -1,20 +1,12 @@
 """Adapter around the already-tested HandsDetector pipeline."""
 
-import sys
-from pathlib import Path
-
 import cv2
 
-
-_HANDS_ROOT = Path(__file__).resolve().parents[3] / "HandsDetector"
-if str(_HANDS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_HANDS_ROOT))
-
 try:
-    from gesture_lab.events.gesture_event import GESTURE_NONE  # noqa: E402
-    from gesture_lab.vision.gesture_classifier import GestureClassifier  # noqa: E402
-    from gesture_lab.vision.gesture_state import GestureState  # noqa: E402
-    from gesture_lab.vision.hand_detector import HandDetector  # noqa: E402
+    from .gesture.gesture_event import GESTURE_NONE
+    from .gesture.gesture_classifier import GestureClassifier
+    from .gesture.gesture_state import GestureState
+    from .gesture.hand_detector import HandDetector
     _IMPORT_ERROR = ""
 except Exception as exc:  # Optional feature dependency.
     GESTURE_NONE = "NONE"

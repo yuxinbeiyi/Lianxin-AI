@@ -13,8 +13,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from ..config import GESTURE_CONFIRM_FRAMES, GESTURE_COOLDOWN
-from ..events.gesture_event import GESTURE_NONE
+from .config import GESTURE_CONFIRM_FRAMES, GESTURE_COOLDOWN
+from .gesture_event import GESTURE_NONE
 
 
 # 状态常量

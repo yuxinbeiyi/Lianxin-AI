@@ -11,7 +11,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-from ..config import (
+from .config import (
     MODEL_PATH,
     MAX_NUM_HANDS,
     MIN_HAND_DETECTION_CONFIDENCE,
