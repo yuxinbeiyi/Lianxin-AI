@@ -58,8 +58,6 @@ class VisionWorker(QObject):
                               "hands": 0, "gesture_state": "READY"}
             face_status = {"face": "未启用", "face_count": 0,
                            "face_confidence": 0.0}
-            if self.enabled["face"]:
-                frame, face_status = self.face.process(frame)
             companion_state = "未启用"
             work_duration = 0.0
             if self.enabled["companion"]:
@@ -75,8 +73,15 @@ class VisionWorker(QObject):
                         self.database.add_presence_time(0, session_started=True)
                     elif event == "USER_LEAVE":
                         self.database.add_presence_time(work_duration, left_at=None)
+            if self.enabled["face"]:
+                frame, face_status = self.face.process(frame)
             if self.enabled["gesture"]:
                 frame, gesture_status = self.gesture.process(frame)
+                # 手势事件触发
+                if gesture_status["gesture"] != "NONE" and gesture_status["gesture_state"] == "CONFIRMED":
+                    event = f"GESTURE_{gesture_status['gesture']}"
+                    self.event_ready.emit(event)
+                    self.database.record_event(event)
             self.frame_ready.emit(frame)
             status = {
                 "camera": f"{self.camera.width}x{self.camera.height}",
@@ -114,14 +119,43 @@ class VisionWorker(QObject):
 
     @pyqtSlot(str, bool)
     def set_feature_enabled(self, name, enabled):
-        if name in self.enabled:
-            self.enabled[name] = enabled
-            if name == "gesture" and enabled and self.camera.running:
+        if name not in self.enabled:
+            return
+
+        self.enabled[name] = enabled
+
+        if not self.camera.running:
+            return
+
+        # 启用功能
+        if enabled:
+            if name == "gesture":
                 if not self.gesture.start():
                     self.event_ready.emit(f"手势识别启动失败：{self.gesture.error}")
-            if name == "face" and enabled and self.camera.running:
+                else:
+                    self.event_ready.emit("✅ 手势识别已启用")
+            elif name == "face":
                 if not self.face.start():
                     self.event_ready.emit(f"人脸识别启动失败：{self.face.error}")
+                else:
+                    self.event_ready.emit(f"✅ 人脸识别已启用（{self.face.provider or 'CPU'}）")
+            elif name == "companion":
+                if not self.pose.start():
+                    self.event_ready.emit(f"姿态检测启动失败：{self.pose.error}")
+                else:
+                    self.event_ready.emit("✅ 陪伴检测已启用")
+        # 停用功能
+        else:
+            if name == "gesture":
+                self.gesture.stop()
+                self.event_ready.emit("⏸️ 手势识别已停用")
+            elif name == "face":
+                self.face.stop()
+                self.event_ready.emit("⏸️ 人脸识别已停用")
+            elif name == "companion":
+                self.companion.reset()
+                self.pose.stop()
+                self.event_ready.emit("⏸️ 陪伴检测已停用")
 
     @pyqtSlot(str)
     def set_face_device(self, device):

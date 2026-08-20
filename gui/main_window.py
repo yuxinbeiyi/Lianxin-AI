@@ -208,6 +208,7 @@ class MainWindow(QMainWindow):
         self._emotion_debug_dialog = None
         self._diary_dialog = None
         self._qq_settings_dialog = None
+        self._vision_panel = None
         # ── 闹钟模块 ──────────────────────────────────────────
         self._alarm_manager = AlarmManager()
         self._alarm_dialog: AlarmDialog | None = None
@@ -964,7 +965,7 @@ class MainWindow(QMainWindow):
         self._char_widget.get_study_room_button().clicked.connect(self._on_study_room_clicked)
         self._char_widget.get_api_config_button().clicked.connect(self._show_api_config)
         self._char_widget.get_alarm_button().clicked.connect(self._on_alarm_clicked)
-        self._char_widget.get_camera_button().clicked.connect(self._on_camera_capture)
+        self._char_widget.get_camera_button().clicked.connect(self._toggle_vision_panel)
         self._char_widget.get_emotion_button().clicked.connect(self._show_ripple_constellation)
         self._char_widget.get_sound_button().clicked.connect(self._on_sound_settings)
         self._char_widget.get_memory_button().clicked.connect(self._on_memory_settings)
@@ -3761,6 +3762,158 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+
+    def _toggle_vision_panel(self):
+        """打开/关闭视觉感知面板"""
+        play_sound("ButtonAll.mp3")
+
+        if self._vision_panel is None:
+            from gui.vision_panel import VisionPanel
+            self._vision_panel = VisionPanel(self)
+
+            # 连接视觉事件信号到情感响应
+            self._vision_panel.user_entered.connect(self._on_vision_user_entered)
+            self._vision_panel.user_returned.connect(self._on_vision_user_returned)
+            self._vision_panel.user_left.connect(self._on_vision_user_left)
+            self._vision_panel.long_work.connect(self._on_vision_long_work)
+            self._vision_panel.stranger_detected.connect(self._on_vision_stranger)
+            self._vision_panel.gesture_ok.connect(self._on_vision_gesture_ok)
+
+        if self._vision_panel.isVisible():
+            self._vision_panel.hide()
+        else:
+            self._vision_panel.show()
+            self._vision_panel.activateWindow()
+
+    def _on_vision_user_entered(self):
+        """视觉事件：用户进入"""
+        # 更新情感系统
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户回到工位",
+                delta_pleasure=20,
+                delta_arousal=10,
+                delta_connection=30,
+            )
+        except Exception:
+            pass
+
+        # 莲心主动问候
+        greetings = [
+            "回来啦！有没有想我？",
+            "欢迎回来～刚才去哪儿了？",
+            "你回来了！我在这里等你呢～",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(greetings))
+
+    def _on_vision_user_returned(self):
+        """视觉事件：用户返回（离开后回来）"""
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户返回工位",
+                delta_pleasure=15,
+                delta_arousal=10,
+                delta_connection=25,
+            )
+        except Exception:
+            pass
+
+        greetings = [
+            "回来啦！刚才去哪儿了呀～",
+            "欢迎回来！有没有想我？",
+            "你回来了！出去了好久呢～",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(greetings))
+
+    def _on_vision_user_left(self):
+        """视觉事件：用户离开"""
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户离开工位",
+                delta_pleasure=-10,
+                delta_connection=50,
+            )
+        except Exception:
+            pass
+
+        # 轻声告别（不打扰）
+        farewells = [
+            "去忙啦？我在这里等你回来～",
+            "好的，我会在这里等你的～",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(farewells))
+
+    def _on_vision_long_work(self):
+        """视觉事件：长时间工作提醒"""
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户工作超过1小时",
+                delta_connection=20,
+            )
+        except Exception:
+            pass
+
+        reminders = [
+            "工作辛苦啦～要不要起来走走，休息一下眼睛？",
+            "已经一个小时了哦，记得喝点水～我会一直陪着你的。",
+            "辛苦啦～要注意休息哦，劳逸结合才更高效呢！",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(reminders))
+
+    def _on_vision_stranger(self):
+        """视觉事件：陌生人警报"""
+        alerts = [
+            "诶？好像有陌生人出现了…是你的朋友吗？",
+            "检测到陌生人呢，是来找你的吗？",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(alerts))
+
+    def _on_vision_gesture_ok(self):
+        """视觉事件：OK手势"""
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户比OK手势",
+                delta_pleasure=15,
+                delta_immersion=10,
+            )
+        except Exception:
+            pass
+
+        responses = [
+            "OK！收到你的信号啦～",
+            "嘿嘿，你在跟我打招呼吗？",
+            "OK～一切都会好起来的！",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(responses))
+
+    def _trigger_proactive_speech(self, text: str):
+        """触发莲心主动说话（不经过LLM，直接TTS+气泡）"""
+        # 添加到聊天气泡
+        self._add_ai_message(text)
+
+        # 触发 TTS
+        if self._tts_worker and self._tts_enabled:
+            self._tts_worker.speak(text)
+
+        # 切换动画到说话状态
+        if self._char_widget:
+            self._char_widget.set_state("talking")
 
     def _on_camera_capture(self):
         play_sound("ButtonAll.mp3")

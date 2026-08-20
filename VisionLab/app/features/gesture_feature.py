@@ -53,8 +53,15 @@ class GestureFeature:
         }
 
     def stop(self):
-        self.detector.close()
-        self.initialized = False
+        if not self.initialized:
+            return
+        try:
+            if self.detector is not None:
+                self.detector.close()
+        except Exception as e:
+            print(f"[GestureFeature] 停止时异常: {e}")
+        finally:
+            self.initialized = False
 
     @staticmethod
     def _empty_status():

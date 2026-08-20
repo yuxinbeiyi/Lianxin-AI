@@ -1078,6 +1078,15 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "look_at_camera",
+            "description": "看看视觉感知摄像头中的画面，分析当前画面里有谁、在做什么。适用于用户问'看看你面前的是谁'、'我面前是谁'、'看看我在干什么'等场景。如果视觉感知面板已开启，会直接使用当前帧；否则临时打开摄像头拍照。",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
             "name": "capture_desktop",
             "description": "截取当前电脑屏幕，返回保存的图片路径。当用户要求看看他在干什么、看看屏幕、看看桌面时调用。",
             "parameters": {"type": "object", "properties": {}}
@@ -4648,6 +4657,43 @@ def capture_from_camera():
     return desc
 
 
+def look_at_camera():
+    """
+    从视觉感知面板获取当前摄像头画面，并用视觉模型分析。
+    适用于用户问"看看你面前的是谁"、"我面前是什么"等场景。
+    如果视觉感知面板未开启，则回退到传统的 capture_from_camera。
+    """
+    # 尝试从视觉感知面板获取当前帧
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app:
+            # 查找主窗口
+            for widget in app.topLevelWidgets():
+                if hasattr(widget, '_vision_panel') and widget._vision_panel is not None:
+                    vision_panel = widget._vision_panel
+                    current_frame = vision_panel.get_current_frame()
+
+                    if current_frame is not None:
+                        # 保存当前帧为临时文件
+                        import tempfile
+                        import cv2
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                        cv2.imwrite(tmp.name, current_frame)
+                        tmp.close()
+
+                        # 用视觉模型分析
+                        from brain.observation import analyze_observation
+                        desc = analyze_observation(tmp.name, "视觉感知摄像头")
+                        _save_observation(tmp.name, desc)
+                        return desc
+    except Exception as e:
+        print(f"[视觉工具] 从视觉面板获取帧失败: {e}")
+
+    # 回退到传统方式
+    return capture_from_camera()
+
+
 def capture_desktop():
     from brain.observation import capture_screen, analyze_observation
     path = capture_screen()
@@ -5837,6 +5883,7 @@ TOOL_EXECUTORS = {
     "generate_video": lambda inp: generate_video(inp["prompt"], inp.get("image_url"), inp.get("duration")),
     "send_file_to_qq": lambda inp: send_file_to_qq(inp["path"], inp.get("name", "")),
     "capture_from_camera": lambda inp: capture_from_camera(),
+    "look_at_camera": lambda inp: look_at_camera(),
     "capture_desktop": lambda inp: capture_desktop(),
     "search_conversation_history": lambda inp: search_conversation_history(
         inp.get("query", ""), inp.get("mode", "recent"),

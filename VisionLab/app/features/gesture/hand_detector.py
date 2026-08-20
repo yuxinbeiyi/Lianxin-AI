@@ -178,11 +178,19 @@ class HandDetector:
 
     def close(self):
         """释放资源。"""
+        if not self._initialized:
+            return
+
         try:
+            # 等待异步任务完成（MediaPipe 异步模式需要短暂延迟）
             if self._landmarker is not None:
+                import time
+                time.sleep(0.1)  # 100ms 足够让异步任务完成
                 self._landmarker.close()
                 self._landmarker = None
-        except Exception:
-            pass
-        self._initialized = False
-        self.latest_result = None
+        except Exception as e:
+            # 忽略关闭异常，避免卡死
+            print(f"[HandDetector] 关闭时异常: {e}")
+        finally:
+            self._initialized = False
+            self.latest_result = None
