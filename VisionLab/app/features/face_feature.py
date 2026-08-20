@@ -71,12 +71,19 @@ class FaceFeature:
             # reorganized lab stores the bundle at ``models/face/buffalo_l``.
             self.analysis = FaceAnalysis(name="face/buffalo_l",
                                           root=str(PROJECT_ROOT),
-                                          providers=requested)
-            self.analysis.prepare(ctx_id=ctx_id, det_size=(640, 640))
+                                          providers=requested,
+                                          allowed_modules=['detection', 'recognition'])
+            self.analysis.prepare(ctx_id=ctx_id, det_size=(320, 320))
             models = self.analysis.models.values() if isinstance(self.analysis.models, dict) else self.analysis.models
             first_model = next(iter(models), None)
             self.provider = (first_model.session.get_providers()[0]
                              if first_model is not None else requested[-1])
+
+            # 调试：输出已加载的模型
+            if isinstance(self.analysis.models, dict):
+                loaded = ', '.join(self.analysis.models.keys())
+                print(f"[FaceFeature] 已加载模型: {loaded}")
+
             self.initialized = True
             self.error = ""
             return True
@@ -124,7 +131,11 @@ class FaceFeature:
             return frame, {"face": "未初始化", "face_count": 0,
                             "face_confidence": 0.0, "identity": "UNKNOWN"}
         now = time.monotonic()
-        if now - self._last_inference < self.INFERENCE_INTERVAL:
+
+        # 动态调整推理间隔：检测到人脸时快（0.15s，~6.7 FPS），无人时慢（0.33s，~3 FPS）
+        interval = 0.15 if self._last_status.get("face_count", 0) > 0 else 0.33
+
+        if now - self._last_inference < interval:
             self._draw_boxes(frame)
             return frame, dict(self._last_status)
         try:
