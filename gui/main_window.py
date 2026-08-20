@@ -3777,7 +3777,11 @@ class MainWindow(QMainWindow):
             self._vision_panel.user_left.connect(self._on_vision_user_left)
             self._vision_panel.long_work.connect(self._on_vision_long_work)
             self._vision_panel.stranger_detected.connect(self._on_vision_stranger)
+
+            # 连接手势信号
             self._vision_panel.gesture_ok.connect(self._on_vision_gesture_ok)
+            self._vision_panel.gesture_thumbs_up.connect(self._on_vision_gesture_thumbs_up)
+            self._vision_panel.gesture_wave.connect(self._on_vision_gesture_wave)
 
         if self._vision_panel.isVisible():
             self._vision_panel.hide()
@@ -3883,6 +3887,10 @@ class MainWindow(QMainWindow):
 
     def _on_vision_gesture_ok(self):
         """视觉事件：OK手势"""
+        # TTS 打断检查：如果莲心正在说话，忽略手势
+        if self._is_speaking():
+            return
+
         try:
             from brain.emotional import get_manager
             manager = get_manager()
@@ -3902,18 +3910,100 @@ class MainWindow(QMainWindow):
         import random
         self._trigger_proactive_speech(random.choice(responses))
 
+    def _on_vision_gesture_thumbs_up(self):
+        """视觉事件：竖大拇指"""
+        # TTS 打断检查：如果莲心正在说话，忽略手势
+        if self._is_speaking():
+            return
+
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户竖大拇指点赞",
+                delta_pleasure=25,
+                delta_connection=20,
+                delta_arousal=5,
+            )
+        except Exception:
+            pass
+
+        responses = [
+            "哇～谢谢你的夸奖！我会继续努力的！",
+            "嘿嘿，被你认可的感觉真好～",
+            "你这样夸我，我会不好意思的啦…",
+            "收到你的赞啦！给你比个心～",
+            "太开心了！你的鼓励是我最大的动力！",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(responses))
+
+    def _on_vision_gesture_wave(self):
+        """视觉事件：挥手（引起注意/打招呼）"""
+        # TTS 打断检查：如果莲心正在说话，忽略手势
+        if self._is_speaking():
+            return
+
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            manager.add_external_event(
+                "用户挥手打招呼",
+                delta_connection=20,
+                delta_arousal=15,
+                delta_pleasure=10,
+            )
+        except Exception:
+            pass
+
+        responses = [
+            "嗨～你在叫我吗？",
+            "看到你挥手啦！有什么需要帮忙的吗？",
+            "嘿！我在这里～",
+            "你好呀～挥手打招呼真可爱！",
+            "诶？你找我有事吗？",
+            "看到啦看到啦～我在听哦！",
+            "挥手回应～有什么想跟我说的吗？",
+        ]
+        import random
+        self._trigger_proactive_speech(random.choice(responses))
+
+    def _is_speaking(self) -> bool:
+        """检查莲心是否正在说话（TTS播放中）"""
+        # 检查 TTS worker 是否存在且正在播放
+        if hasattr(self, '_tts_worker') and self._tts_worker:
+            if hasattr(self._tts_worker, 'is_speaking'):
+                return self._tts_worker.is_speaking()
+            # 如果没有 is_speaking 方法，检查 worker 是否在运行
+            if hasattr(self._tts_worker, 'isRunning'):
+                return self._tts_worker.isRunning()
+
+        # 检查角色动画状态（如果正在说话动画，也视为正在说话）
+        if hasattr(self, '_char_widget') and self._char_widget:
+            if hasattr(self._char_widget, 'get_state'):
+                return self._char_widget.get_state() == "talking"
+
+        return False
+
     def _trigger_proactive_speech(self, text: str):
         """触发莲心主动说话（不经过LLM，直接TTS+气泡）"""
         # 添加到聊天气泡
-        self._add_ai_message(text)
+        if hasattr(self, '_chat_widget') and self._chat_widget:
+            self._chat_widget.add_ai_message(text)
+        else:
+            print(f"[主动发言] _chat_widget 不可用，消息: {text}")
+            return
 
         # 触发 TTS
-        if self._tts_worker and self._tts_enabled:
+        if hasattr(self, '_tts_worker') and self._tts_worker and hasattr(self, '_tts_enabled') and self._tts_enabled:
             self._tts_worker.speak(text)
 
         # 切换动画到说话状态
-        if self._char_widget:
-            self._char_widget.set_state("talking")
+        if hasattr(self, '_char_widget') and self._char_widget:
+            if hasattr(self._char_widget, 'set_talking'):
+                self._char_widget.set_talking()
+            else:
+                print("[主动发言] _char_widget 没有 set_talking 方法")
 
     def _on_camera_capture(self):
         play_sound("ButtonAll.mp3")

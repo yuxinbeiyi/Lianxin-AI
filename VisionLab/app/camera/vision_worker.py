@@ -77,8 +77,8 @@ class VisionWorker(QObject):
                 frame, face_status = self.face.process(frame)
             if self.enabled["gesture"]:
                 frame, gesture_status = self.gesture.process(frame)
-                # 手势事件触发
-                if gesture_status["gesture"] != "NONE" and gesture_status["gesture_state"] == "CONFIRMED":
+                # 手势事件触发：检查 should_trigger 标志
+                if gesture_status.get("should_trigger", False) and gesture_status["gesture"] != "NONE":
                     event = f"GESTURE_{gesture_status['gesture']}"
                     self.event_ready.emit(event)
                     self.database.record_event(event)

@@ -44,12 +44,17 @@ class GestureFeature:
         gesture, confidence = self.classifier.update(landmarks)
         self.state.update(gesture, confidence)
         info = self.state.get_info()
+
+        # 检查是否应该触发事件
+        should_trigger = self.state.should_trigger()
+
         self._draw(frame, gesture, confidence)
         return frame, {
             "gesture": gesture,
             "gesture_confidence": round(confidence, 2),
             "hands": hands,
             "gesture_state": info.state,
+            "should_trigger": should_trigger,  # 新增：是否触发事件
         }
 
     def stop(self):
@@ -66,7 +71,7 @@ class GestureFeature:
     @staticmethod
     def _empty_status():
         return {"gesture": GESTURE_NONE, "gesture_confidence": 0.0,
-                "hands": 0, "gesture_state": "READY"}
+                "hands": 0, "gesture_state": "READY", "should_trigger": False}
 
     def _draw(self, frame, gesture, confidence):
         connections = [

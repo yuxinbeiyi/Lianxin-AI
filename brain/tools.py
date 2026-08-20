@@ -4663,34 +4663,66 @@ def look_at_camera():
     适用于用户问"看看你面前的是谁"、"我面前是什么"等场景。
     如果视觉感知面板未开启，则回退到传统的 capture_from_camera。
     """
+    print("[视觉工具] look_at_camera 开始执行")
+
     # 尝试从视觉感知面板获取当前帧
     try:
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
+        print(f"[视觉工具] QApplication.instance() = {app}")
+
         if app:
             # 查找主窗口
             for widget in app.topLevelWidgets():
-                if hasattr(widget, '_vision_panel') and widget._vision_panel is not None:
+                widget_type = type(widget).__name__
+                has_vision = hasattr(widget, '_vision_panel')
+                print(f"[视觉工具] 检查窗口: {widget_type}, has_vision_panel={has_vision}")
+
+                if has_vision and widget._vision_panel is not None:
                     vision_panel = widget._vision_panel
+                    print(f"[视觉工具] 找到 vision_panel: {vision_panel}")
+
+                    # 检查面板是否可见（已打开）
+                    if not vision_panel.isVisible():
+                        print("[视觉工具] ⚠️ 视觉面板未打开，回退到 capture_from_camera")
+                        return capture_from_camera()
+
                     current_frame = vision_panel.get_current_frame()
+                    print(f"[视觉工具] get_current_frame() 返回: {current_frame is not None}")
 
                     if current_frame is not None:
                         # 保存当前帧为临时文件
                         import tempfile
                         import cv2
                         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                        cv2.imwrite(tmp.name, current_frame)
+                        success = cv2.imwrite(tmp.name, current_frame)
                         tmp.close()
+                        print(f"[视觉工具] 保存临时文件: {tmp.name}, success={success}")
+
+                        if not success:
+                            print("[视觉工具] ❌ 保存帧失败，回退到 capture_from_camera")
+                            return capture_from_camera()
 
                         # 用视觉模型分析
                         from brain.observation import analyze_observation
+                        print(f"[视觉工具] 开始分析图片: {tmp.name}")
                         desc = analyze_observation(tmp.name, "视觉感知摄像头")
+                        print(f"[视觉工具] 分析完成，结果长度: {len(desc)}")
                         _save_observation(tmp.name, desc)
                         return desc
+                    else:
+                        print("[视觉工具] ⚠️ 当前帧为 None（摄像头可能未启动），回退到 capture_from_camera")
+                        return capture_from_camera()
+        else:
+            print("[视觉工具] ⚠️ QApplication 不存在，回退到 capture_from_camera")
+
     except Exception as e:
-        print(f"[视觉工具] 从视觉面板获取帧失败: {e}")
+        print(f"[视觉工具] ❌ 从视觉面板获取帧失败: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 回退到传统方式
+    print("[视觉工具] 回退到 capture_from_camera()")
     return capture_from_camera()
 
 

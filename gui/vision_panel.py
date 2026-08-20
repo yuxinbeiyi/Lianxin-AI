@@ -24,7 +24,11 @@ class VisionPanel(QDialog):
     user_left = pyqtSignal()
     long_work = pyqtSignal()
     stranger_detected = pyqtSignal()
+
+    # 手势信号（3种）
     gesture_ok = pyqtSignal()
+    gesture_thumbs_up = pyqtSignal()
+    gesture_wave = pyqtSignal()
 
     # 获取当前帧信号（供工具调用）
     frame_requested = pyqtSignal()
@@ -470,8 +474,12 @@ class VisionPanel(QDialog):
             self.long_work.emit()
         elif event == "STRANGER_PERSISTING":
             self.stranger_detected.emit()
-        elif "OK" in event:
+        elif event == "GESTURE_OK":
             self.gesture_ok.emit()
+        elif event == "GESTURE_THUMBS_UP":
+            self.gesture_thumbs_up.emit()
+        elif event == "GESTURE_WAVE":
+            self.gesture_wave.emit()
 
     @pyqtSlot(bool, str)
     def _on_started(self, success, message):
