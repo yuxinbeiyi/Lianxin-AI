@@ -1,6 +1,7 @@
 """
-InputPanel：底部输入区域
-包含文字输入框、发送按钮、语音按钮、清空小纸条按钮、自动发送复选框
+InputPanel：底部悬浮输入舱
+上下两层：上方消息输入区 + 下方功能工具栏
+工具栏严格顺序：工具箱 → 附件 → 语音输入 → 自动发送 → 发送
 支持拖拽/粘贴图片（发送图片给莲心进行OCR识别）
 """
 
@@ -8,10 +9,11 @@ from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QTextEdit, QCheckBox,
     QSizePolicy, QApplication, QDialog, QListWidget, QListWidgetItem,
     QLineEdit, QMenu, QAction, QTreeWidget, QTreeWidgetItem, QStackedWidget,
-    QLabel, QButtonGroup, QComboBox
+    QLabel, QButtonGroup, QComboBox, QFrame, QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint
-from PyQt5.QtGui import QFont, QKeyEvent, QDragEnterEvent, QDropEvent, QColor, QPixmap, QPalette
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QSize, QRectF, QPointF
+from PyQt5.QtGui import (QFont, QKeyEvent, QDragEnterEvent, QDropEvent, QColor,
+                         QPixmap, QPalette, QIcon, QPainter, QPainterPath, QPen)
 import tempfile
 import os
 import json
@@ -653,6 +655,126 @@ class ToolSelectionDialog(QDialog):
         self.accept()
 
 
+# ==================== 输入面板主题常量 ====================
+def _make_input_styles(font_size: int) -> dict:
+    """根据全局聊天字号生成输入框样式（与聊天字体一致，pt 单位）。
+    聊天气泡使用 QFont("Microsoft YaHei UI", font_size)，第二个参数为磅值，
+    因此这里也用 pt 而非 px，否则输入框会比聊天框明显偏小。"""
+    fs = max(8, int(font_size))
+    return {
+        "normal": f"""
+            QTextEdit {{
+                background: transparent;
+                border: none;
+                color: #E9EDF2;
+                font-size: {fs}pt;
+                font-family: "Microsoft YaHei UI";
+            }}
+            QTextEdit:focus {{ background: transparent; }}
+        """,
+        "disabled": f"""
+            QTextEdit {{
+                background: transparent;
+                border: none;
+                color: #6E7A78;
+                font-size: {fs}pt;
+                font-family: "Microsoft YaHei UI";
+            }}
+            QTextEdit:focus {{ background: transparent; }}
+        """,
+        "highlight": f"""
+            QTextEdit {{
+                background: rgba(46, 96, 80, 70);
+                border: none;
+                color: #FFFFFF;
+                font-size: {fs}pt;
+                font-family: "Microsoft YaHei UI";
+            }}
+            QTextEdit:focus {{ background: rgba(46, 96, 80, 70); }}
+        """,
+    }
+
+
+def _wrench_icon(color: QColor, size: int = 20) -> QIcon:
+    """绘制组合扳手图标（上端开口钳口 + 手柄 + 下端圆环），替代 emoji/字体图标。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(color)
+    pen.setWidthF(max(1.6, size * 0.10))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    cx = size / 2
+    # 下端圆环
+    p.drawEllipse(QPointF(cx, size * 0.82), size * 0.12, size * 0.12)
+    # 手柄
+    p.drawLine(QPointF(cx, size * 0.70), QPointF(cx, size * 0.34))
+    # 开口钳口（凵形朝上）
+    jaw = size * 0.20
+    y_base = size * 0.34
+    y_tip = size * 0.16
+    p.drawLine(QPointF(cx - jaw, y_base), QPointF(cx - jaw, y_tip))
+    p.drawLine(QPointF(cx + jaw, y_base), QPointF(cx + jaw, y_tip))
+    p.drawLine(QPointF(cx - jaw, y_base), QPointF(cx + jaw, y_base))
+    p.end()
+    return QIcon(pm)
+
+
+def _paperclip_icon(color: QColor, size: int = 20) -> QIcon:
+    """绘制回形针图标（45° 嵌套双层胶囊环，内圈略向下偏移），替代 emoji/字体图标。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(color)
+    pen.setWidthF(max(1.5, size * 0.085))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.save()
+    p.translate(size / 2, size / 2)
+    p.rotate(45)
+    # 外层胶囊环
+    outer = QPainterPath()
+    outer.addRoundedRect(QRectF(-size * 0.20, -size * 0.37, size * 0.40, size * 0.74),
+                         size * 0.37, size * 0.37)
+    p.drawPath(outer)
+    # 内层胶囊环
+    p.translate(0, size * 0.02)
+    inner = QPainterPath()
+    inner.addRoundedRect(QRectF(-size * 0.13, -size * 0.21, size * 0.26, size * 0.42),
+                         size * 0.21, size * 0.21)
+    p.drawPath(inner)
+    p.restore()
+    p.end()
+    return QIcon(pm)
+
+
+def _microphone_icon(color: QColor, size: int = 20) -> QIcon:
+    """绘制麦克风图标（胶囊话筒头 + 支架底座），替代 emoji/字体图标。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(color)
+    pen.setWidthF(max(1.6, size * 0.10))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    s = size
+    # 话筒头（胶囊形）
+    p.drawRoundedRect(QRectF(s * 0.39, s * 0.12, s * 0.22, s * 0.50), s * 0.11, s * 0.11)
+    # 支架两腿
+    p.drawLine(QPointF(s * 0.43, s * 0.66), QPointF(s * 0.30, s * 0.82))
+    p.drawLine(QPointF(s * 0.57, s * 0.66), QPointF(s * 0.70, s * 0.82))
+    # 底座横线
+    p.drawLine(QPointF(s * 0.24, s * 0.88), QPointF(s * 0.76, s * 0.88))
+    p.end()
+    return QIcon(pm)
+
+
 class InputPanel(QWidget):
     message_submitted = pyqtSignal(str, list)   # (text, image_paths)
     voice_clicked = pyqtSignal()
@@ -663,7 +785,6 @@ class InputPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._voice_connected = False
-        self._clear_connected = False
         self._selected_tool = None
         self._selected_tool_mode = "auto"
         self._pending_images: list[str] = []    # 暂存的图片路径
@@ -698,50 +819,60 @@ class InputPanel(QWidget):
         palette.setColor(QPalette.Window, QColor(0, 0, 0, 0))
         palette.setColor(QPalette.Base, QColor(0, 0, 0, 0))
         self.setPalette(palette)
-        self.setStyleSheet("""
-            QWidget {
-                background: transparent;
-                border-top: 1px solid rgba(255, 255, 255, 30);
+        self.setStyleSheet("QWidget { background: transparent; }")
+
+        # ── 悬浮输入舱：外边距 + 圆角面板 ──
+        pod_margin = QVBoxLayout(self)
+        pod_margin.setContentsMargins(20, 4, 20, 16)
+        pod_margin.setSpacing(0)
+
+        self._pod = QFrame()
+        self._pod.setObjectName("inputPod")
+        self._pod.setStyleSheet("""
+            QFrame#inputPod {
+                background-color: rgba(15, 25, 33, 232);
+                border: 1px solid rgba(91, 154, 139, 150);
+                border-radius: 22px;
             }
         """)
+        _glow = QGraphicsDropShadowEffect(self._pod)
+        _glow.setBlurRadius(30)
+        _glow.setOffset(0, 4)
+        _glow.setColor(QColor(58, 138, 115, 80))
+        self._pod.setGraphicsEffect(_glow)
 
-        # 外层垂直布局：图片预览栏 + 主输入行
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
+        self._pod_layout = QVBoxLayout(self._pod)
+        self._pod_layout.setContentsMargins(18, 12, 18, 12)
+        self._pod_layout.setSpacing(6)
 
         # ── 引用预览条 ──
         self._quote_bar = QWidget()
         self._quote_bar.setVisible(False)
+        self._quote_bar.setObjectName("quoteBar")
         self._quote_bar.setStyleSheet("""
             QWidget#quoteBar {
                 background-color: rgba(45, 45, 63, 180);
                 border-left: 3px solid #8A98F0;
-                border-radius: 4px;
-                margin: 0px 8px 4px 8px;
+                border-radius: 6px;
             }
+            QWidget#quoteBar QLabel { color: #B0B0C0; background: transparent; font-size: 10pt; }
+            QWidget#quoteBar QPushButton { background: transparent; color: #888; border: none; font-size: 10pt; }
+            QWidget#quoteBar QPushButton:hover { color: #FFF; }
         """)
-        self._quote_bar.setObjectName("quoteBar")
         quote_layout = QHBoxLayout(self._quote_bar)
-        quote_layout.setContentsMargins(10, 6, 8, 6)
+        quote_layout.setContentsMargins(12, 6, 8, 6)
         self._quote_label = QLabel()
         self._quote_label.setWordWrap(False)
-        self._quote_label.setStyleSheet("color: #B0B0C0; background: transparent; font-size: 10pt;")
         quote_layout.addWidget(self._quote_label, 1)
         self._quote_close = QPushButton("✕")
         self._quote_close.setFixedSize(20, 20)
         self._quote_close.setCursor(Qt.PointingHandCursor)
-        self._quote_close.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #888; border: none; font-size: 10pt;
-            }
-            QPushButton:hover { color: #FFF; }
-        """)
+        self._quote_close.setToolTip("取消引用")
         self._quote_close.clicked.connect(self.clear_quote)
         quote_layout.addWidget(self._quote_close)
-        outer_layout.addWidget(self._quote_bar)
-        # ── 引用条结束 ──
+        self._pod_layout.addWidget(self._quote_bar)
 
+        # ── 工具选择 chip ──
         self._tool_chip = QWidget()
         self._tool_chip.setObjectName("toolSelectionChip")
         self._tool_chip.setVisible(False)
@@ -749,15 +880,14 @@ class InputPanel(QWidget):
             QWidget#toolSelectionChip {
                 background-color: rgba(40, 82, 72, 210);
                 border: 1px solid #75B8A8;
-                border-radius: 6px;
-                margin: 0 12px 4px 12px;
+                border-radius: 8px;
             }
-            QLabel { color: #E7FFF6; border: none; }
-            QPushButton { color: #CFEDE4; background: transparent; border: none; }
-            QPushButton:hover { color: #FFFFFF; }
+            QWidget#toolSelectionChip QLabel { color: #E7FFF6; border: none; background: transparent; }
+            QWidget#toolSelectionChip QPushButton { color: #CFEDE4; background: transparent; border: none; }
+            QWidget#toolSelectionChip QPushButton:hover { color: #FFFFFF; }
         """)
         chip_layout = QHBoxLayout(self._tool_chip)
-        chip_layout.setContentsMargins(10, 5, 6, 5)
+        chip_layout.setContentsMargins(12, 6, 8, 6)
         self._tool_chip_label = QLabel()
         chip_layout.addWidget(self._tool_chip_label, 1)
         chip_close = QPushButton("×")
@@ -765,43 +895,157 @@ class InputPanel(QWidget):
         chip_close.setToolTip("移除本轮工具")
         chip_close.clicked.connect(self.clear_selection)
         chip_layout.addWidget(chip_close)
-        outer_layout.addWidget(self._tool_chip)
-
-        # 主行：输入框 + 按钮
-        main_layout = QHBoxLayout()
+        self._pod_layout.addWidget(self._tool_chip)
 
         # ── 图片预览栏 ──
         self._image_preview = QWidget()
         self._image_preview.setVisible(False)
-        self._image_preview.setStyleSheet("background-color: #1E1E30; border-bottom: 1px solid #3D3D5A;")
+        self._image_preview.setStyleSheet("background-color: transparent; border-bottom: 1px solid rgba(93, 124, 116, 60);")
         self._image_preview.setMaximumHeight(72)
         self._image_preview_layout = QHBoxLayout(self._image_preview)
-        self._image_preview_layout.setContentsMargins(12, 6, 12, 6)
+        self._image_preview_layout.setContentsMargins(2, 6, 2, 6)
         self._image_preview_layout.setSpacing(8)
         self._image_preview_layout.setAlignment(Qt.AlignLeft)
         tip = QLabel("📷")
         tip.setFont(QFont("Segoe UI Emoji", 14))
         tip.setToolTip("待发送的图片，输入文字后按 Enter 发送")
         self._image_preview_layout.addWidget(tip)
-        outer_layout.addWidget(self._image_preview)
+        self._pod_layout.addWidget(self._image_preview)
 
-        # ── 主布局：水平 ──
-        main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(12, 8, 12, 8)
-        main_layout.setSpacing(8)
+        # ── 第一层：消息输入区 ──
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(6, 0, 6, 0)
+        input_row.setSpacing(8)
 
-        # 工具箱按钮
-        self._tool_btn = QPushButton("🔧")
-        self._tool_btn.setFixedSize(36, 36)
-        self._tool_btn.setFont(QFont("Segoe UI Emoji", 14))
+        from utils.settings import get_settings
+        chat_font_size = get_settings().font_size
+        self._input_styles = _make_input_styles(chat_font_size)
+
+        self._input = _InputBox()
+        self._input.setFont(QFont("Microsoft YaHei UI", chat_font_size))
+        self._input.setPlaceholderText("输入消息，按 Enter 发送，Shift+Enter 换行... (可粘贴图片到此)")
+        self._input.setMinimumHeight(44)
+        self._input.setMaximumHeight(120)
+        self._input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._input.setStyleSheet(self._input_styles["normal"])
+        _pal = self._input.palette()
+        _pal.setColor(QPalette.PlaceholderText, QColor("#6B7A90"))
+        self._input.setPalette(_pal)
+        self._input.enter_pressed.connect(self._on_send)
+        input_row.addWidget(self._input, 1)
+
+        # 右上角瞬态工具簇：清空小纸条 / 重发 / 静音（默认隐藏，保持工具栏纯净）
+        util_col = QVBoxLayout()
+        util_col.setSpacing(6)
+        util_col.setAlignment(Qt.AlignTop | Qt.AlignRight)
+
+        self._btn_clear = QPushButton("🗑")
+        self._btn_clear.setFixedSize(30, 30)
+        self._btn_clear.setFont(QFont("Segoe UI Emoji", 11))
+        self._btn_clear.setCursor(Qt.PointingHandCursor)
+        self._btn_clear.setToolTip("清空小纸条")
+        self._btn_clear.setStyleSheet(self._icon_button_style())
+        self._btn_clear.clicked.connect(self._on_clear)
+        util_col.addWidget(self._btn_clear)
+
+        self._btn_resend = QPushButton("✏️")
+        self._btn_resend.setFixedSize(30, 30)
+        self._btn_resend.setFont(QFont("Segoe UI Emoji", 11))
+        self._btn_resend.setCursor(Qt.PointingHandCursor)
+        self._btn_resend.setToolTip("打断思考，回填上一条消息")
+        self._btn_resend.setVisible(False)
+        self._btn_resend.setStyleSheet(self._icon_button_style("#7FA9FF"))
+        util_col.addWidget(self._btn_resend)
+
+        self._btn_mute = QPushButton("🔇")
+        self._btn_mute.setFixedSize(30, 30)
+        self._btn_mute.setFont(QFont("Segoe UI Emoji", 11))
+        self._btn_mute.setCursor(Qt.PointingHandCursor)
+        self._btn_mute.setToolTip("停止朗读")
+        self._btn_mute.setVisible(False)
+        self._btn_mute.setStyleSheet(self._icon_button_style("#F0B429"))
+        util_col.addWidget(self._btn_mute)
+
+        input_row.addLayout(util_col)
+        self._pod_layout.addLayout(input_row)
+
+        # ── 第二层：底部功能工具栏（严格顺序：工具箱→附件→语音输入→自动发送→发送）──
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(6, 0, 6, 0)
+        toolbar.setSpacing(10)
+
+        self._tool_btn = QPushButton(" 工具箱")
+        self._tool_btn.setIcon(_wrench_icon(QColor("#DCEFE8")))
+        self._tool_btn.setIconSize(QSize(20, 20))
+        self._tool_btn.setFixedHeight(40)
+        self._tool_btn.setFont(QFont("Microsoft YaHei UI", 11))
         self._tool_btn.setCursor(Qt.PointingHandCursor)
-        self._tool_btn.setToolTip("选择工具（强制使用）")
-        self._tool_btn.setStyleSheet("""
+        self._tool_btn.setToolTip("选择工具（强制让莲心使用某工具）")
+        self._tool_btn.setStyleSheet(self._toolbar_button_style())
+        self._tool_btn.clicked.connect(self._show_tool_dialog)
+        toolbar.addWidget(self._tool_btn)
+
+        self._attach_btn = QPushButton(" 附件")
+        self._attach_btn.setIcon(_paperclip_icon(QColor("#DCEFE8")))
+        self._attach_btn.setIconSize(QSize(20, 20))
+        self._attach_btn.setFixedHeight(40)
+        self._attach_btn.setFont(QFont("Microsoft YaHei UI", 11))
+        self._attach_btn.setCursor(Qt.PointingHandCursor)
+        self._attach_btn.setToolTip("发送图片 / 文件给莲心")
+        self._attach_btn.setStyleSheet(self._toolbar_button_style())
+        self._attach_btn.clicked.connect(self._show_attach_menu)
+        toolbar.addWidget(self._attach_btn)
+
+        self._btn_voice = QPushButton(" 语音输入")
+        self._btn_voice.setIcon(_microphone_icon(QColor("#DCEFE8")))
+        self._btn_voice.setIconSize(QSize(20, 20))
+        self._btn_voice.setFixedHeight(40)
+        self._btn_voice.setFont(QFont("Microsoft YaHei UI", 11))
+        self._btn_voice.setCursor(Qt.PointingHandCursor)
+        self._btn_voice.setToolTip("语音输入")
+        self._btn_voice.setEnabled(False)
+        self._btn_voice.setStyleSheet(self._toolbar_button_style())
+        toolbar.addWidget(self._btn_voice)
+
+        self._auto_send_cb = QCheckBox("自动发送")
+        self._auto_send_cb.setFixedHeight(40)
+        self._auto_send_cb.setChecked(True)
+        self._auto_send_cb.setCursor(Qt.PointingHandCursor)
+        self._auto_send_cb.setStyleSheet(self._auto_send_style())
+        toolbar.addWidget(self._auto_send_cb)
+
+        toolbar.addStretch(1)
+
+        self._btn_send = QPushButton("↑  发送 (Enter)")
+        self._btn_send.setFixedHeight(40)
+        self._btn_send.setMinimumWidth(180)
+        self._btn_send.setFont(QFont("Microsoft YaHei UI", 12, QFont.Bold))
+        self._btn_send.setCursor(Qt.PointingHandCursor)
+        self._btn_send.setStyleSheet(self._send_button_style())
+        self._btn_send.clicked.connect(self._on_send)
+        toolbar.addWidget(self._btn_send)
+
+        self._pod_layout.addLayout(toolbar)
+
+        pod_margin.addWidget(self._pod)
+
+        self._highlight_timer = QTimer(self)
+        self._highlight_timer.setSingleShot(True)
+        self._highlight_timer.timeout.connect(self._clear_highlight)
+
+    # ── 工具栏按钮样式 ─────────────────────────────────────
+
+    @staticmethod
+    def _toolbar_button_style():
+        return """
             QPushButton {
-                background-color: #18312C;
+                background-color: rgba(22, 43, 38, 205);
                 color: #DCEFE8;
-                border-radius: 8px;
                 border: 1px solid #416B63;
+                border-radius: 10px;
+                padding: 0px 16px;
+                font-size: 11pt;
+                font-family: "Microsoft YaHei UI";
             }
             QPushButton:hover {
                 background-color: #2A5148;
@@ -810,172 +1054,85 @@ class InputPanel(QWidget):
             }
             QPushButton:pressed {
                 background-color: #35685C;
-            }
-        """)
-        self._tool_btn.clicked.connect(self._show_tool_dialog)
-        main_layout.addWidget(self._tool_btn)
-
-        # 输入框
-        self._input = _InputBox()
-        self._input.setFont(QFont("Microsoft YaHei UI", 12))
-        self._input.setPlaceholderText("输入消息，按 Enter 发送，Shift+Enter 换行... (可粘贴图片到此)")
-        self._input.setMinimumHeight(80)
-        self._input.setMaximumHeight(150)
-        self._input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._input.setStyleSheet("""
-            QTextEdit {
-                border: 2px solid #5B9A8B;
-                border-radius: 10px;
-                padding: 8px 12px;
-                background-color: #1A2A26;
-                color: #CCCCCC;
-                font-size: 12pt;
-                font-family: "Microsoft YaHei UI";
-            }
-            QTextEdit:focus {
-                border: 2px solid #7EC8A4;
-                background-color: #1E302C;
-                color: #FFFFFF;
-            }
-        """)
-        self._input.enter_pressed.connect(self._on_send)
-        main_layout.addWidget(self._input, 1)
-
-        # 右侧按钮区域
-        right_layout = QHBoxLayout()
-        right_layout.setAlignment(Qt.AlignTop)
-        right_layout.setSpacing(6)
-
-        self._btn_send = QPushButton("发送")
-        self._btn_send.setFixedSize(60, 36)
-        self._btn_send.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        self._btn_send.setCursor(Qt.PointingHandCursor)
-        self._btn_send.setStyleSheet("""
-            QPushButton {
-                background-color: #347767;
-                color: #FFFFFF;
-                border-radius: 8px;
-                border: 1px solid #83CDB8;
-            }
-            QPushButton:hover  { background-color: #3E8A73; }
-            QPushButton:pressed{ background-color: #2A5148; }
-            QPushButton:disabled{ background-color: #34534B; color: #8DA69E; }
-        """)
-        self._btn_send.clicked.connect(self._on_send)
-        right_layout.addWidget(self._btn_send)
-
-        self._btn_voice = QPushButton("🎤")
-        self._btn_voice.setFixedSize(48, 36)
-        self._btn_voice.setFont(QFont("Segoe UI Emoji", 14))
-        self._btn_voice.setCursor(Qt.PointingHandCursor)
-        self._btn_voice.setToolTip("语音输入")
-        self._btn_voice.setEnabled(False)
-        self._btn_voice.setStyleSheet("""
-            QPushButton {
-                background-color: #18312C;
-                color: #DCEFE8;
-                border-radius: 8px;
-                border: 1px solid #416B63;
-            }
-            QPushButton:hover { background-color: #2A5148; border-color: #75B8A8; color: #FFFFFF; }
-            QPushButton:pressed { background-color: #35685C; }
-        """)
-        right_layout.addWidget(self._btn_voice)
-
-        self._btn_clear = QPushButton("清空")
-        self._btn_clear.setFixedSize(48, 36)
-        self._btn_clear.setFont(QFont("Microsoft YaHei UI", 9))
-        self._btn_clear.setCursor(Qt.PointingHandCursor)
-        self._btn_clear.setToolTip("清空小纸条")
-        self._btn_clear.setStyleSheet("""
-            QPushButton {
-                background-color: #18312C;
-                color: #DCEFE8;
-
-                border-radius: 8px;
-                border: 1px solid #416B63;
-            }
-            QPushButton:hover {
-                background-color: #2A5148;
-                color: #FFFFFF;
-                border: 1px solid #75B8A8;
-            }
-            QPushButton:pressed {
-                background-color: #35685C;
-                color: #FFFFFF;
+                padding-top: 2px;
             }
             QPushButton:disabled {
                 background-color: #1C2D29;
                 color: #78918A;
                 border: 1px solid #30463F;
             }
-        """)
-        right_layout.addWidget(self._btn_clear)
-        # 🔇 静音按钮
-        self._btn_mute = QPushButton("🔇")
-        self._btn_mute.setFixedSize(36, 36)
-        self._btn_mute.setFont(QFont("Segoe UI Emoji", 14))
-        self._btn_mute.setCursor(Qt.PointingHandCursor)
-        self._btn_mute.setToolTip("停止朗读")
-        self._btn_mute.setVisible(False)
-        self._btn_mute.setStyleSheet("""
-            QPushButton {
-                background-color: #FFF3CD;
-                color: #856404;
-                border-radius: 8px;
-                border: 1px solid #FFC107;
-            }
-            QPushButton:hover {
-                background-color: #FFE69C;
-                border: 1px solid #FF9800;
-            }
-        """)
-        right_layout.addWidget(self._btn_mute)
+        """
 
-        # ✏️ 重新发送按钮
-        self._btn_resend = QPushButton("✏️")
-        self._btn_resend.setFixedSize(36, 36)
-        self._btn_resend.setFont(QFont("Segoe UI Emoji", 14))
-        self._btn_resend.setCursor(Qt.PointingHandCursor)
-        self._btn_resend.setToolTip("打断思考，回填上一条消息")
-        self._btn_resend.setVisible(False)
-        self._btn_resend.setStyleSheet("""
-            QPushButton {
-                background-color: #E8F0FE;
-                color: #1A73E8;
-                border-radius: 8px;
-                border: 1px solid #4285F4;
-            }
-            QPushButton:hover {
-                background-color: #D2E3FC;
-                border: 1px solid #1A73E8;
-            }
-        """)
-        right_layout.addWidget(self._btn_resend)
+    @staticmethod
+    def _icon_button_style(color="#DCEFE8"):
+        return f"""
+            QPushButton {{
+                background-color: rgba(22, 43, 38, 180);
+                color: {color};
+                border: 1px solid #416B63;
+                border-radius: 9px;
+                font-size: 11pt;
+            }}
+            QPushButton:hover {{ background-color: #2A5148; border-color: #75B8A8; color: #FFFFFF; }}
+            QPushButton:pressed {{ background-color: #35685C; }}
+        """
 
-        self._auto_send_cb = QCheckBox("自动发送")
-        self._auto_send_cb.setFont(QFont("Microsoft YaHei UI", 9))
-        self._auto_send_cb.setChecked(True)
-        self._auto_send_cb.setCursor(Qt.PointingHandCursor)
-        self._auto_send_cb.setStyleSheet("""
+    @staticmethod
+    def _auto_send_style():
+        return """
             QCheckBox {
-                spacing: 6px;
-                font-size: 9pt;
+                background-color: rgba(22, 43, 38, 205);
+                border: 1px solid #416B63;
+                border-radius: 10px;
+                padding: 0px 14px;
+                color: #DCEFE8;
+                font-size: 11pt;
+                font-family: "Microsoft YaHei UI";
+                spacing: 8px;
             }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
+            QCheckBox:hover { border-color: #75B8A8; color: #FFFFFF; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #416B63;
+                border-radius: 4px;
+                background: transparent;
             }
-        """)
-        right_layout.addWidget(self._auto_send_cb)
+            QCheckBox::indicator:checked {
+                border: 1px solid #9AD8C7;
+                border-radius: 4px;
+                background: #3E8A73;
+            }
+        """
 
-        main_layout.addLayout(right_layout)
-
-        outer_layout.addLayout(main_layout)
-
-        self._highlight_timer = QTimer(self)
-        self._highlight_timer.setSingleShot(True)
-        self._highlight_timer.timeout.connect(self._clear_highlight)
+    @staticmethod
+    def _send_button_style():
+        return """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2C7C60, stop:1 #3E8A73);
+                color: #FFFFFF;
+                border: 1px solid #83CDB8;
+                border-radius: 12px;
+                padding: 0px 22px;
+                font-size: 12pt;
+                font-family: "Microsoft YaHei UI";
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #38916F, stop:1 #52A98C);
+                border-color: #9AD8C7;
+            }
+            QPushButton:pressed {
+                background: #2A6350;
+                padding-top: 2px;
+            }
+            QPushButton:disabled {
+                background: #2A3B36;
+                color: #8DA69E;
+                border-color: #416B63;
+            }
+        """
 
     # ── 工具选择相关方法 ─────────────────────────────────────
 
@@ -1001,8 +1158,11 @@ class InputPanel(QWidget):
                 QPushButton {
                     background-color: #347767;
                     color: #FFFFFF;
-                    border-radius: 8px;
+                    border-radius: 10px;
                     border: 1px solid #83CDB8;
+                    padding: 0px 16px;
+                    font-size: 11pt;
+                    font-family: "Microsoft YaHei UI";
                 }
                 QPushButton:hover {
                     background-color: #3E8A73;
@@ -1014,23 +1174,53 @@ class InputPanel(QWidget):
             self._tool_btn.setToolTip(f"已绑定工具：{self._selected_tool}")
         else:
             self._tool_chip.setVisible(False)
-            self._tool_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #18312C;
-                    color: #DCEFE8;
-                    border-radius: 8px;
-                    border: 1px solid #416B63;
-                }
-                QPushButton:hover {
-                    background-color: #2A5148;
-                    border-color: #75B8A8;
-                    color: #FFFFFF;
-                }
-                QPushButton:pressed {
-                    background-color: #35685C;
-                }
-            """)
+            self._tool_btn.setStyleSheet(self._toolbar_button_style())
             self._tool_btn.setToolTip("选择工具（强制让莲心使用某工具）")
+
+    # ── 附件按钮 ───────────────────────────────────────────
+
+    def _show_attach_menu(self):
+        from utils.sound import play_sound
+        play_sound("ToolBox1.mp3")
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #142421;
+                border: 1px solid #416B63;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QMenu::item {
+                background-color: transparent;
+                color: #DCEFE8;
+                padding: 8px 28px 8px 14px;
+                margin: 2px;
+                border-radius: 6px;
+                font-size: 10pt;
+                font-family: "Microsoft YaHei UI";
+            }
+            QMenu::item:selected { background-color: #347767; color: #FFFFFF; }
+        """)
+        img_action = QAction("📷 图片（发送给莲心识别）", menu)
+        img_action.triggered.connect(self._pick_image)
+        file_action = QAction("📄 文件（填入路径，让莲心读取）", menu)
+        file_action.triggered.connect(self._pick_file)
+        menu.addAction(img_action)
+        menu.addAction(file_action)
+        menu.exec_(self._attach_btn.mapToGlobal(QPoint(0, self._attach_btn.height())))
+
+    def _pick_image(self):
+        from PyQt5.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择图片", "", "图片文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.webp)")
+        if path:
+            self._process_image(path)
+
+    def _pick_file(self):
+        from PyQt5.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(self, "选择文件", "")
+        if path:
+            self.set_text(path)
 
     def get_selected_tool(self):
         return self._selected_tool
@@ -1059,39 +1249,9 @@ class InputPanel(QWidget):
         self._auto_send_cb.setEnabled(enabled)
         if enabled:
             self._input.setFocus()
-            self._input.setStyleSheet("""
-                QTextEdit {
-                    border: 2px solid #5B9A8B;
-                    border-radius: 10px;
-                    padding: 8px 12px;
-                    background-color: #1A2A26;
-                    color: #CCCCCC;
-                    font-size: 12pt;
-                    font-family: "Microsoft YaHei UI";
-                }
-                QTextEdit:focus {
-                    border: 2px solid #7EC8A4;
-                    background-color: #1E302C;
-                    color: #FFFFFF;
-                }
-            """)
+            self._input.setStyleSheet(self._input_styles["normal"])
         else:
-            self._input.setStyleSheet("""
-                QTextEdit {
-                    border: 2px solid #5B9A8B;
-                    border-radius: 10px;
-                    padding: 8px 12px;
-                    background-color: #1A2A26;
-                    color: #707070;
-                    font-size: 12pt;
-                    font-family: "Microsoft YaHei UI";
-                }
-                QTextEdit:focus {
-                    border: 2px solid #7EC8A4;
-                    background-color: #1E302C;
-                    color: #FFFFFF;
-                }
-            """)
+            self._input.setStyleSheet(self._input_styles["disabled"])
 
     def enable_voice_button(self):
         self._btn_voice.setEnabled(True)
@@ -1104,22 +1264,18 @@ class InputPanel(QWidget):
     def disable_voice_button(self):
         self._btn_voice.setEnabled(False)
         self._btn_voice.setToolTip("待机模式运行中，麦克风被占用")
-        self._btn_voice.setStyleSheet("""
-            QPushButton {
-                background-color: #1C2D29;
-                color: #78918A;
-                border-radius: 8px;
-                border: 1px solid #30463F;
-            }
-        """)
+        self._btn_voice.setStyleSheet(self._toolbar_button_style())
 
     def set_voice_recording(self):
         self._btn_voice.setStyleSheet("""
             QPushButton {
                 background-color: #B85C5C;
                 color: #FFFFFF;
-                border-radius: 8px;
+                border-radius: 10px;
                 border: 1px solid #E49A9A;
+                padding: 0px 16px;
+                font-size: 11pt;
+                font-family: "Microsoft YaHei UI";
             }
             QPushButton:hover { background-color: #D06A6A; }
         """)
@@ -1129,16 +1285,7 @@ class InputPanel(QWidget):
         self._set_voice_idle()
 
     def _set_voice_idle(self):
-        self._btn_voice.setStyleSheet("""
-            QPushButton {
-                background-color: #18312C;
-                color: #DCEFE8;
-                border-radius: 8px;
-                border: 1px solid #416B63;
-            }
-            QPushButton:hover  { background-color: #2A5148; border-color: #75B8A8; color: #FFFFFF; }
-            QPushButton:pressed{ background-color: #35685C; }
-        """)
+        self._btn_voice.setStyleSheet(self._toolbar_button_style())
 
     def set_text(self, text: str):
         self._input.setText(text)
@@ -1149,40 +1296,11 @@ class InputPanel(QWidget):
         self._highlight_input()
 
     def _highlight_input(self):
-        self._input.setStyleSheet("""
-            QTextEdit {
-                border: 2px solid #7EC8A4;
-                border-radius: 10px;
-                padding: 8px 12px;
-                background-color: #1E302C;
-                color: #FFFFFF;
-                font-size: 12pt;
-                font-family: "Microsoft YaHei UI";
-            }
-            QTextEdit:focus {
-                border: 2px solid #7EC8A4;
-                background-color: #1E302C;
-            }
-        """)
+        self._input.setStyleSheet(self._input_styles["highlight"])
         self._highlight_timer.start(3000)
 
     def _clear_highlight(self):
-        self._input.setStyleSheet("""
-            QTextEdit {
-                border: 2px solid #5B9A8B;
-                border-radius: 10px;
-                padding: 8px 12px;
-                background-color: #1A2A26;
-                color: #CCCCCC;
-                font-size: 12pt;
-                font-family: "Microsoft YaHei UI";
-            }
-            QTextEdit:focus {
-                border: 2px solid #7EC8A4;
-                background-color: #1E302C;
-                color: #FFFFFF;
-            }
-        """)
+        self._input.setStyleSheet(self._input_styles["normal"])
 
     def get_text(self) -> str:
         """获取当前输入框中的文本（不清空）。"""
@@ -1197,9 +1315,6 @@ class InputPanel(QWidget):
 
     def enable_clear_button(self):
         self._btn_clear.setEnabled(True)
-        if not self._clear_connected:
-            self._btn_clear.clicked.connect(self._on_clear)
-            self._clear_connected = True
 
     def disable_clear_button(self):
         self._btn_clear.setEnabled(False)
@@ -1400,10 +1515,8 @@ class InputPanel(QWidget):
         status.setStyleSheet("color: #9aa4bd; font-size: 11px; padding: 0 4px;")
         layout.addWidget(status)
 
-        # 插入到当前布局底部
-        parent_layout = self.parent().layout() if self.parent() else None
-        if parent_layout:
-            parent_layout.addWidget(bar)
+        # 插入到输入舱内部顶部（在输入框上方展示）
+        self._pod_layout.insertWidget(0, bar)
 
         self._interrupt_bar = bar
         self._interrupt_input = lbl
@@ -1462,8 +1575,7 @@ class InputPanel(QWidget):
             QWidget#quoteBar {{
                 background-color: rgba(45, 45, 63, 180);
                 border-left: 3px solid {color};
-                border-radius: 4px;
-                margin: 0px 8px 4px 8px;
+                border-radius: 6px;
             }}
         """)
         self._quote_bar.setVisible(True)

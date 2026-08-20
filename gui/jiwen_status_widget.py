@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor, QFont, QPainter
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QPushButton, QPlainTextEdit, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 
 
 class _AxisBar(QWidget):
@@ -64,7 +64,7 @@ class JiwenStatusWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(332)
+        self.setMinimumHeight(300)
         self.setStyleSheet("background:rgba(22,27,46,235); border:1px solid #3D4668; border-radius:14px;")
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 9, 12, 9)
@@ -93,29 +93,10 @@ class JiwenStatusWidget(QWidget):
         self._motive.setStyleSheet("color:#929DB8; background:transparent;")
         self._motive.setFont(QFont("Microsoft YaHei UI", 8))
         root.addWidget(self._motive)
-        controls = QHBoxLayout()
-        controls.setSpacing(4)
-        for label, scenario in (("温暖回应", "warm_reply"), ("冷淡回应", "cold_reply"), ("模拟等待", "waiting")):
-            button = QPushButton(label, self)
-            button.setToolTip("仅用于观察情绪动力变化，不会触发主动聊天或工具")
-            button.setFixedHeight(23)
-            button.setCursor(Qt.PointingHandCursor)
-            button.setStyleSheet("QPushButton { color:#B8C1D8; background:#252B45; border:1px solid #3D4668; border-radius:6px; font-size:8pt; } QPushButton:hover { color:#FFFFFF; border-color:#8F9BFF; background:#30385B; }")
-            button.clicked.connect(lambda checked=False, name=scenario: self.simulate(name))
-            controls.addWidget(button)
-        restore = QPushButton("撤销模拟", self)
-        restore.setToolTip("恢复本轮模拟开始前的情绪状态")
-        restore.setFixedHeight(23)
-        restore.setCursor(Qt.PointingHandCursor)
-        restore.setStyleSheet("QPushButton { color:#E8B6B6; background:#352A3B; border:1px solid #704E67; border-radius:6px; font-size:8pt; } QPushButton:hover { color:#FFFFFF; border-color:#E79AB4; }")
-        restore.clicked.connect(self.restore_simulation)
-        controls.addWidget(restore)
-        root.addLayout(controls)
         self._event_log = QPlainTextEdit(self)
         self._event_log.setReadOnly(True)
-        self._event_log.setMaximumHeight(68)
         self._event_log.setStyleSheet("QPlainTextEdit { color:#AEB7D4; background:rgba(9,14,28,180); border:1px solid #303A5C; border-radius:6px; padding:4px; font:8pt 'Microsoft YaHei UI'; }")
-        root.addWidget(self._event_log)
+        root.addWidget(self._event_log, 1)
         self._timer = QTimer(self)
         self._timer.setInterval(1500)
         self._timer.timeout.connect(self.refresh)
@@ -141,24 +122,6 @@ class JiwenStatusWidget(QWidget):
             self._event_log.setPlainText("\n".join(lines) or "暂无情绪事件")
         except Exception:
             self._mood.setText("状态暂不可用")
-
-    def simulate(self, scenario: str):
-        try:
-            from brain.emotional import get_manager
-            result = get_manager().simulate_scenario(scenario)
-            if result.get("ok"):
-                self.refresh()
-        except Exception:
-            self._mood.setText("模拟失败")
-
-    def restore_simulation(self):
-        try:
-            from brain.emotional import get_manager
-            result = get_manager().restore_simulation()
-            if result.get("ok"):
-                self.refresh()
-        except Exception:
-            self._mood.setText("恢复失败")
 
     def closeEvent(self, event):
         self._timer.stop()
