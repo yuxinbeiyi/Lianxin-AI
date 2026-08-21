@@ -391,6 +391,25 @@ class ChatWidget(QScrollArea):
         QTimer.singleShot(duration_ms, label.deleteLater)
         return label
 
+    def show_center_notice(self, text: str, duration_ms: int = 2400):
+        """在聊天视口中央显示一次性视觉事件提示，不写入聊天记录。"""
+        label = QLabel(text, self.viewport())
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            "QLabel { color:#F4F0FF; background:rgba(34,28,70,220); "
+            "border:1px solid #A98BFF; border-radius:14px; "
+            "padding:10px 20px; font-size:15px; }"
+        )
+        label.adjustSize()
+        label.move(
+            max(0, (self.viewport().width() - label.width()) // 2),
+            max(12, (self.viewport().height() - label.height()) // 2),
+        )
+        label.show()
+        label.raise_()
+        QTimer.singleShot(duration_ms, label.deleteLater)
+        return label
+
     def show_avatar_thinking(self, text: str):
         self._thinking_label.setText("💭  莲心思考中…  " + (text or "正在组织回应"))
         self._thinking_label.setFont(QFont("Microsoft YaHei UI", 10))

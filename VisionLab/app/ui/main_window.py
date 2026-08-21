@@ -83,7 +83,7 @@ class VisionLabWindow(QMainWindow):
         status_frame = QFrame()
         status_layout = QGridLayout(status_frame)
         status_layout.addWidget(QLabel("当前状态"), 0, 0, 1, 2)
-        for row, (key, label) in enumerate((("camera", "摄像头"), ("fps", "FPS"), ("hands", "双手"), ("gesture", "手势"), ("gesture_confidence", "手势置信度"), ("gesture_state", "手势状态"), ("face", "人脸"), ("face_count", "人脸数量"), ("face_confidence", "人脸置信度"), ("companion", "陪伴"), ("pose_confidence", "姿态置信度"), ("work_duration", "当前陪伴时长"), ("today_presence", "今日陪伴总时长"), ("today_sessions", "今日陪伴次数")), 1):
+        for row, (key, label) in enumerate((("camera", "摄像头"), ("fps", "FPS"), ("hands", "双手"), ("gesture", "手势"), ("gesture_confidence", "手势置信度"), ("gesture_state", "手势状态"), ("face", "人脸"), ("face_count", "人脸数量"), ("face_confidence", "人脸置信度"), ("companion", "观测"), ("pose_confidence", "姿态置信度"), ("video_duration", "视频时间"), ("today_presence", "今日陪伴总时长"), ("today_sessions", "今日陪伴次数")), 1):
             value = QLabel("-")
             value.setObjectName("statusValue")
             self.status[key] = value
@@ -222,7 +222,7 @@ class VisionLabWindow(QMainWindow):
     def _update_status(self, data):
         for key, value in data.items():
             if key in self.status:
-                if key == "work_duration":
+                if key == "video_duration":
                     value = f"{int(value) // 60:02d}:{int(value) % 60:02d}"
                 elif key == "today_presence":
                     value = f"{int(value) // 3600:02d}:{int(value) % 3600 // 60:02d}"

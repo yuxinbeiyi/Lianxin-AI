@@ -165,10 +165,12 @@ class FaceFeature:
                 state = "检测到人脸（未录入本人）"
                 identity = "STRANGER"
             else:
-                similarity = self._similarity(faces[0].embedding)
-                state = (f"本人：{self.user_name}" if similarity >= 0.45
-                         else "陌生人")
-                identity = "USER" if similarity >= 0.45 else "STRANGER"
+                # 多人画面中只要任意一张脸是本人，就应视为本人在场。
+                user_detected = any(
+                    self._similarity(face.embedding) >= 0.45 for face in faces
+                )
+                state = f"本人：{self.user_name}" if user_detected else "陌生人"
+                identity = "USER" if user_detected else "STRANGER"
             self._last_status = {"face": state, "face_count": count,
                                  "face_confidence": round(confidence, 2),
                                  "identity": identity}

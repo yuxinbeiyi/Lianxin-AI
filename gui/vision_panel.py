@@ -151,8 +151,8 @@ class VisionPanel(QDialog):
             ("fps", "帧率"),
             ("face", "人脸"),
             ("gesture", "手势"),
-            ("companion", "工位"),
-            ("duration", "工作时长"),
+            ("companion", "观测"),
+            ("duration", "视频时间"),
         ]):
             label = QLabel(label_text + ":")
             label.setObjectName("statusLabel")
@@ -517,13 +517,19 @@ class VisionPanel(QDialog):
             else:
                 self.status_labels["gesture"].setText("就绪")
 
-        # 陪伴
+        # 观测
         if "companion" in status:
-            self.status_labels["companion"].setText(status["companion"])
+            state_text = {
+                "NO_PERSON": "未发现本人",
+                "PERSON_PRESENT": "观测中",
+                "AWAY": "已离开",
+                "未启用": "未启用",
+            }.get(status["companion"], status["companion"])
+            self.status_labels["companion"].setText(state_text)
 
-        # 工作时长
-        if "work_duration" in status:
-            duration = int(status["work_duration"])
+        # 视频时间
+        if "video_duration" in status:
+            duration = int(status["video_duration"])
             self.status_labels["duration"].setText(f"{duration // 60:02d}:{duration % 60:02d}")
 
     @pyqtSlot(str)

@@ -29,6 +29,7 @@ class VisionWorker(QObject):
         self.pose = PoseFeature()
         self.database = VisionDatabase(Path(__file__).resolve().parents[2] / "data" / "vision.db")
         self._stop = False
+        self._video_started_at = None
 
     @pyqtSlot()
     def run(self):
@@ -37,6 +38,7 @@ class VisionWorker(QObject):
             self.stopped.emit()
             return
         self.database.open()
+        self._video_started_at = time.monotonic()
         if self.enabled["gesture"] and not self.gesture.start():
             self.event_ready.emit(f"手势识别不可用：{self.gesture.error}")
             self.enabled["gesture"] = False
@@ -57,13 +59,22 @@ class VisionWorker(QObject):
             gesture_status = {"gesture": "NONE", "gesture_confidence": 0.0,
                               "hands": 0, "gesture_state": "READY"}
             face_status = {"face": "未启用", "face_count": 0,
-                           "face_confidence": 0.0}
+                           "face_confidence": 0.0, "identity": "UNKNOWN"}
             companion_state = "未启用"
-            work_duration = 0.0
-            if self.enabled["companion"]:
-                frame, pose_status = self.pose.process(frame)
-                present = pose_status["pose_present"] if self.pose.initialized else face_status["face_count"] > 0
-                identity = face_status.get("identity", "UNKNOWN") if present else "UNKNOWN"
+            pose_status = {"pose_present": False, "pose_confidence": 0.0}
+            if self.enabled["face"]:
+                frame, face_status = self.face.process(frame)
+            if self.enabled["face"] or self.enabled["companion"]:
+                if self.enabled["companion"]:
+                    frame, pose_status = self.pose.process(frame)
+                if self.enabled["face"]:
+                    # 人脸识别优先，避免未更新的状态或姿态误判身份。
+                    present = face_status.get("identity") == "USER"
+                    identity = face_status.get("identity", "UNKNOWN")
+                else:
+                    # 未启用人脸时，姿态只能表达有人在场，不能确认身份。
+                    present = bool(pose_status.get("pose_present", False))
+                    identity = "USER" if present else "UNKNOWN"
                 companion_state, events, work_duration = self.companion.update(
                     1 if present else 0, identity)
                 for event in events:
@@ -73,8 +84,8 @@ class VisionWorker(QObject):
                         self.database.add_presence_time(0, session_started=True)
                     elif event == "USER_LEAVE":
                         self.database.add_presence_time(work_duration, left_at=None)
-            if self.enabled["face"]:
-                frame, face_status = self.face.process(frame)
+            else:
+                work_duration = 0.0
             if self.enabled["gesture"]:
                 frame, gesture_status = self.gesture.process(frame)
                 # 手势事件触发：检查 should_trigger 标志
@@ -95,20 +106,28 @@ class VisionWorker(QObject):
                 "face_count": face_status["face_count"],
                 "face_confidence": face_status["face_confidence"],
                 "companion": companion_state,
-                "work_duration": round(work_duration),
-                "pose_confidence": pose_status["pose_confidence"] if self.enabled["companion"] else 0.0,
+                "video_duration": round(
+                    max(0.0, time.monotonic() - self._video_started_at)
+                    if self._video_started_at is not None else 0.0
+                ),
+                "pose_confidence": pose_status["pose_confidence"],
             }
             summary = self.database.today_summary()
-            status["today_presence"] = round(summary["total_seconds"])
+            status["today_presence"] = round(
+                summary["total_seconds"] + self.companion.current_duration()
+            )
             status["today_sessions"] = summary["session_count"]
             self.status_ready.emit(status)
             remaining = 1 / 30 - (time.monotonic() - started)
             if remaining > 0:
                 time.sleep(remaining)
+        pending_presence = self.companion.flush_session()
+        if pending_presence > 0:
+            self.database.add_presence_time(pending_presence, left_at=None)
+        self._video_started_at = None
         self.camera.stop()
         self.gesture.stop()
         self.face.stop()
-        self.companion.reset()
         self.database.close()
         self.pose.stop()
         self.stopped.emit()

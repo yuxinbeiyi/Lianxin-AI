@@ -69,3 +69,17 @@ class CompanionFeature:
             self._work_started = None
             self._long_work_sent = False
         return self.state, events, duration
+
+    def current_duration(self, now=None):
+        """返回当前本人观测会话时长，不改变状态。"""
+        if now is None:
+            now = time.monotonic()
+        if self._work_started is None or self.state != "PERSON_PRESENT":
+            return 0.0
+        return max(0.0, now - self._work_started)
+
+    def flush_session(self, now=None):
+        """结束当前观测会话并返回尚未落库的时长。"""
+        duration = self.current_duration(now)
+        self.reset()
+        return duration

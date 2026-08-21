@@ -1279,7 +1279,8 @@ class MainWindow(QMainWindow):
             print(f"[右键朗读] 失败: {e}")
 
 
-    def _on_user_message(self, text: str, images: list = None):
+    def _on_user_message(self, text: str, images: list = None,
+                         show_user_message: bool = True):
         from brain.request_context import parse_request_context
         request_context = parse_request_context(text)
         active_text = request_context.active_text
@@ -1354,7 +1355,7 @@ class MainWindow(QMainWindow):
             bubble = self._chat_widget.add_user_image(img_path, ocr_text="分析中...")
             image_bubbles.append((img_path, bubble))
 
-        if text.strip():
+        if text.strip() and show_user_message:
             self._chat_widget.add_user_message(display_text)
             avatar_action = self._detect_avatar_command(active_text)
             if avatar_action and hasattr(self, "_avatar_interaction"):
@@ -3916,18 +3917,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 兜底回复
-        fallback_responses = [
-            "OK！收到你的信号啦～",
-            "嘿嘿，你在跟我打招呼吗？",
-            "OK～一切都会好起来的！",
-        ]
-
-        # 触发LLM响应（带兜底）
+        self._show_vision_gesture_notice("莲心注意到了你的OK手势")
         self._trigger_gesture_llm_response(
-            gesture_emoji="👌",
+            gesture_emoji="",
             gesture_name="OK手势",
-            fallback_responses=fallback_responses
+            fallback_responses=["好的，我注意到你的OK手势了。"],
         )
 
     def _on_vision_gesture_thumbs_up(self):
@@ -3945,20 +3939,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 兜底回复
-        fallback_responses = [
-            "哇～谢谢你的夸奖！我会继续努力的！",
-            "嘿嘿，被你认可的感觉真好～",
-            "你这样夸我，我会不好意思的啦…",
-            "收到你的赞啦！给你比个心～",
-            "太开心了！你的鼓励是我最大的动力！",
-        ]
-
-        # 触发LLM响应（带兜底）
+        self._show_vision_gesture_notice("莲心注意到了你的大拇指")
         self._trigger_gesture_llm_response(
-            gesture_emoji="👍",
-            gesture_name="竖大拇指",
-            fallback_responses=fallback_responses
+            gesture_emoji="",
+            gesture_name="大拇指点赞",
+            fallback_responses=["我注意到你的点赞了，谢谢你的鼓励。"],
         )
 
     def _on_vision_gesture_wave(self):
@@ -3976,23 +3961,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 兜底回复
-        fallback_responses = [
-            "嗨～你在叫我吗？",
-            "看到你挥手啦！有什么需要帮忙的吗？",
-            "嘿！我在这里～",
-            "你好呀～挥手打招呼真可爱！",
-            "诶？你找我有事吗？",
-            "看到啦看到啦～我在听哦！",
-            "挥手回应～有什么想跟我说的吗？",
-        ]
-
-        # 触发LLM响应（带兜底）
+        self._show_vision_gesture_notice("莲心注意到你在向她招手")
         self._trigger_gesture_llm_response(
-            gesture_emoji="👋",
-            gesture_name="挥手",
-            fallback_responses=fallback_responses
+            gesture_emoji="",
+            gesture_name="向莲心挥手",
+            fallback_responses=["我注意到你在向我招手啦。"],
         )
+
+    def _show_vision_gesture_notice(self, text: str):
+        """显示视觉事件提示，不创建用户消息、不调用 LLM、不触发语音。"""
+        chat_widget = getattr(self, "_chat_widget", None)
+        if chat_widget is None:
+            return
+        chat_widget.show_center_notice(text)
 
     def _is_speaking(self) -> bool:
         """检查莲心是否正在说话（TTS播放中）"""
@@ -4078,7 +4059,9 @@ class MainWindow(QMainWindow):
             self._gesture_timeout_timer.start(15_000)
 
             # _on_user_message 会负责创建、连接并启动新的 AgentWorker。
-            self._on_user_message(gesture_input, images=None)
+            self._on_user_message(
+                gesture_input, images=None, show_user_message=False
+            )
             print("[手势响应] LLM请求已发送，等待回复...")
             return
         except Exception as e:
