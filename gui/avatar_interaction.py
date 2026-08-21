@@ -133,6 +133,7 @@ class AvatarInteractionController(QObject):
         self._fallback_used = False
         self._planned_counter_action = ""
         self._interaction_id = ""
+        self._silent_response = False
 
     def _time_context(self):
         hour = datetime.now().hour
@@ -332,7 +333,7 @@ class AvatarInteractionController(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
-    def trigger(self, role="assistant", action="tap", source="user"):
+    def trigger(self, role="assistant", action="tap", source="user", silent=False):
         cfg = get_chat_avatar_config()
         if not cfg.get("interactions_enabled", True):
             self.interaction_blocked.emit("头像互动已在设置中关闭")
@@ -360,6 +361,7 @@ class AvatarInteractionController(QObject):
         self._last_trigger_ms = now_ms
         self._last_action = action
         self._last_source = source
+        self._silent_response = bool(silent)
         self._interaction_id = uuid.uuid4().hex
         target = role
         actor = "user" if source == "user" else "assistant"
@@ -391,7 +393,9 @@ class AvatarInteractionController(QObject):
             print(f"[成就记录] 头像事件记录失败: {exc}")
         print(f"[拍一拍] 互动开始 role={role}, dynamic={cfg.get('dynamic_response', True)}", flush=True)
         context = self._emotion_context()
-        self._planned_counter_action = self._plan_counter_action(context, cfg)
+        self._planned_counter_action = (
+            "" if self._silent_response else self._plan_counter_action(context, cfg)
+        )
         if self._planned_counter_action:
             self.stats.record_avatar_detail(
                 "counter_tap" if self._planned_counter_action == "tap" else "counter_headpat",
@@ -416,6 +420,13 @@ class AvatarInteractionController(QObject):
             except Exception as exc:
                 print(f"[成就记录] 头像回应事件记录失败: {exc}")
         self.interaction_accepted.emit(action, target, source, self._planned_counter_action)
+        if self._silent_response:
+            # Proactive chat owns the following text response; this interaction
+            # is visual/statistical only and must not start a second LLM reply.
+            self._busy = False
+            self._silent_response = False
+            self._worker = None
+            return True
         # 留出反击动画时间，保证用户先看到动作，再看到思考与台词。
         if self._planned_counter_action:
             QTimer.singleShot(460, lambda: self._begin_response(context, cfg))
@@ -442,9 +453,14 @@ class AvatarInteractionController(QObject):
         self.response_ready.emit(text.strip() or random.choice(self._fallback_choices()), False)
         self._worker = None
 
-    def trigger_outbound(self, action="tap"):
+    def trigger_outbound(self, action="tap", silent=False, source="assistant"):
         """莲心主动对用户头像执行动作。"""
-        return self.trigger(role="user", action=action, source="assistant")
+        return self.trigger(
+            role="user",
+            action=action,
+            source=source,
+            silent=silent,
+        )
 
     def trigger_headpat(self, role="assistant", source="user"):
         return self.trigger(role=role, action="headpat", source=source)

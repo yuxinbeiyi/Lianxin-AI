@@ -2900,23 +2900,33 @@ class MainWindow(QMainWindow):
 
     def _on_proactive_response(self, text: str):
         """主动聊天回复"""
-        self._proactive_controller.handle_proactive_response(text)
-        if text and hasattr(self, "_avatar_actions"):
-            warm_markers = ("开心", "想你", "陪你", "抱抱", "喜欢", "真好")
-            action = "happy" if any(marker in text for marker in warm_markers) else "wave"
-            self._avatar_actions.request(action, source="proactive_chat")
-        if text and hasattr(self, "_window_experience") and (self.isHidden() or self.isMinimized()):
-            self._window_experience.notify("莲心来陪你啦", text[:80])
-        # 主动聊天完成后，保留少量自然的头像陪伴互动概率。
+        def deliver_text():
+            self._proactive_controller.handle_proactive_response(text)
+            if text and hasattr(self, "_avatar_actions"):
+                warm_markers = ("开心", "想你", "陪你", "抱抱", "喜欢", "真好")
+                action = "happy" if any(marker in text for marker in warm_markers) else "wave"
+                self._avatar_actions.request(action, source="proactive_chat")
+            if text and hasattr(self, "_window_experience") and (self.isHidden() or self.isMinimized()):
+                self._window_experience.notify("莲心来陪你啦", text[:80])
+
+        # Treat the optional gesture and the proactive text as one event. The
+        # gesture is silent so it cannot create a second chat/LLM response.
         if text and getattr(self._proactive_scheduler, "desktop_enabled", False):
             if random.random() < 0.20 and hasattr(self, "_avatar_interaction"):
                 action = "headpat" if random.random() < 0.40 else "tap"
-                QTimer.singleShot(700, lambda a=action: self._trigger_proactive_avatar(a))
+                if self._avatar_interaction.trigger_outbound(
+                    action, silent=True, source="proactive_chat"
+                ):
+                    QTimer.singleShot(550, deliver_text)
+                    return
+        deliver_text()
 
     def _trigger_proactive_avatar(self, action="tap"):
         if not hasattr(self, "_avatar_interaction"):
             return
-        self._avatar_interaction.trigger_outbound(action)
+        self._avatar_interaction.trigger_outbound(
+            action, silent=True, source="proactive_chat"
+        )
 
     def _on_proactive_error(self, err: str):
         self._proactive_controller.handle_proactive_error(err)
@@ -2924,7 +2934,7 @@ class MainWindow(QMainWindow):
     def _on_proactive_coordination(self, message: str):
         """展示情绪与主动调度的协作状态，避免误判为主动聊天故障。"""
         self._chat_widget.add_system_tip(message)
-        try:
+        try: 
             self._proactive_controller.set_observation_tip(message)
         except Exception:
             pass

@@ -6,6 +6,7 @@ ProactiveWorker：主动聊天消息生成线程
 """
 
 import os
+import re
 import time
 from typing import Optional
 
@@ -489,7 +490,19 @@ class ProactiveWorker(QThread):
         )
         message = response.choices[0].message
         text = self._response_text(message)
+        finish_reason = getattr(response.choices[0], "finish_reason", "")
+        print(
+            f"[主动聊天] 首轮生成完成: len={len(text or '')}, "
+            f"finish_reason={finish_reason or 'unknown'}, observation={is_observation}",
+            flush=True,
+        )
         if text and not self._has_tool_calls(message):
+            if is_observation and self._looks_incomplete(text, finish_reason):
+                repaired = self._repair_observation_reply(
+                    client, model, text, context
+                )
+                if repaired:
+                    return repaired
             return text
 
         # ── 第 2 轮：如果模型想调用工具，执行一次真实回环 ──
@@ -557,6 +570,52 @@ class ProactiveWorker(QThread):
         # ── 兜底：都失败了才返回提示文案 ──
         print(f"[主动聊天] 警告：所有生成策略均失败（模型={model}），返回兜底文案")
         return "我刚刚想和你聊点什么，但这次没有生成出文字，等我一下再试。"
+
+    @staticmethod
+    def _looks_incomplete(text: str, finish_reason: str = "") -> bool:
+        """识别观察回复中常见的半句话结果。"""
+        value = str(text or "").strip()
+        if not value:
+            return False
+        if str(finish_reason or "").lower() in {"length", "max_tokens"}:
+            return True
+        return bool(re.search(
+            r"(?:的|地|得|在|和|跟|与|而且|但是|因为|所以|正在|看起来|似乎)$",
+            value,
+        ))
+
+    @staticmethod
+    def _repair_observation_reply(client, model: str, partial: str, context: str) -> str:
+        """让模型补全一次明显被截断的观察回复。"""
+        try:
+            repair_prompt = (
+                "下面这句主动观察回复可能被截断了。请在保留原意的基础上，"
+                "把它补成一条完整、自然、简短的中文句子。只输出修正后的完整句子，"
+                "不要解释：\n"
+                f"原句：{partial}\n"
+                f"画面上下文：{context[:1200]}"
+            )
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=256,
+                messages=[
+                    {"role": "system", "content": "你负责修复被截断的中文主动观察回复。"},
+                    {"role": "user", "content": repair_prompt},
+                ],
+                timeout=20,
+            )
+            repaired = str(
+                getattr(response.choices[0].message, "content", "") or ""
+            ).strip()
+            if repaired and len(repaired) >= len(partial):
+                print(
+                    f"[主动聊天] 观察回复补全成功: {len(partial)} -> {len(repaired)}",
+                    flush=True,
+                )
+                return repaired
+        except Exception as exc:
+            print(f"[主动聊天] 观察回复补全失败，保留原文: {exc}", flush=True)
+        return ""
 
     def _execute_proactive_tools(self, tool_calls) -> list[dict]:
         """执行主动聊天路径下支持的工具调用（单轮）。
