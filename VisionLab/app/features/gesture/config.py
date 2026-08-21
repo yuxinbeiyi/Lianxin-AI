@@ -28,7 +28,7 @@ MIN_HAND_PRESENCE_CONFIDENCE = 0.5
 MIN_TRACKING_CONFIDENCE = 0.5
 
 # 连续帧确认：连续多少帧相同才确认手势
-GESTURE_CONFIRM_FRAMES = 4
+GESTURE_CONFIRM_FRAMES = 5  # 提高到5帧以减少误触发（特别是大拇指手势）
 
 # 冷却时间（秒）：触发后多少秒内不能再次触发同类手势
 GESTURE_COOLDOWN = 2.0

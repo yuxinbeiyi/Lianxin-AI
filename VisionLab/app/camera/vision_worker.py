@@ -117,6 +117,13 @@ class VisionWorker(QObject):
     def stop(self):
         self._stop = True
 
+    @pyqtSlot(int)
+    def set_gesture_cooldown(self, seconds: int):
+        """设置手势冷却时间"""
+        if hasattr(self.gesture, 'state') and self.gesture.state:
+            self.gesture.state.cooldown = float(seconds)
+            print(f"[VisionWorker] 手势冷却时间已设置为 {seconds} 秒")
+
     @pyqtSlot(str, bool)
     def set_feature_enabled(self, name, enabled):
         if name not in self.enabled:

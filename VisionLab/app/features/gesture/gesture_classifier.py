@@ -82,6 +82,10 @@ class StaticGestureClassifier:
     输入 21 个关键点，输出 (gesture, confidence)。
     """
 
+    def __init__(self):
+        # 大拇指动态检测器：跟踪拇指位置以区分静态拄下巴和动态点赞
+        self._thumbs_up_positions = deque(maxlen=10)  # 最近10帧的拇指位置
+
     def classify(self, landmarks) -> tuple[str, float]:
         """分类单个手势。
 
@@ -154,9 +158,12 @@ class StaticGestureClassifier:
         return True, max(0.3, min(1.0, confidence))
 
     def _detect_thumbs_up(self, landmarks) -> tuple[bool, float]:
-        """检测竖大拇指手势。
+        """检测竖大拇指手势（改进版：增加手腕角度和动态检测）。
 
         特征：拇指明显向上伸展，其余四指弯曲。
+        改进：
+        1. 手腕角度检测：排除手掌水平的情况（拄下巴）
+        2. 动态检测：要求拇指有移动轨迹（非静态姿态）
         """
         palm_h = _palm_height(landmarks)
         if palm_h < 0.01:
@@ -164,9 +171,17 @@ class StaticGestureClassifier:
 
         wrist = landmarks[WRIST]
         thumb_tip = landmarks[THUMB_TIP]
-        middle_mcp = landmarks[MIDDLE_FINGER_TIP - 2]
+        middle_mcp = landmarks[MIDDLE_FINGER_TIP - 2]  # 中指MCP
 
-        # 拇指长度：拇指尖到手腕的距离
+        # === 改进1：手腕角度检测 ===
+        # 大拇指手势：手腕应该在中指MCP下方（手掌竖直）
+        # 拄下巴：手腕和中指MCP y坐标相近（手掌水平或倾斜）
+        vertical_distance = abs(middle_mcp.y - wrist.y)
+
+        if vertical_distance < 0.12:  # 手掌接近水平，排除
+            return False, 0.0
+
+        # === 原有判定逻辑：拇指长度 ===
         thumb_len = _dist(thumb_tip, wrist)
         thumb_ratio = thumb_len / palm_h
 
@@ -177,7 +192,18 @@ class StaticGestureClassifier:
         if thumb_tip.y >= wrist.y:
             return False, 0.0
 
-        # 检查其余四指是否弯曲（指尖到掌心的距离 < 手指长度 * 比例）
+        # === 改进2：动态检测 ===
+        # 记录当前拇指位置
+        self._thumbs_up_positions.append((thumb_tip.x, thumb_tip.y))
+
+        # 检查拇指是否有移动（至少需要5帧）
+        is_dynamic = self._is_dynamic_thumbs_up()
+
+        if not is_dynamic:
+            # 静态姿态（如拄下巴），排除
+            return False, 0.0
+
+        # === 原有判定逻辑：其余四指弯曲 ===
         cx, cy = _palm_center(landmarks)
         curled = 0
         total = 0
@@ -202,11 +228,36 @@ class StaticGestureClassifier:
         if curled < 2:  # 至少两根手指弯曲
             return False, 0.0
 
-        # 置信度：拇指伸展比 + 弯曲手指比例
+        # 置信度：拇指伸展比 + 弯曲手指比例 + 动态权重
         thumb_conf = min(1.0, (thumb_ratio - THUMBS_UP_RATIO) / 0.3 + 0.5)
         curl_conf = curled / total
         confidence = 0.5 * thumb_conf + 0.5 * curl_conf
         return True, max(0.3, min(1.0, confidence))
+
+    def _is_dynamic_thumbs_up(self) -> bool:
+        """判断大拇指手势是否是动态的（有移动）。
+
+        Returns:
+            True: 拇指有明显移动（动态点赞）
+            False: 拇指几乎静止（静态拄下巴）
+        """
+        if len(self._thumbs_up_positions) < 5:
+            # 前几帧：默认允许通过（避免冷启动问题）
+            return True
+
+        # 计算最近5帧的位置变化
+        positions = list(self._thumbs_up_positions)[-5:]
+        movements = [
+            math.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
+            for p1, p2 in zip(positions[:-1], positions[1:])
+        ]
+
+        total_movement = sum(movements)
+
+        # 动态手势：拇指有明显移动（>0.03）
+        # 静态拄下巴：拇指几乎不动（<0.03）
+        # 阈值0.03是经验值，可根据实际情况调整
+        return total_movement > 0.03
 
 
 class WaveDetector:

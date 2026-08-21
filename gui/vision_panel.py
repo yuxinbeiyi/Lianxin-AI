@@ -7,7 +7,7 @@ VisionPanel：莲心视觉感知面板（独立浮动窗口）
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QTextEdit, QGroupBox, QGridLayout, QWidget, QInputDialog, QMessageBox,
-    QComboBox,
+    QComboBox, QSpinBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
@@ -50,8 +50,14 @@ class VisionPanel(QDialog):
         self._worker = None
         self._current_frame = None  # 缓存当前帧，供"看看你面前的是谁"使用
 
+        # 加载手势配置
+        saved_cooldown = self._load_gesture_config()
+
         self._build_ui()
         self._apply_style()
+
+        # 设置冷却时间的初始值（从配置文件加载）
+        self.cooldown_spinbox.setValue(saved_cooldown)
 
     def _build_ui(self):
         """构建UI布局"""
@@ -112,6 +118,24 @@ class VisionPanel(QDialog):
         feature_layout.addWidget(self.check_face)
         feature_layout.addWidget(self.check_gesture)
         feature_layout.addWidget(self.check_companion)
+
+        # 手势冷却时间设置
+        cooldown_row = QHBoxLayout()
+        cooldown_label = QLabel("手势冷却:")
+        cooldown_label.setObjectName("deviceLabel")
+        self.cooldown_spinbox = QSpinBox()
+        self.cooldown_spinbox.setObjectName("deviceCombo")
+        self.cooldown_spinbox.setRange(3, 30)  # 3-30秒
+        self.cooldown_spinbox.setValue(7)      # 默认7秒
+        self.cooldown_spinbox.setSuffix(" 秒")
+        self.cooldown_spinbox.setToolTip("同一手势再次触发需要等待的时间")
+        cooldown_row.addWidget(cooldown_label)
+        cooldown_row.addWidget(self.cooldown_spinbox, 1)
+        feature_layout.addLayout(cooldown_row)
+
+        # 连接冷却时间变化信号
+        self.cooldown_spinbox.valueChanged.connect(self._on_cooldown_changed)
+
         sidebar_layout.addWidget(feature_group)
 
         # 状态区
@@ -339,6 +363,7 @@ class VisionPanel(QDialog):
             "gesture": self.check_gesture.isChecked(),
             "companion": self.check_companion.isChecked(),
         }
+        self._worker.set_gesture_cooldown(self.cooldown_spinbox.value())
 
         self._worker.moveToThread(self._thread)
 
@@ -372,6 +397,49 @@ class VisionPanel(QDialog):
         status = "启用" if enabled else "停用"
         feature_names = {"face": "人脸识别", "gesture": "手势识别", "companion": "陪伴检测"}
         self._append_log(f"{'✅' if enabled else '⏸️'} {feature_names.get(feature_name, feature_name)}{status}")
+
+    def _on_cooldown_changed(self, value: int):
+        """手势冷却时间改变"""
+        # 即使视觉线程尚未启动，也要保存用户刚刚选择的值。
+        self._save_gesture_config(value)
+        if self._worker is None:
+            return
+
+        self._worker.set_gesture_cooldown(value)
+        self._append_log(f"🕐 手势冷却时间已设置为 {value} 秒")
+
+    def _load_gesture_config(self) -> int:
+        """从配置文件加载手势冷却时间"""
+        try:
+            import json
+            from pathlib import Path
+            config_file = Path.home() / ".lianxin" / "gesture_config.json"
+
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get("cooldown_seconds", 7)
+        except Exception as e:
+            print(f"[视觉面板] 加载手势配置失败: {e}")
+
+        return 7  # 默认值
+
+    def _save_gesture_config(self, cooldown_seconds: int):
+        """保存手势冷却时间到配置文件"""
+        try:
+            import json
+            from pathlib import Path
+            config_dir = Path.home() / ".lianxin"
+            config_dir.mkdir(exist_ok=True)
+            config_file = config_dir / "gesture_config.json"
+
+            config = {"cooldown_seconds": cooldown_seconds}
+
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            print(f"[视觉面板] 保存手势配置失败: {e}")
 
     def _enroll_self(self):
         """录入本人"""
