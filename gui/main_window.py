@@ -1991,6 +1991,10 @@ class MainWindow(QMainWindow):
             return
         if not getattr(self, "_video_call_speaker_enabled", True):
             return
+        # Do not let overlapping replies compete for the shared Edge-TTS
+        # connection or leave an older sentence playing after a new reply.
+        if self._speaker_worker and self._speaker_worker.isRunning():
+            self._speaker.stop()
         self._speaker_worker = SpeakerWorker(self._speaker, text, self)
         avatar_actions = getattr(self, "_avatar_actions", None)
         if avatar_actions is not None:

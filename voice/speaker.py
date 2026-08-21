@@ -16,6 +16,8 @@ logger = logging.getLogger("VoiceSpeaker")
 
 
 class VoiceSpeaker:
+    _edge_tts_lock = threading.Lock()
+
     def __init__(self, voice: str = "zh-CN-XiaoxiaoNeural"):
         self._voice = voice
         self._stop_flag = False
@@ -351,17 +353,23 @@ class VoiceSpeaker:
             self._remove_temp_file(wav_path)
             logger.warning("GPT-SoVITS 合成失败，回退 Edge-TTS")
 
-        now = time.monotonic()
-        elapsed = now - VoiceSpeaker._last_edge_tts_time
-        if elapsed < VoiceSpeaker._edge_tts_min_interval:
-            time.sleep(VoiceSpeaker._edge_tts_min_interval - elapsed)
-
         mp3_path = self._new_temp_path(f"{tag}.mp3")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._async_synthesize(text, mp3_path))
-            VoiceSpeaker._last_edge_tts_time = time.monotonic()
+            # Edge-TTS is a shared network service. Serializing requests avoids
+            # intermittent empty responses when several SpeakerWorkers overlap.
+            with VoiceSpeaker._edge_tts_lock:
+                now = time.monotonic()
+                elapsed = now - VoiceSpeaker._last_edge_tts_time
+                if elapsed < VoiceSpeaker._edge_tts_min_interval:
+                    time.sleep(VoiceSpeaker._edge_tts_min_interval - elapsed)
+                if self._stop_flag:
+                    return None
+                loop.run_until_complete(self._async_synthesize(text, mp3_path))
+                if self._stop_flag:
+                    return None
+                VoiceSpeaker._last_edge_tts_time = time.monotonic()
             logger.info(f"TTS 使用 Edge-TTS（MP3，text_len={len(text)}）")
             return mp3_path
         except Exception as e:

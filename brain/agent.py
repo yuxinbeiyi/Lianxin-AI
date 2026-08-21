@@ -2772,6 +2772,16 @@ class AgentCore:
                 definition for definition in skill_tools
                 if definition.get("function", {}).get("name", "") in route.tool_names
             ]
+            _skill_names = [
+                definition.get("function", {}).get("name", "")
+                for definition in selected_skill_tools
+                if definition.get("function", {}).get("name", "")
+            ]
+            _mcp_names = [
+                definition.get("function", {}).get("name", "")
+                for definition in contextual_mcp_tools
+                if definition.get("function", {}).get("name", "")
+            ]
             all_tools = [] if route.is_light else filtered_builtin + selected_skill_tools + contextual_mcp_tools
             # 「对话过程中自动保存记忆」开启时，闲聊路由也要注入保存/去重工具，
             # 否则 CHAT_LIGHT 下模型手里没有 save_memory，自动保存永远无法触发。
@@ -3472,6 +3482,24 @@ class AgentCore:
                         all_tools = [t for t in all_tools
                                      if t.get("function", {}).get("name", "") not in runtime_disabled_names]
                     # 替换最后一条目录消息为全量激活版（技能/MCP 也标 ✅）
+                    skill_name_set = {
+                        item.get("function", {}).get("name", "")
+                        for item in skill_tools
+                    }
+                    mcp_name_set = {
+                        item.get("function", {}).get("name", "")
+                        for item in mcp_tools
+                    }
+                    _skill_names = [
+                        item.get("function", {}).get("name", "")
+                        for item in all_tools
+                        if item.get("function", {}).get("name", "") in skill_name_set
+                    ]
+                    _mcp_names = [
+                        item.get("function", {}).get("name", "")
+                        for item in all_tools
+                        if item.get("function", {}).get("name", "") in mcp_name_set
+                    ]
                     catalog_text = build_tool_catalog(
                         loaded_categories,
                         skill_tool_names=_skill_names if _skill_names else None,
