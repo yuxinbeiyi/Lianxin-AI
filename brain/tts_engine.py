@@ -238,6 +238,8 @@ def _ensure_worker() -> subprocess.Popen:
     env = os.environ.copy()
     env["GPT_SOVITS_PATH"] = gs_path
     env["GPT_SOVITS_VERSION"] = version
+    env["GPT_SOVITS_GPT_PATH"] = str(cfg.get("gpt_sovits_gpt_path", "") or "").strip()
+    env["GPT_SOVITS_SOVITS_PATH"] = str(cfg.get("gpt_sovits_sovits_path", "") or "").strip()
 
     minimum_vram = int(cfg.get("gpt_sovits_min_free_vram_mb", 2048) or 0)
     from utils.model_resource_manager import get_model_resource_manager

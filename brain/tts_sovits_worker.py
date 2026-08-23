@@ -146,6 +146,16 @@ def _setup_model_version(gs_path: str) -> str:
         from config import pretrained_sovits_name, pretrained_gpt_name
         sovits_path = pretrained_sovits_name.get(version)
         gpt_path = pretrained_gpt_name.get(version)
+        custom_sovits = os.environ.get("GPT_SOVITS_SOVITS_PATH", "").strip()
+        custom_gpt = os.environ.get("GPT_SOVITS_GPT_PATH", "").strip()
+        if custom_sovits:
+            if not os.path.isfile(custom_sovits):
+                raise FileNotFoundError(f"自定义 SoVITS 权重不存在: {custom_sovits}")
+            sovits_path = custom_sovits
+        if custom_gpt:
+            if not os.path.isfile(custom_gpt):
+                raise FileNotFoundError(f"自定义 GPT 权重不存在: {custom_gpt}")
+            gpt_path = custom_gpt
         if sovits_path:
             os.environ["sovits_path"] = sovits_path
         if gpt_path:

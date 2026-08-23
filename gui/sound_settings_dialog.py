@@ -195,6 +195,7 @@ class SoundSettingsDialog(QDialog):
         self._tts_version_combo.addItem("v2Pro（默认，声音稳定）", "v2Pro")
         self._tts_version_combo.addItem("v3（情感更丰富，24kHz）", "v3")
         self._tts_version_combo.addItem("v4（v3 改进版，48kHz 防闷）", "v4")
+        self._tts_version_combo.addItem("v2ProPlus（自定义微调模型）", "v2ProPlus")
         version_row.addWidget(self._tts_version_combo, 1)
         gs_vbox.addLayout(version_row)
 
@@ -210,6 +211,20 @@ class SoundSettingsDialog(QDialog):
         self._tts_gs_status = QLabel()
         self._tts_gs_status.setStyleSheet("font-size: 12px; padding: 2px 0;")
         gs_vbox.addWidget(self._tts_gs_status)
+
+        custom_title = QLabel("自定义模型权重（可选）")
+        custom_title.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+        gs_vbox.addWidget(custom_title)
+        self._tts_gpt_path_edit = QLineEdit()
+        self._tts_gpt_path_edit.setPlaceholderText("GPT 权重 .ckpt")
+        gs_vbox.addWidget(self._tts_gpt_path_edit)
+        self._tts_sovits_path_edit = QLineEdit()
+        self._tts_sovits_path_edit.setPlaceholderText("SoVITS 权重 .pth")
+        gs_vbox.addWidget(self._tts_sovits_path_edit)
+        custom_desc = QLabel("选择 v2ProPlus 后生效；留空则使用 GPT-SoVITS 默认权重。")
+        custom_desc.setWordWrap(True)
+        custom_desc.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
+        gs_vbox.addWidget(custom_desc)
         scroll_layout.addWidget(gs_frame)
 
         # 参考音频来源
@@ -570,6 +585,8 @@ class SoundSettingsDialog(QDialog):
         version = self._tts_cfg.get("gpt_sovits_version", "v2Pro") or "v2Pro"
         version_idx = self._tts_version_combo.findData(version)
         self._tts_version_combo.setCurrentIndex(max(0, version_idx))
+        self._tts_gpt_path_edit.setText(self._tts_cfg.get("gpt_sovits_gpt_path", ""))
+        self._tts_sovits_path_edit.setText(self._tts_cfg.get("gpt_sovits_sovits_path", ""))
 
         def_mood = self._tts_cfg.get("default_mood", "auto")
         for i in range(self._tts_mood_combo.count()):
@@ -751,6 +768,8 @@ class SoundSettingsDialog(QDialog):
             "engine": engine,
             "gpt_sovits_path": gs_path,
             "gpt_sovits_version": self._tts_version_combo.currentData(),
+            "gpt_sovits_gpt_path": self._tts_gpt_path_edit.text().strip(),
+            "gpt_sovits_sovits_path": self._tts_sovits_path_edit.text().strip(),
             "default_mood": mood,
             "speed": speed_val,
             "temperature": adv["temperature"],
@@ -827,6 +846,8 @@ class SoundSettingsDialog(QDialog):
             "engine": engine,
             "gpt_sovits_path": gs_path,
             "gpt_sovits_version": self._tts_version_combo.currentData(),
+            "gpt_sovits_gpt_path": self._tts_gpt_path_edit.text().strip(),
+            "gpt_sovits_sovits_path": self._tts_sovits_path_edit.text().strip(),
             "default_mood": mood,
             "speed": speed,
             "temperature": adv["temperature"],
