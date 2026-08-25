@@ -165,6 +165,8 @@ _RESOURCE_GROUPS = {
     "start_observation_mode": "hardware",
     "stop_observation_mode": "hardware",
     "shoulder_observe": "hardware",
+    "shoulder_face_track": "hardware",
+    "stop_face_tracking": "hardware",
     # 具身模拟（共享权威 WorldState，运动任务必须按提交顺序执行）
     "navigate_to_marker": "physical",
     "move_snake": "physical",

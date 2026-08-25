@@ -61,7 +61,8 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "hardware": {
         "shoulder_photo", "shoulder_pan", "shoulder_tilt", "shoulder_center",
         "shoulder_status", "shoulder_temp", "shoulder_servo", "shoulder_observe",
-        "start_shoulder_explore", "shoulder_human_track", "stop_human_track",
+        "start_shoulder_explore", "shoulder_human_track", "stop_human_tracking",
+        "shoulder_face_track", "stop_face_tracking",
         "start_observation_mode", "stop_observation_mode",
     },
 }
@@ -470,7 +471,8 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
 
     if re.search(
         r"(?:ESP32|ESP32-CAM|肩载|肩部外设|肩膀|云台|舵机|肩部摄像|肩载摄像|"
-        r"肩膀状态|肩部状态|肩载状态|拍一张照片|拍照|看看周围|观察周围)",
+        r"肩膀状态|肩部状态|肩载状态|拍一张照片|拍照|看看周围|观察周围|"
+        r"人脸追踪|人脸跟踪|追踪人脸|跟踪人脸)",
         text,
         re.IGNORECASE,
     ):

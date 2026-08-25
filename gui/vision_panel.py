@@ -49,6 +49,7 @@ class VisionPanel(QDialog):
         self._thread = None
         self._worker = None
         self._current_frame = None  # 缓存当前帧，供"看看你面前的是谁"使用
+        self._face_tracking_controller = None
 
         # 加载手势配置
         saved_cooldown = self._load_gesture_config()
@@ -192,6 +193,12 @@ class VisionPanel(QDialog):
         self.btn_enroll = QPushButton("录入本人")
         self.btn_add_friend = QPushButton("录入朋友")
         self.btn_clear = QPushButton("清空日志")
+        self.btn_face_tracking = QPushButton("人脸追踪")
+        self.btn_face_tracking.setCheckable(True)
+        self.btn_face_tracking.setToolTip("使用 ESP32-CAM 视频进行电脑端本人脸追踪，不经过莲心 LLM")
+        self.btn_face_tracking_sim = QPushButton("本机模拟追踪")
+        self.btn_face_tracking_sim.setCheckable(True)
+        self.btn_face_tracking_sim.setToolTip("使用电脑前置摄像头模拟 ESP32-CAM 人脸追踪，并在日志显示预期舵机动作")
 
         self.btn_stop.setEnabled(False)
 
@@ -200,11 +207,15 @@ class VisionPanel(QDialog):
         self.btn_enroll.clicked.connect(self._enroll_self)
         self.btn_add_friend.clicked.connect(self._enroll_friend)
         self.btn_clear.clicked.connect(self.log_text.clear)
+        self.btn_face_tracking.clicked.connect(self._toggle_face_tracking)
+        self.btn_face_tracking_sim.clicked.connect(self._toggle_face_tracking_sim)
 
         btn_layout.addWidget(self.btn_start)
         btn_layout.addWidget(self.btn_stop)
         btn_layout.addWidget(self.btn_enroll)
         btn_layout.addWidget(self.btn_add_friend)
+        btn_layout.addWidget(self.btn_face_tracking)
+        btn_layout.addWidget(self.btn_face_tracking_sim)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_clear)
 
@@ -382,6 +393,72 @@ class VisionPanel(QDialog):
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+
+    def _toggle_face_tracking(self, checked):
+        """启动独立 ESP32-CAM 人脸追踪，不进入莲心 LLM 工具链。"""
+        try:
+            from brain.face_tracking import get_face_tracking_controller
+            controller = get_face_tracking_controller()
+        except Exception as exc:
+            self.btn_face_tracking.setChecked(False)
+            self._append_log(f"❌ 人脸追踪模块加载失败：{exc}")
+            return
+        if controller is None:
+            self.btn_face_tracking.setChecked(False)
+            self._append_log("❌ 人脸追踪需要桌面 Qt 环境")
+            return
+        if self._face_tracking_controller is None:
+            self._face_tracking_controller = controller
+            controller.state_changed.connect(self._on_face_tracking_state)
+            controller.debug_message.connect(self._append_log)
+        if checked:
+            if not controller.request_start():
+                self.btn_face_tracking.setChecked(False)
+                self._append_log("人脸追踪已经在运行中")
+            else:
+                self._append_log("▶ 正在启动 ESP32-CAM 人脸追踪")
+        else:
+            controller.request_stop()
+            self._append_log("⏹ 正在停止 ESP32-CAM 人脸追踪")
+
+    def _toggle_face_tracking_sim(self, checked):
+        """使用本机前置摄像头运行同一套人脸控制算法。"""
+        try:
+            from brain.face_tracking import get_face_tracking_controller
+            controller = get_face_tracking_controller()
+        except Exception as exc:
+            self.btn_face_tracking_sim.setChecked(False)
+            self._append_log(f"❌ 本机模拟模块加载失败：{exc}")
+            return
+        if controller is None:
+            self.btn_face_tracking_sim.setChecked(False)
+            self._append_log("❌ 本机模拟需要桌面 Qt 环境")
+            return
+        if self._face_tracking_controller is None:
+            self._face_tracking_controller = controller
+            controller.state_changed.connect(self._on_face_tracking_state)
+            controller.debug_message.connect(self._append_log)
+        if checked:
+            if not controller.request_start(simulated=True):
+                self.btn_face_tracking_sim.setChecked(False)
+                self._append_log("人脸追踪已经在运行中")
+            else:
+                self._append_log("▶ 正在启动本机前置摄像头模拟追踪")
+        else:
+            controller.request_stop()
+            self._append_log("⏹ 正在停止本机模拟追踪")
+
+    @pyqtSlot(bool, bool, str)
+    def _on_face_tracking_state(self, active, simulated, message):
+        self.btn_face_tracking.blockSignals(True)
+        self.btn_face_tracking.setChecked(active and not simulated)
+        self.btn_face_tracking.setText("停止人脸追踪" if active and not simulated else "人脸追踪")
+        self.btn_face_tracking.blockSignals(False)
+        self.btn_face_tracking_sim.blockSignals(True)
+        self.btn_face_tracking_sim.setChecked(active and simulated)
+        self.btn_face_tracking_sim.setText("停止本机模拟" if active and simulated else "本机模拟追踪")
+        self.btn_face_tracking_sim.blockSignals(False)
+        self._append_log(message)
 
     def _stop_vision(self):
         """停止视觉识别"""
@@ -594,6 +671,8 @@ class VisionPanel(QDialog):
     def closeEvent(self, event):
         """关闭窗口时停止识别"""
         self._stop_vision()
+        if self._face_tracking_controller is not None:
+            self._face_tracking_controller.request_stop()
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(3000)

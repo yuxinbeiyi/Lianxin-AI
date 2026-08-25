@@ -264,6 +264,22 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "shoulder_face_track",
+            "description": "启动肩载摄像头本人脸实时追踪。电脑端显示 ESP32-CAM 视频、人脸框和中心误差矢量，云台会持续跟随已识别的本人。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_face_tracking",
+            "description": "停止肩载设备人脸追踪，关闭视频窗口、停止推流并让云台回中。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "stop_human_tracking",
             "description": "停止人体跟踪模式，云台复位到中心位置。",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -657,6 +673,27 @@ def _stop_human_tracking() -> str:
     return "人体跟踪已停止，云台已回中~"
 
 
+def _start_face_tracking() -> str:
+    """在 Qt 主线程创建人脸追踪窗口和后台闭环 worker。"""
+    from brain.face_tracking import get_face_tracking_controller
+    controller = get_face_tracking_controller()
+    if controller is None:
+        return "无法启动人脸追踪：莲心桌面端没有可用的 Qt 界面"
+    if controller.worker is not None and controller.worker.isRunning():
+        return "人脸追踪已经在运行中"
+    controller.request_start()
+    return "人脸追踪已启动，正在连接肩载摄像头"
+
+
+def _stop_face_tracking() -> str:
+    from brain.face_tracking import get_face_tracking_controller
+    controller = get_face_tracking_controller()
+    if controller is None or controller.worker is None:
+        return "人脸追踪当前没有运行"
+    controller.request_stop()
+    return "正在停止人脸追踪，云台将回到中心"
+
+
 # ── 工具调度表 ───────────────────────────────────────────────
 TOOL_EXECUTORS = {
     "shoulder_photo":       lambda inp: shoulder_photo(),
@@ -686,4 +723,6 @@ TOOL_EXECUTORS = {
     "stop_observation_mode":    lambda inp: _stop_observation_mode(),
     "shoulder_human_track":     lambda inp: _start_human_tracking(),
     "stop_human_tracking":      lambda inp: _stop_human_tracking(),
+    "shoulder_face_track":       lambda inp: _start_face_tracking(),
+    "stop_face_tracking":         lambda inp: _stop_face_tracking(),
 }

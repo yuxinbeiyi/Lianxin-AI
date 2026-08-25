@@ -62,6 +62,7 @@ CATEGORIES = {
         "shoulder_center", "shoulder_status", "shoulder_temp",
         "start_observation_mode", "stop_observation_mode",
         "shoulder_observe", "shoulder_human_track", "stop_human_track",
+        "shoulder_face_track", "stop_face_tracking",
         "bilibili_search", "bilibili_add_tag", "bilibili_list_tags",
     ],
     "🌐 浏览器自动化": [

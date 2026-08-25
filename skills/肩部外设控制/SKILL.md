@@ -1,6 +1,6 @@
 ---
 name: 肩部外设控制
-description: ESP32-CAM 肩载摄像头控制、云台舵机、观察模式、人体跟踪
+description: ESP32-CAM 肩载摄像头控制、云台舵机、观察模式、人脸追踪
 version: 2.0
 auto_activate: true
 ---
@@ -29,9 +29,13 @@ auto_activate: true
 - stop_observation_mode — 退出观察模式，云台复位
 - 注意：start/stop_observation_mode 是启动/停止后台自主循环，与单次拍照观察不同
 
-## 人体跟踪模式
+## 已弃用的人体跟踪模式
 - shoulder_human_track — 启动人体跟踪：摄像头推流→MediaPipe Pose推理→舵机跟随
 - stop_human_tracking — 停止跟踪，云台回中
+
+## 本人脸追踪模式
+- shoulder_face_track — 电脑端显示 ESP32-CAM 视频和本人脸框，云台动态跟随本人
+- stop_face_tracking — 停止人脸追踪、停止推流并让云台回中
 
 ## 重要规则
 - 除非用户明确要求复位/回中，否则绝对不要调用 shoulder_center！看完一个方向后保持角度不变
