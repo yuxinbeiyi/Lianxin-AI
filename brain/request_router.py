@@ -58,6 +58,12 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "bilibili": {"bilibili_search", "bilibili_add_tag", "bilibili_list_tags"},
     "time_capsule": {"read_diary", "write_diary"},
     "embodied": {"navigate_to_marker", "move_snake", "cancel_embodied_task", "get_embodied_status"},
+    "hardware": {
+        "shoulder_photo", "shoulder_pan", "shoulder_tilt", "shoulder_center",
+        "shoulder_status", "shoulder_temp", "shoulder_servo", "shoulder_observe",
+        "start_shoulder_explore", "shoulder_human_track", "stop_human_track",
+        "start_observation_mode", "stop_observation_mode",
+    },
 }
 
 CAPABILITY_DESCRIPTIONS = {
@@ -461,6 +467,15 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if _CONTACTS_INQUIRY_RE.search(text):
         capabilities.add("contacts")
         reasons.append("主人询问近期互动联系人或QQ好友列表")
+
+    if re.search(
+        r"(?:ESP32|ESP32-CAM|肩载|肩部外设|肩膀|云台|舵机|肩部摄像|肩载摄像|"
+        r"肩膀状态|肩部状态|肩载状态|拍一张照片|拍照|看看周围|观察周围)",
+        text,
+        re.IGNORECASE,
+    ):
+        capabilities.add("hardware")
+        reasons.append("肩载设备或 ESP32-CAM 操作")
 
     if capabilities:
         return RequestRoute(RequestMode.TASK_DIRECT, frozenset(capabilities), "；".join(reasons))
