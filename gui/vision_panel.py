@@ -53,12 +53,17 @@ class VisionPanel(QDialog):
 
         # 加载手势配置
         saved_cooldown = self._load_gesture_config()
+        saved_face_device = self._load_face_device()
 
         self._build_ui()
         self._apply_style()
 
         # 设置冷却时间的初始值（从配置文件加载）
         self.cooldown_spinbox.setValue(saved_cooldown)
+
+        # 设置人脸推理设备的初始值（从配置文件加载，保持用户上次选择）
+        if saved_face_device in ("CPU", "GPU"):
+            self.face_device_combo.setCurrentText(saved_face_device)
 
     def _build_ui(self):
         """构建UI布局"""
@@ -103,6 +108,7 @@ class VisionPanel(QDialog):
         self.face_device_combo = QComboBox()
         self.face_device_combo.addItems(["CPU", "GPU"])
         self.face_device_combo.setObjectName("deviceCombo")
+        self.face_device_combo.currentTextChanged.connect(self._on_face_device_changed)
         device_row.addWidget(device_label)
         device_row.addWidget(self.face_device_combo, 1)
         feature_layout.addLayout(device_row)
@@ -475,6 +481,54 @@ class VisionPanel(QDialog):
         status = "启用" if enabled else "停用"
         feature_names = {"face": "人脸识别", "gesture": "手势识别", "companion": "陪伴检测"}
         self._append_log(f"{'✅' if enabled else '⏸️'} {feature_names.get(feature_name, feature_name)}{status}")
+
+    def _on_face_device_changed(self, device: str):
+        """人脸推理设备选择改变：立即保存，并在运行中时同步切换。"""
+        # 即使视觉线程尚未启动，也要保存用户刚刚选择的值。
+        self._save_face_device(device)
+        if self._worker is None:
+            return
+
+        if self._worker.face_device != device:
+            self._worker.face_device = device
+            try:
+                self._worker.face.set_device(device)
+                self._append_log(f"⚙️ 人脸推理设备已切换为 {device}")
+            except Exception as e:
+                self._append_log(f"❌ 切换人脸推理设备失败：{e}")
+
+    def _load_face_device(self) -> str:
+        """从配置文件加载人脸推理设备（CPU/GPU）"""
+        try:
+            import json
+            from pathlib import Path
+            config_file = Path.home() / ".lianxin" / "vision_config.json"
+
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get("face_device", "CPU")
+        except Exception as e:
+            print(f"[视觉面板] 加载人脸推理设备配置失败: {e}")
+
+        return "CPU"  # 默认值
+
+    def _save_face_device(self, device: str):
+        """保存人脸推理设备到配置文件"""
+        try:
+            import json
+            from pathlib import Path
+            config_dir = Path.home() / ".lianxin"
+            config_dir.mkdir(exist_ok=True)
+            config_file = config_dir / "vision_config.json"
+
+            config = {"face_device": device}
+
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            print(f"[视觉面板] 保存人脸推理设备配置失败: {e}")
 
     def _on_cooldown_changed(self, value: int):
         """手势冷却时间改变"""
