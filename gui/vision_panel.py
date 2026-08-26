@@ -412,7 +412,8 @@ class VisionPanel(QDialog):
             controller.state_changed.connect(self._on_face_tracking_state)
             controller.debug_message.connect(self._append_log)
         if checked:
-            if not controller.request_start():
+            device = self.face_device_combo.currentText()
+            if not controller.request_start(device=device):
                 self.btn_face_tracking.setChecked(False)
                 self._append_log("人脸追踪已经在运行中")
             else:

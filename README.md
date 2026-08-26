@@ -58,10 +58,27 @@ The project is inspired by the Endless Library setting from *Anomaly Handler*. I
 | Study Room | A focus workspace with tasks, Pomodoro sessions, growth records, a yearly heatmap, wallpapers, and notes |
 | Time Capsule | Shared journals, a timeline, anonymous messages, a collection space, migration of legacy diaries, and memory links |
 | Tools and media | Weather, files, browser automation, music, screenshots, camera input, OCR, image generation, and speech |
+| VisionLab | Face recognition and enrollment, OK/thumbs-up/wave gesture recognition, presence and posture detection, with CPU/GPU switching |
+| Voice stack | Local FunASR speech recognition, full-duplex interruption, GPT-SoVITS multi-version voice synthesis, and Edge-TTS fallback |
 | Bridges | Optional QQ WebSocket and WeChat AstrBot integrations |
+| Automation | Natural-language scheduled tasks, execution records, failure handling, and ReAct tool execution |
 | Extensions | Dynamically discovered Skills packages and MCP services |
 
 ![Feature panel](assets/预览图/功能区所有板块.jpg)
+
+### Interface previews and demo
+
+The current desktop build includes the main workspace, a dedicated music space, a local visual perception panel, and a video-call interface. These modules remain independently usable, so enabling vision or voice does not require enabling every other optional integration.
+
+![Lianxin main workspace](assets/预览图/主界面.jpg)
+
+![Music Space](assets/预览图/音乐空间.jpg)
+
+![Lianxin VisionLab](assets/预览图/莲心视觉感知.jpg)
+
+![Video call](assets/预览图/视频通话.png)
+
+[Watch the Lianxin feature demonstration on Bilibili](https://www.bilibili.com/video/BV1BM3R61Ew4/?spm_id_from=333.1387.favlist.content.click)
 
 ## Architecture
 
@@ -202,21 +219,25 @@ Data Tide presents local interaction and growth history in a coastal overview an
 
 The tool layer includes weather, system information, files, browser actions, music control, notes, reminders, tasks, and Time Capsule operations. Calls pass through capability discovery, request policy, permission boundaries, execution logging, result handling, retries, and loop breakers.
 
-Visual capabilities can include screenshots, camera input, OCR, image description, image generation, and local visual-event recognition such as presence, smiles, and simple gestures. Local event recognition can feed character animation, emotion, or proactive behavior without sending every video frame to a model.
+Visual capabilities include screenshots, camera input, OCR, image description, image generation, and the independent VisionLab window. VisionLab supports face recognition and personal-feature matching, OK/thumbs-up/wave gestures, presence and posture detection, hot-swappable features, and CPU/GPU inference selection. Local event recognition can feed character animation, emotion, or proactive behavior without sending every video frame to a model.
 
-Voice capabilities can include speech-to-text, full-duplex listening, interruption, Edge-TTS, and GPT-SoVITS. Install the matching dependency profile and configure required external services. QQ voice delivery may require FFmpeg to convert generated audio to SILK.
+Voice capabilities include local FunASR speech-to-text with CPU/GPU selection, full-duplex listening and interruption, reference-audio transcription, GPT-SoVITS v2/v3/v4 voice synthesis, emotion parameters, lazy model loading, and Edge-TTS fallback. Install the matching dependency profile and configure required external services. QQ voice delivery may require FFmpeg to convert generated audio to SILK.
 
 ### Companion modes and hardware
 
 ![Galgame mode, vision, and browsing](assets/预览图/Galgame模式+视觉理解+网页浏览.jpg)
 
-Optional modes include a Galgame presentation, desktop companion window states, standby voice companionship, shoulder-mounted camera control, human tracking, and visual-event inputs. Hardware and browser capabilities remain opt-in and are constrained by the same permission and safety layers as other tools.
+Optional modes include a Galgame presentation, desktop companion window states, standby voice companionship, shoulder-mounted camera control, ESP32-CAM video streaming, and face tracking with a local face box, error vector, and pan/tilt closed loop. The former MediaPipe human-tracking entry is deprecated. Hardware and browser capabilities remain opt-in and are constrained by the same permission and safety layers as other tools.
+
+The shoulder device can be observed and controlled through the Cloud Relay: photo capture, device status, temperature and humidity, pan/tilt commands, and the ESP32-CAM stream are exposed as separate capabilities. Face tracking can run independently from the LLM after the stream is connected.
 
 ### Skills and MCP
 
 Skills are pluggable capability packages. A skill normally contains a `SKILL.md` describing its knowledge and use boundaries together with tool definitions. The runtime discovers, registers, enables, disables, and progressively injects relevant skills so unrelated tool descriptions do not consume every request context.
 
 MCP services can expose additional tools through the same controlled workflow. Service availability, tool authorization, errors, and results remain visible to the request loop rather than becoming hidden model-side actions.
+
+The repository also includes a read-only GitHub MCP skill for repository search, file reading, and commit inspection. QQ bridging supports recent contacts, owner-specific queries, voice delivery, message segmentation, session isolation, and interruption of stale replies. Avatar interaction and companion statistics are recorded locally with a privacy boundary that keeps them out of long-term memory unless explicitly promoted.
 
 ### Resource guidance and lightweight use
 

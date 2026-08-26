@@ -144,6 +144,10 @@ class FrameCaptureThread(QThread):
             self.failed.emit(self.error_message)
             return
         self.ready_event.set()
+        # Keep one recv task alive. Cancelling recv() with wait_for() while a
+        # fragmented JPEG is being assembled can corrupt websockets' frame
+        # queue and raise "cannot reset() while queue isn't empty".
+        recv_task = asyncio.create_task(self._bridge.ws.recv())
         try:
             while not self._stop_requested and self._bridge.ws:
                 while True:
@@ -152,10 +156,11 @@ class FrameCaptureThread(QThread):
                     except queue.Empty:
                         break
                     await self._bridge.send_cmd_tracking(command)
-                try:
-                    payload = await asyncio.wait_for(self._bridge.ws.recv(), timeout=0.2)
-                except asyncio.TimeoutError:
+                done, _ = await asyncio.wait({recv_task}, timeout=0.01)
+                if not done:
                     continue
+                payload = recv_task.result()
+                recv_task = asyncio.create_task(self._bridge.ws.recv())
                 if isinstance(payload, bytes):
                     frame = cv2.imdecode(
                         np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR
@@ -166,6 +171,12 @@ class FrameCaptureThread(QThread):
             if self._bridge and self._bridge.ws:
                 await self._bridge.send_cmd_tracking("track_stop")
                 await self._bridge.send_cmd_tracking("servo 90 45")
+                ws = self._bridge.ws
+                await ws.close()
+                try:
+                    await recv_task
+                except BaseException:
+                    pass
                 await self._bridge.disconnect()
 
 
@@ -200,6 +211,9 @@ class FaceTrackingWorker(QThread):
         self._latest_frame = None
         self._latest_seq = 0
         self._processed_seq = 0
+        self._latest_result = None
+        self._latest_status = "正在启动..."
+        self._result_lock = threading.Lock()
 
     def stop(self):
         self._stop_requested = True
@@ -230,9 +244,10 @@ class FaceTrackingWorker(QThread):
             if self._stop_requested or not self._capture.isRunning():
                 return
 
+            provider = getattr(face, "provider", "CPU") or "CPU"
             self.status_ready.emit(
-                "本机模拟追踪已启动，等待本人出现" if self.simulated
-                else "追踪已启动，等待本人出现"
+                ("本机模拟追踪已启动" if self.simulated else "追踪已启动")
+                + f"（{provider}），等待本人出现"
             )
             while not self._stop_requested:
                 frame, seq = self._get_latest_frame()
@@ -241,10 +256,12 @@ class FaceTrackingWorker(QThread):
                     continue
                 self._processed_seq = seq
                 rendered, state, result = self._process_frame(face, frame.copy())
-                self.result_ready.emit(result)
-                # Kept for compatibility with callers that used the old signal.
-                self.frame_ready.emit(rendered)
-                self.status_ready.emit(state)
+                # The UI polls the latest result. Emitting one Qt event per
+                # processed frame can outpace the render timer and retain old
+                # NumPy images in the main-thread event queue.
+                with self._result_lock:
+                    self._latest_result = result
+                    self._latest_status = state
         except Exception as exc:
             self.failed.emit(f"人脸追踪异常：{exc}")
         finally:
@@ -259,13 +276,21 @@ class FaceTrackingWorker(QThread):
         with self._frame_lock:
             self._latest_frame = frame
             self._latest_seq += 1
-        self.raw_frame_ready.emit(frame)
 
     def _get_latest_frame(self):
         with self._frame_lock:
             if self._latest_frame is None:
                 return None, self._latest_seq
             return self._latest_frame, self._latest_seq
+
+    def latest_preview(self):
+        """Return a snapshot of the newest frame and recognition result."""
+        with self._frame_lock:
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
+        with self._result_lock:
+            result = dict(self._latest_result or {})
+            status = self._latest_status
+        return frame, result, status
 
     def _process_frame(self, face, frame):
         height, width = frame.shape[:2]
@@ -366,9 +391,6 @@ class FaceTrackingWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._video, 1)
         layout.addWidget(self._status)
-        worker.raw_frame_ready.connect(self._on_raw_frame)
-        worker.result_ready.connect(self._on_result)
-        worker.status_ready.connect(self._status.setText)
         self._render_timer = QTimer(self)
         self._render_timer.setInterval(33)
         self._render_timer.timeout.connect(self._render_video)
@@ -381,20 +403,11 @@ class FaceTrackingWindow(QDialog):
         self._render_timer.stop()
         event.accept()
 
-    @pyqtSlot(object)
-    def _on_raw_frame(self, frame):
-        self._latest_frame = frame
-
-    @pyqtSlot(object)
-    def _on_result(self, result):
-        self._latest_result = result
-        self._status.setText(result.get("status", ""))
-
     def _render_video(self):
-        if self._latest_frame is None:
+        frame, result, status = self._worker.latest_preview()
+        if frame is None:
             return
-        frame = self._latest_frame.copy()
-        result = self._latest_result or {}
+        self._status.setText(status)
         height, width = frame.shape[:2]
         center = (width // 2, height // 2)
         cv2.drawMarker(frame, center, (255, 255, 255), cv2.MARKER_CROSS, 24, 2)
@@ -439,10 +452,11 @@ class FaceTrackingController(QObject):
         self.start_requested.connect(self._start)
         self.stop_requested.connect(self._stop)
 
-    def request_start(self, simulated=False):
+    def request_start(self, simulated=False, device="CPU"):
         if self.worker is not None and self.worker.isRunning():
             return False
         self._requested_simulated = simulated
+        self._requested_device = device
         self.start_requested.emit()
         return True
 
@@ -454,7 +468,10 @@ class FaceTrackingController(QObject):
     def _start(self):
         if self.worker is not None and self.worker.isRunning():
             return
-        self.worker = FaceTrackingWorker(simulated=getattr(self, "_requested_simulated", False))
+        self.worker = FaceTrackingWorker(
+            device=getattr(self, "_requested_device", "CPU"),
+            simulated=getattr(self, "_requested_simulated", False),
+        )
         self.window = FaceTrackingWindow(self.worker)
         self.worker.command_debug.connect(self._on_command_debug)
         self.worker.failed.connect(self._on_failed)
