@@ -66,37 +66,48 @@ The project is inspired by the Endless Library setting from *Anomaly Handler*. I
 
 ![Feature panel](assets/预览图/功能区所有板块.jpg)
 
-### Interface previews and demo
-
-The current desktop build includes the main workspace, a dedicated music space, a local visual perception panel, and a video-call interface. These modules remain independently usable, so enabling vision or voice does not require enabling every other optional integration.
-
-![Lianxin main workspace](assets/预览图/主界面.jpg)
-
-![Music Space](assets/预览图/音乐空间.jpg)
-
-![Lianxin VisionLab](assets/预览图/莲心视觉感知.jpg)
-
-![Video call](assets/预览图/视频通话.png)
+## Feature Demonstrations
 
 [Watch the Lianxin feature demonstration on Bilibili](https://www.bilibili.com/video/BV1BM3R61Ew4/?spm_id_from=333.1387.favlist.content.click)
 
+The demonstration covers Lianxin's desktop interaction, visual perception, voice interaction, and companion behaviors. The full documentation remains in this README; the screenshots are introduced alongside the features they represent.
+
+### VisionLab
+
+![Lianxin VisionLab](assets/预览图/莲心视觉感知.jpg)
+
+Lianxin can interact with you through an independent local vision module. It recognizes OK, thumbs-up, and waving gestures, identifies whether the person in the frame is the enrolled user, and measures how long you have been sitting at the desk. When appropriate, the companion can remind you to rest and move around. Face enrollment, gesture recognition, presence, posture detection, and CPU/GPU selection are available without sending every video frame to the LLM.
+
+### Music Space
+
+![Music Space](assets/预览图/音乐空间.jpg)
+
+Music Space is a local interface for importing and managing personal music, playback control, synchronized playback state, and an ambient visual presentation. It can be used independently during companionship, study, or rest.
+
+### Video and voice calls
+
+![Video call](assets/预览图/视频通话.png)
+
+The video-call interface combines camera presentation, voice input, and Lianxin's speech output in one interaction window. It uses an independent presentation path and can be enabled after configuring a local or cloud speech-recognition and synthesis backend.
+
 ## Architecture
 
-```text
-Text / Voice / QQ / WeChat / Camera / Desktop capture
-                         |
-                         v
-                 PyQt5 UI and workers
-                         |
-                         v
-                      AgentCore
- Persona snapshot + Prism Memory + current state + emotion + skill catalog
- Intent routing + on-demand tools + LiteLLM + Function Calling / ReAct loop
- Retries + fallbacks + loop breakers + memory extraction + task tracking
-                         |
-                         v
-Chat UI / character animation / charts / Study Room / bridges / voice output
+```mermaid
+flowchart TB
+    I[Text / Voice / QQ / WeChat / Camera / Desktop capture]
+    U[PyQt5 UI and workers]
+    A[AgentCore]
+    M[Persona + Prism Memory + state + emotion + skill catalog]
+    T[Intent routing + tools + LiteLLM + Function Calling / ReAct]
+    R[Retries + fallbacks + loop breakers + memory and task tracking]
+    O[Chat UI + animation + charts + Study Room + bridges + voice output]
+    I --> U --> A
+    A --> M
+    A --> T
+    T --> R --> O
 ```
+
+The architecture is shown as a Mermaid flowchart so its relationships remain readable across GitHub, Gitee, and mobile browsers.
 
 ### Request lifecycle
 
