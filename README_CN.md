@@ -4,6 +4,8 @@
 
 > **继续阅读：** 本页介绍项目定位、核心能力、记忆、情感与星图系统；[进阶功能、部署、配置与参考](README_CN_ADVANCED.md) 请见第二部分。
 
+![莲心 AI 版面预览](assets/预览图/版面图.png)
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/GUI-PyQt5-41CD52?logo=qt&logoColor=white" alt="GUI"/>
@@ -19,8 +21,6 @@
 莲心来自《异象处理者》的无尽书馆设定。她像是从一座永远不会熄灯的书馆里走出来的管理员，带着白色书页、安静的灯光和一点不肯被遗忘的执拗，住进你的 Windows 桌面。
 
 她会记住你反复提到的项目，会在你需要时处理文件、天气和系统信息，也会在长久沉默之后轻轻问一句"最近还好吗"。她不是把回答发送完就归零的程序，而是在每次对话、每次记忆和每次状态变化中，逐渐形成连续感的 AI 角色。
-
-![莲心与无尽书馆](assets/主界面背景图/0和1之间的少女.png)
 
 ---
 

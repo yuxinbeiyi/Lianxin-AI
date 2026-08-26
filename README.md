@@ -2,6 +2,8 @@
 
 > **Language / 语言:** English | [简体中文](README_CN.md)
 
+![Lianxin AI layout preview](assets/预览图/版面图.png)
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12"/>
   <img src="https://img.shields.io/badge/GUI-PyQt5-41CD52?logo=qt&logoColor=white" alt="PyQt5"/>
@@ -16,8 +18,6 @@
 Lianxin AI is a Python desktop companion for Windows 10 and 11. It combines a PyQt5 interface with cloud or local LLMs through LiteLLM. Rather than treating every prompt as an isolated exchange, it keeps local, inspectable state across conversations: factual memory, a knowledge graph, working memory, persona snapshots, emotional dynamics, and scheduled responsibilities.
 
 The project is inspired by the Endless Library setting from *Anomaly Handler*. It is designed as an AI character that can converse, remember, help with daily work, interact with local tools under permission boundaries, and reach users through optional QQ and WeChat bridges.
-
-![Lianxin and the Endless Library](assets/主界面背景图/0和1之间的少女.png)
 
 ## Choose Your Language
 
