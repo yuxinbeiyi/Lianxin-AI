@@ -38,7 +38,7 @@ if not exist ".venv\Scripts\python.exe" (
 call ".venv\Scripts\activate.bat"
 echo [2/3] 正在安装基础桌面版依赖...
 python -m pip install --upgrade pip
-python -m pip install -r requirements-core.txt
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [错误] 依赖安装失败，请检查 Python 版本和网络连接。
     if not defined LIANXIN_NO_PAUSE pause

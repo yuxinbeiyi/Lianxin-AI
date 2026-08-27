@@ -565,28 +565,6 @@ MCP 是**外部工具服务接入层**，让文件系统、搜索、浏览器等
 
 当界面卡顿或风扇持续高转时，依次检查：是否启动了本地模型、是否正在首次加载语音或 RAG 模型、是否开启了摄像头/桌面观察、是否有浏览器自动化窗口或多个后台桥接在运行。基础文字聊天仅依赖 Python、PyQt、SQLite 和云端模型请求；关闭上述可选能力后，低配置电脑也可以稳定运行。
 
----
-
-## Docker 部署（无界面服务）
-
-Docker 版本用于运行无界面的“莲心虚拟世界”物理模拟服务，不包含 PyQt 桌面窗口、用户聊天记录、API Key、视觉模型或语音模型。桌面版仍请使用 `run.bat`。
-
-需要 Docker Desktop 或兼容 Docker Compose 的运行环境。在项目根目录执行：
-
-```powershell
-docker compose up --build -d
-```
-
-启动后打开 `http://127.0.0.1:8765/`，健康检查地址为 `http://127.0.0.1:8765/healthz`。默认只绑定本机回环地址；如确实需要局域网访问，可在 `.env` 中修改 `LIANXIN_PHYSICAL_BIND`，并自行配置防火墙与访问控制。
-
-停止服务：
-
-```powershell
-docker compose down
-```
-
-当前模拟器状态保存在容器内存中，重启后会恢复初始世界；这是为了避免把个人聊天与运行数据写入镜像。后续增加持久化任务或 API 时，再单独设计数据卷和鉴权。
-
 ## 快速开始
 
 ### 1. 创建环境
@@ -598,27 +576,33 @@ docker compose down
 .\run.bat
 ```
 
-也可手动创建环境。基础桌面版只安装聊天、桌面界面、SQLite 记忆和具身模拟器所需依赖：
+也可手动创建环境。全部依赖已合并到单一的 `requirements.txt`，按注释分区组织：
 
 ```powershell
 conda create -n lianxin python=3.12
 conda activate lianxin
-pip install -r requirements-core.txt
+pip install -r requirements.txt
 ```
 
 莲心自习室使用 `PyQtWebEngine` 承载 HTML/CSS/JavaScript 前端；它已列在基础依赖中。如果只安装了 PyQt5 而没有安装 WebEngine，自习室窗口无法加载。
 
 ### 安装档案
 
-| 安装命令 | 用途 |
-|---|---|
-| `pip install -r requirements-core.txt` | 默认桌面版：云端对话、SQLite 记忆、PyQt、时间胶囊、自习室与具身模拟器 |
-| `pip install -r requirements-rag.txt` | 本地语义记忆检索；会安装 PyTorch 并在首次检索时下载 embedding 模型 |
-| `pip install -r requirements-voice.txt` | 本地语音输入与音频处理 |
-| `pip install -r requirements-vision.txt` | 摄像头、OCR、视觉处理 |
-| `pip install -r requirements-browser.txt` | Playwright 浏览器自动化与网页提取 |
-| `pip install -r requirements-bridge.txt` | QQ / 微信桥接及 MCP 接入 |
-| `pip install -r requirements.txt` | 原有全功能兼容依赖集合，适合维护者或需要全部可选能力的用户 |
+所有依赖已合并到单一的 `requirements.txt`，按注释分区组织：
+
+- **核心依赖**：默认桌面版（云端对话、SQLite 记忆、PyQt、时间胶囊、自习室与具身模拟器）
+- **视觉感知**：摄像头、OCR、视觉处理
+- **语音**：本地语音输入与音频处理
+- **RAG**：本地语义记忆检索；会安装 PyTorch 并在首次检索时下载 embedding 模型
+- **浏览器**：Playwright 浏览器自动化与网页提取
+- **桥接**：QQ / 微信桥接及 MCP 接入
+- **开发**：开发与持续集成工具
+
+```powershell
+pip install -r requirements.txt
+```
+
+需要轻量安装时，复制 `requirements.txt` 并把不需要的可选分区注释掉即可。
 
 可选依赖在需要时单独安装；安装浏览器能力后还需执行 `playwright install chromium`。本地模型及模型权重不在上述依赖清单内。
 

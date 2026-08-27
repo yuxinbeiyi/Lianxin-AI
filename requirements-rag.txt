@@ -1,4 +1,0 @@
-# 可选：本地语义记忆检索。首次安装会引入 PyTorch，并在首次检索时下载 embedding 模型。
--r requirements-core.txt
-faiss-cpu==1.14.3
-sentence-transformers==5.6.0

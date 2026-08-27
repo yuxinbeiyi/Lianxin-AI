@@ -23,7 +23,7 @@ jobs:
       - name: 安装基础依赖与审计工具
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements.txt
 
       - name: 编译检查
         run: python -m compileall -q brain gui memory utils vision voice workers main.py config.py
@@ -32,7 +32,7 @@ jobs:
         run: python -m unittest discover -s tests -p "test_physical_*.py" -v
 
       - name: 审计基础依赖
-        run: pip-audit -r requirements-core.txt
+        run: pip-audit -r requirements.txt
 
   secret-scan:
     name: 凭据扫描

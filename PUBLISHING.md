@@ -21,12 +21,3 @@
 历史改写需要先处理真实凭据，再使用 `git filter-repo` 清除已失效 Cookie 和不再发布的大型资源。改写后应以干净克隆验证启动，再强制推送远端。协作者需要重新克隆或基于新历史同步。
 
 2026-07-31 审计：`git fsck --full` 通过；常见凭据模式在排除示例占位符后未命中。旧历史中的 `ocr/libtesseract-5.dll`（约 96.8 MiB）不进入 GitHub：首发使用仅包含当前已审查文件的干净公开历史，保留既有 Gitee 历史不改写。`vision/models/` 也不随仓库发布，改由本地下载指引提供。
-
-## Docker 规划
-
-当前首发形态为 Windows PyQt 桌面应用，不将完整 GUI 放入 Docker。已提供首个无界面容器目标：物理模拟器 Web 服务。它不包含聊天数据、API Key、视觉模型或语音模型：
-
-1. `Dockerfile` 与 `docker-compose.yml` 只构建 `brain/physical` 和 Canvas 静态文件。
-2. 容器内部监听 `0.0.0.0:8765`，Compose 默认只映射宿主机 `127.0.0.1:8765`。
-3. `/healthz` 用于 Docker 健康检查；当前世界状态是内存态，重启后恢复初始状态。
-4. PyQt 桌面版继续使用本地 `run.bat` 或 PyInstaller 发行包；未来需要持久化或鉴权时另行设计数据卷和密钥注入。

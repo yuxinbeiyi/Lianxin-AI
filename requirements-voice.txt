@@ -1,8 +1,0 @@
-# 可选：本地/云端语音输入与更多音频格式支持。
--r requirements-core.txt
-faster-whisper==1.2.1
-librosa==0.11.0
-PyAudio==0.2.14
-pydub==0.25.1
-soundfile==0.14.0
-webrtcvad-wheels==2.0.14

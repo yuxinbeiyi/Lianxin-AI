@@ -1,4 +1,0 @@
-# 开发与持续集成工具，不随最终用户安装。
--r requirements-core.txt
-pip-audit==2.9.0
-pytest==8.3.5

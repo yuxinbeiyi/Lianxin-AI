@@ -1,4 +1,0 @@
-# 可选：QQ / 微信桥接及 MCP 服务接入。
--r requirements-core.txt
-mcp==1.28.1
-wcferry==39.5.2.0

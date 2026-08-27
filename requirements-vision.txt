@@ -1,6 +1,0 @@
-# 可选：摄像头、OCR、图像处理与本地视觉推理。
--r requirements-core.txt
-mediapipe==0.10.35
-onnxruntime==1.25.0
-opencv-contrib-python==4.13.0.92
-pytesseract==0.3.13

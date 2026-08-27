@@ -1,6 +1,0 @@
-# 可选：Playwright 浏览器自动化和网页内容提取。
--r requirements-core.txt
-playwright==1.58.0
-curl_cffi==0.15.0
-lxml==6.1.0
-pdfplumber==0.11.10

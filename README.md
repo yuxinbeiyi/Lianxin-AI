@@ -256,19 +256,10 @@ The base desktop profile is intended to run without a dedicated GPU when using a
 
 For a stable lightweight setup:
 
-1. Install `requirements-core.txt` first.
+1. Install `requirements.txt` (single categorized file; comment out optional sections for a lighter setup).
 2. Use a configured cloud provider for the main conversation model.
 3. Keep local vector retrieval, camera processing, and voice engines disabled until required.
 4. Enable one optional profile at a time and verify startup, chat, and logs before enabling another.
-
-### Headless Docker simulation
-
-The repository also provides a Docker-oriented, no-GUI simulator path for experimentation. It is not a replacement for the Windows desktop application. Simulator state is intentionally ephemeral unless a separate persistent volume and authentication design are introduced.
-
-```powershell
-docker compose up --build
-docker compose down
-```
 
 ## Optional Integrations
 
@@ -302,21 +293,27 @@ Or create an environment manually:
 ```powershell
 conda create -n lianxin python=3.12
 conda activate lianxin
-pip install -r requirements-core.txt
+pip install -r requirements.txt
 python main.py
 ```
 
 ### Dependency Profiles
 
-| Command | Includes |
-|---|---|
-| `pip install -r requirements-core.txt` | Default desktop app, cloud chat, SQLite memory, Time Capsule, Study Room, and physical simulator |
-| `pip install -r requirements-rag.txt` | Local semantic memory retrieval; installs PyTorch and downloads an embedding model on first use |
-| `pip install -r requirements-voice.txt` | Local speech input and audio processing |
-| `pip install -r requirements-vision.txt` | Camera, OCR, and visual processing |
-| `pip install -r requirements-browser.txt` | Playwright browser automation and web extraction |
-| `pip install -r requirements-bridge.txt` | QQ / WeChat bridges and MCP integration |
-| `pip install -r requirements.txt` | Full compatibility dependency set for maintainers or users who want all optional capabilities |
+All dependencies live in the single `requirements.txt`, organized into labeled sections:
+
+- **Core** – default desktop app, cloud chat, SQLite memory, Time Capsule, Study Room, and physical simulator
+- **Vision** – camera, OCR, and visual processing
+- **Voice** – local speech input and audio processing
+- **RAG** – local semantic memory retrieval; installs PyTorch and downloads an embedding model on first use
+- **Browser** – Playwright browser automation and web extraction
+- **Bridge** – QQ / WeChat bridges and MCP integration
+- **Dev** – development and CI tools
+
+```powershell
+pip install -r requirements.txt
+```
+
+For a lighter install, copy `requirements.txt` and comment out the optional sections you do not need.
 
 After installing the browser profile, install a browser binary:
 

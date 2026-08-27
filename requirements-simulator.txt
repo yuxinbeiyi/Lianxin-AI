@@ -1,2 +1,0 @@
-# Headless Docker service for the physical-world simulator.
-aiohttp==3.13.5
