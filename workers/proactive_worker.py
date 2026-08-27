@@ -188,7 +188,7 @@ class ProactiveWorker(QThread):
 
     def _do_observation(self) -> tuple[Optional[str], Optional[str]]:
         print(f"[观察-调试] _do_observation: mode={self._observation_mode}")
-        from brain.observation import capture_screen, capture_camera, analyze_observation
+        from brain.observation import capture_screen, capture_camera, capture_live_camera_frame, analyze_observation
 
         if self._observation_mode == "shoulder_explore":
             print("[观察-调试] → shoulder_explore 分支")
@@ -199,10 +199,11 @@ class ProactiveWorker(QThread):
             print(f"[观察-调试] capture_screen 返回: {path}")
             source = "截图"
         elif self._observation_mode == "camera":
-            print("[观察-调试] → 调用 capture_camera()...")
-            path = capture_camera(self._camera_index, self._camera_wait)
-            print(f"[观察-调试] capture_camera 返回: {path}")
-            source = "摄像头"
+            print("[观察-调试] → 调用 capture_live_camera_frame()...")
+            path, source = capture_live_camera_frame(self._camera_index, self._camera_wait)
+            print(f"[观察-调试] capture_live_camera_frame 返回: {path}（来源 {source}）")
+            if not source:
+                source = "摄像头"
         else:
             print(f"[观察-调试] 未知模式: {self._observation_mode}")
             return None, None

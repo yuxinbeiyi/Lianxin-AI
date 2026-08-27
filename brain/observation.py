@@ -75,6 +75,62 @@ def capture_camera(camera_index: int = 0, wait_seconds: int = 5) -> Optional[str
                 pass
 
 
+def _grab_vision_panel_frame():
+    """查找运行中的视觉感知面板，返回 (是否找到面板, 当前帧副本)。
+
+    面板未启动或未找到返回 (False, None)；找到但暂无画面返回 (True, None)。
+    复用面板缓存的当前帧，避免在面板已占用摄像头时二次打开设备。
+    """
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            return False, None
+        for widget in app.topLevelWidgets():
+            panel = getattr(widget, "_vision_panel", None)
+            if panel is None:
+                continue
+            worker = getattr(panel, "_worker", None)
+            if worker is None:
+                continue  # 面板存在但视觉未启动
+            frame = panel.get_current_frame()
+            if frame is not None:
+                return True, frame.copy()
+            return True, None
+    except Exception as exc:
+        print(f"[观察] 从视觉面板获取帧失败: {exc}")
+    return False, None
+
+
+def capture_live_camera_frame(camera_index: int = 0, wait_seconds: int = 5):
+    """优先复用运行中视觉感知面板的当前帧，避免与已占用的摄像头冲突。
+
+    返回 (图片路径, 来源)。来源为 "视觉感知面板" 或 "摄像头"；
+    面板正在运行但暂无画面，或面板与摄像头均不可用时返回 (None, "")。
+    """
+    try:
+        panel_found, frame = _grab_vision_panel_frame()
+    except Exception as exc:
+        print(f"[观察] 视觉面板抓帧异常，回退摄像头: {exc}")
+        panel_found, frame = False, None
+    if panel_found:
+        if frame is None:
+            print("[观察] 视觉感知面板正在运行但暂无画面，跳过二次打开摄像头以避免冲突")
+            return None, ""
+        try:
+            import cv2
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            tmp.close()
+            if cv2.imwrite(tmp.name, frame):
+                return tmp.name, "视觉感知面板"
+            print("[观察] 视觉面板帧保存失败，回退摄像头")
+        except Exception as exc:
+            print(f"[观察] 视觉面板帧保存失败: {exc}")
+        return None, ""
+    path = capture_camera(camera_index, wait_seconds)
+    return path, ("摄像头" if path else "")
+
+
 def analyze_observation(image_path: str, source_name: str = "截图") -> str:
     """分析观察到的画面，返回自然语言描述。"""
     print(f"[观察-调试] analyze_observation: {source_name}, path={image_path}")
