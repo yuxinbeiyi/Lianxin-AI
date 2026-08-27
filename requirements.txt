@@ -174,7 +174,7 @@ pooch==1.9.0
 primp==1.2.3
 priority==2.0.0
 proglog==0.1.12
-propcache==0.4.1
+propcache==0.5.2
 proto-plus==1.28.0
 protobuf==6.33.6
 pyasn1==0.6.3
