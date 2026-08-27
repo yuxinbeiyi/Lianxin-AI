@@ -6,6 +6,7 @@ ProactiveWorker：主动聊天消息生成线程
 """
 
 import os
+import random
 import re
 import time
 from typing import Optional
@@ -246,6 +247,43 @@ class ProactiveWorker(QThread):
         else:
             return None, f"【探索链 {result['chain_id']}】{summary}（未记录具体观察）"
 
+    # ── 天气话题抽取 ──────────────────────────────────────────
+    _WEATHER_TOPIC_WEIGHT = 0.12  # 未命中天气语境时，随机抽到天气话题的概率
+    _WEATHER_KEYWORDS = (
+        "天气", "气温", "温度", "降温", "下雨", "下雪", "降雨", "降水", "预报",
+        "刮风", "空气质量", "湿度", "带伞",
+    )
+
+    def _weather_topic_hit(self) -> bool:
+        """本轮主动聊天是否抽到天气话题（命中语境或加权随机）。
+
+        命中语境（记忆触发、情感动机、成长诉求里提到天气）则必定注入；
+        否则按 _WEATHER_TOPIC_WEIGHT 加权随机抽取，避免每次都查询天气。
+        """
+        ctx_parts: list[str] = []
+        if self._memory_cue:
+            for k in ("content", "suggested_message", "rationale"):
+                v = self._memory_cue.get(k)
+                if isinstance(v, str):
+                    ctx_parts.append(v)
+        if self._emotional_motive:
+            v = self._emotional_motive.get("reason")
+            if isinstance(v, str):
+                ctx_parts.append(v)
+        if self._growth_request:
+            for k in ("instruction", "reason_summary"):
+                v = self._growth_request.get(k)
+                if isinstance(v, str):
+                    ctx_parts.append(v)
+        ctx_text = " ".join(ctx_parts)
+        if any(kw in ctx_text for kw in self._WEATHER_KEYWORDS):
+            print("[主动聊天] 命中天气语境，本轮注入天气")
+            return True
+        if random.random() < self._WEATHER_TOPIC_WEIGHT:
+            print("[主动聊天] 随机抽到天气话题，本轮注入天气")
+            return True
+        return False
+
     def _build_context(self, observation_text: Optional[str] = None) -> str:
         parts: list[str] = []
 
@@ -292,32 +330,37 @@ class ProactiveWorker(QThread):
         if not observation_text and self._last_observation:
             parts.append(f"【上次观察结果（你之前看过{_get_user_name()}一次，还记得画面）】\n{self._last_observation}")
 
-        # ── 天气感知 ────────────────────────────────────────
-        try:
-            from config import get_qweather_config
-            from brain.weather import get_user_city_from_memory, get_full_weather
-            qw_cfg = get_qweather_config()
-            api_key = qw_cfg.get("api_key", "").strip()
-            if api_key:
-                city = (qw_cfg.get("default_city") or "").strip()
-                if not city:
-                    city = get_user_city_from_memory()
-                if city:
-                    t0 = time.monotonic()
-                    weather_text = self._get_cached_weather(city, api_key, get_full_weather)
-                    elapsed = (time.monotonic() - t0) * 1000
-                    if weather_text and "错误" not in weather_text:
-                        parts.append(f"【当前天气信息】\n{weather_text}")
-                        self.data_source_called.emit("get_weather", f"获取到 {city} 天气", False, elapsed)
+        # ── 天气感知（仅在抽到天气话题时查询注入） ──────────
+        if self._weather_topic_hit():
+            try:
+                from config import get_qweather_config
+                from brain.weather import get_user_city_from_memory, get_full_weather
+                qw_cfg = get_qweather_config()
+                api_key = qw_cfg.get("api_key", "").strip()
+                if api_key:
+                    city = (qw_cfg.get("default_city") or "").strip()
+                    if not city:
+                        city = get_user_city_from_memory()
+                    if city:
+                        t0 = time.monotonic()
+                        weather_text = self._get_cached_weather(city, api_key, get_full_weather)
+                        elapsed = (time.monotonic() - t0) * 1000
+                        if weather_text and "错误" not in weather_text:
+                            parts.append(
+                                "【本轮天气话题】\n"
+                                f"最近一次天气数据：\n{weather_text}\n"
+                                "可以自然地围绕天气和用户闲聊（仅在自然合适时）。"
+                            )
+                            self.data_source_called.emit("get_weather", f"获取到 {city} 天气", False, elapsed)
+                        else:
+                            # 天气获取失败静默跳过，不显示错误卡片打扰用户
+                            print(f"[主动聊天] 天气查询失败（静默跳过）: {weather_text}")
                     else:
-                        # 天气获取失败静默跳过，不显示错误卡片打扰用户
-                        print(f"[主动聊天] 天气查询失败（静默跳过）: {weather_text}")
+                        print(f"[主动聊天] 未设置城市，跳过天气查询")
                 else:
-                    print(f"[主动聊天] 未设置城市，跳过天气查询")
-            else:
-                print(f"[主动聊天] 未配置天气 API Key，跳过")
-        except Exception as e:
-            print(f"[主动聊天] 天气查询异常（静默跳过）: {e}")
+                    print(f"[主动聊天] 未配置天气 API Key，跳过")
+            except Exception as e:
+                print(f"[主动聊天] 天气查询异常（静默跳过）: {e}")
 
         # ── 长期记忆（基于最近话题的语义检索） ──
         try:
