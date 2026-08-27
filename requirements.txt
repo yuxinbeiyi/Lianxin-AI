@@ -169,7 +169,7 @@ packaging==26.0
 pandas==3.0.3
 parso==0.8.7
 pdfminer.six==20260107
-platformdirs==4.10.0
+platformdirs==4.11.3
 pooch==1.9.0
 primp==1.2.3
 priority==2.0.0
