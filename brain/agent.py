@@ -1360,11 +1360,29 @@ class AgentCore:
             pass
         return None
 
+    def _load_current_session_last_time(self):
+        """取当前会话最后一条消息时间（更贴合“距上次对话”），失败返回 None。"""
+        try:
+            if getattr(self, "_session_id", None) is None:
+                return None
+            conn = self._history_mgr._conn()
+            row = conn.execute(
+                "SELECT timestamp FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1",
+                (self._session_id,),
+            ).fetchone()
+            if row and row[0]:
+                return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+        return None
+
     def _build_realtime_message(self) -> dict:
         now = datetime.now()
 
-        if self._last_reply_time is not None:
-            diff = (now - self._last_reply_time).total_seconds()
+        last_reply = self._load_current_session_last_time() or self._last_reply_time
+
+        if last_reply is not None:
+            diff = (now - last_reply).total_seconds()
             use_minute = diff > 15 * 60
         else:
             use_minute = True
@@ -1389,6 +1407,13 @@ class AgentCore:
             realtime += f"\n{holiday_info}"
         if not self._use_local:
             realtime += "\n注意：涉及时间、日期、节气、节日相关的问题时，必须先调用 get_current_time 工具获取最新信息，不要依赖记忆或猜测。"
+        try:
+            from brain.time_sense import build_time_sense_block
+            sense = build_time_sense_block(now, last_reply)
+            if sense:
+                realtime += "\n\n" + sense
+        except Exception:
+            pass
         return {"role": "system", "content": realtime, "_module": "time"}
 
     # ── 日记智能回忆 ──────────────────────────────────────────
@@ -2504,6 +2529,23 @@ class AgentCore:
 
         # ── 注入实时时间信息（自适应精度：间隔>15分钟用分钟级，否则小时级） ──
         messages.append(self._build_realtime_message())
+
+        # ── 跨天/长间隔时注入最近对话时间线，帮助莲心重建时间线 ──
+        if not self._use_local and not route.is_light:
+            try:
+                from brain.time_sense import build_recent_timeline
+                _time_now = datetime.now()
+                _time_last = self._load_current_session_last_time() or self._last_reply_time
+                if (_time_last is not None
+                        and getattr(self, "_session_id", None) is not None):
+                    _time_hours = (_time_now - _time_last).total_seconds() / 3600
+                    if _time_last.date() != _time_now.date() or _time_hours >= 2.0:
+                        _timeline = build_recent_timeline(
+                            self._history_mgr, self._session_id, _time_now)
+                        if _timeline:
+                            messages.append({"role": "system", "content": _timeline})
+            except Exception:
+                pass
         with self._tool_audit_lock:
             recent_audit = list(self._recent_tool_audit[-8:])
         if recent_audit and not route.is_light and not self._use_local:

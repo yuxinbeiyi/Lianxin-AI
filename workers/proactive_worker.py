@@ -287,6 +287,32 @@ class ProactiveWorker(QThread):
     def _build_context(self, observation_text: Optional[str] = None) -> str:
         parts: list[str] = []
 
+        # ── 时间感知：当前时间 + 距上次对话间隔 + 跨天认知引导 ──
+        try:
+            from datetime import datetime
+            from brain.time_sense import build_time_sense_block
+            _tnow = datetime.now()
+            _tlast = None
+            try:
+                _sessions = self._history_mgr.get_sessions()
+                if _sessions:
+                    _msgs = self._history_mgr.get_messages(_sessions[0]["id"], limit=1)
+                    if _msgs:
+                        _ts = (_msgs[-1].get("timestamp") or "").strip()
+                        if _ts:
+                            _tlast = datetime.strptime(_ts, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+            _weekday = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][_tnow.weekday()]
+            parts.append(
+                f"【当前时间】\n公历：{_tnow.strftime('%Y年%m月%d日')} {_tnow.strftime('%H:%M')} {_weekday}"
+            )
+            _sense = build_time_sense_block(_tnow, _tlast)
+            if _sense:
+                parts.append(_sense)
+        except Exception:
+            pass
+
         # 涟漪 v3 提供动机和主动模式语调；调度策略仍由 DutyScheduler 控制。
         try:
             from brain.emotional import get_manager as _get_emotion_mgr
