@@ -183,7 +183,7 @@ PyAutoGUI==0.9.54
 pycparser==3.0
 pycryptodome==3.23.0
 pydantic==2.13.3
-pydantic-settings==2.14.1
+pydantic-settings==2.15.0
 pydantic_core==2.46.3
 pyee==13.0.1
 pyelftools==0.32
