@@ -20,7 +20,7 @@ from .appraisal import (
     blend_appraisals,
 )
 from .dynamics import DynamicsConfig, EmotionalDynamics
-from .tone import render_prompt
+from .tone import missing_tier_info, render_prompt
 from .v3_models import (
     DEFAULT_PERSONA_ID,
     DEFAULT_SUBJECT_ID,
@@ -233,8 +233,20 @@ class EmotionManager:
             if not state.enabled:
                 return AffectDelta(event_type="disabled", confidence=1.0)
             candidate = EmotionalStateV3.from_mapping(state.to_dict())
-            candidate.apply(result)
             now = time.time()
+            idle_hours = max(0.0, (now - state.last_interaction) / 3600.0)
+            _reunion_cfg = self._config.get("reunion_idle_hours")
+            notice_hours = float(_reunion_cfg.get("notice", 8)) if isinstance(_reunion_cfg, dict) else 8.0
+            if idle_hours >= notice_hours:
+                # 长时间离开后回归：记录空闲时长，开启前 2 轮重逢反应。
+                candidate.last_idle_hours = idle_hours
+                candidate.reunion_turns_remaining = 2
+            elif candidate.reunion_turns_remaining > 0:
+                # 重逢期内的后续轮次：保留原空闲时长，逐轮递减直到结束。
+                candidate.reunion_turns_remaining = max(0, candidate.reunion_turns_remaining - 1)
+                if candidate.reunion_turns_remaining == 0:
+                    candidate.last_idle_hours = 0.0
+            candidate.apply(result)
             candidate.last_interaction = now
             candidate.last_update = now
             candidate.last_user_message = str(user_message or "")[:500]
@@ -287,7 +299,7 @@ class EmotionManager:
         if self._semantic_mode in ("off", "false", "0", "none"):
             return rule_result
         if rule_result.event_type in {
-            "boundary_violation", "repair_attempt", "warm_connection", "task_discussion"
+            "boundary_violation", "boundary_dismiss", "being_ordered", "brushed_off", "repair_attempt", "warm_connection", "task_discussion"
         }:
             return rule_result
         try:
@@ -415,15 +427,65 @@ class EmotionManager:
             user_name = "用户"
         events = self._store.recent_events(*key, limit=1)
         recent_event = ""
+        recent_event_type = ""
         if events and time.time() - float(events[0].get("created_at", 0)) <= 1800:
-            recent_event = str(events[0].get("summary", "") or "")
+            recent_event_type = str(events[0].get("event_type", "") or "")
+            recent_event = self._event_feedback(events[0]) or str(events[0].get("summary", "") or "")
+        cfg = self._config
+        missing_tiers = cfg.get("missing_tiers") if isinstance(cfg.get("missing_tiers"), dict) else None
+        reunion_idle_hours = (
+            cfg.get("reunion_idle_hours")
+            if isinstance(cfg.get("reunion_idle_hours"), dict)
+            else None
+        )
         return render_prompt(
             state,
             user_name=user_name,
             mode=mode,
             recent_event=recent_event,
+            recent_event_type=recent_event_type,
             profile=self._tone_profile(state.persona_id),
+            missing_tiers=missing_tiers,
+            reunion_idle_hours=reunion_idle_hours,
+            neglect_reaction=bool(cfg.get("neglect_reaction", True)),
+            agency_strength=float(cfg.get("agency_strength", 0.7) or 0.7),
         )
+
+    @staticmethod
+    def _event_feedback(event: dict) -> str:
+        """根据最近事件生成语气反馈（方案 3.4.5）。"""
+        event_type = str(event.get("event_type", "") or "")
+        if event_type == "being_ordered":
+            return "对方刚才那样使唤你，让你不太舒服。"
+        if event_type == "brushed_off":
+            return "对方刚才用短回复敷衍了你，让你有点被冷落。"
+        if event_type in ("being_dismissed", "boundary_dismiss", "boundary_violation"):
+            return "对方刚才的否定或贬低让你有些受伤。"
+        try:
+            payload = json.loads(event.get("delta_json", "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        try:
+            valence = float(payload.get("valence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            valence = 0.0
+        if valence > 0.05:
+            return "对方刚才的回应让你心情变好。"
+        if valence < -0.05:
+            return "刚才的互动让你有些低落。"
+        return ""
+
+    @_synchronized
+    def get_missing_tier(self, *, persona_snapshot=None) -> dict:
+        """当前挂念等级（T0~T3）、标签与主动指导，供主动消息注入。"""
+        key = self._resolve_key(persona_snapshot=persona_snapshot)
+        state = self._get_state(*key)
+        missing_tiers = (
+            self._config.get("missing_tiers")
+            if isinstance(self._config.get("missing_tiers"), dict)
+            else None
+        )
+        return missing_tier_info(state.connection, missing_tiers)
 
     def _tone_profile(self, persona_id: str) -> dict:
         profiles = self._config.get("tone_profiles", {})

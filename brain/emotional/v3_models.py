@@ -109,6 +109,11 @@ class EmotionalStateV3:
     last_user_message: str = ""
     last_update: float = field(default_factory=time.time)
     last_interaction: float = field(default_factory=time.time)
+
+    # 最近一次用户回归前的空闲时长（小时），用于重逢反应判定。
+    last_idle_hours: float = 0.0
+    # 重逢反应剩余轮次：回归后前 2 轮呈现想念/抱怨/委屈，随后自然消退。
+    reunion_turns_remaining: int = 0
     last_proactive_at: float = 0.0
     enabled: bool = True
     schema_version: int = STATE_SCHEMA_VERSION
@@ -130,6 +135,9 @@ class EmotionalStateV3:
         self.last_activity_type = str(self.last_activity_type or "")[:64]
         self.last_activity_label = str(self.last_activity_label or "")[:160]
         self.last_user_message = str(self.last_user_message or "")[:500]
+
+        self.last_idle_hours = clamp(self.last_idle_hours, 0.0, 24.0 * 365.0)
+        self.reunion_turns_remaining = max(0, int(self.reunion_turns_remaining or 0))
         now = time.time()
         for name in ("last_update", "last_interaction", "last_activity_at", "last_proactive_at"):
             value = clamp(getattr(self, name), 0.0, now + 300.0)
@@ -176,21 +184,21 @@ class EmotionalStateV3:
     @property
     def mood_cluster(self) -> str:
         v, a = self.valence, self.arousal
-        if v > 0.30 and a > 0.30:
+        if v > 0.18 and a > 0.18:
             return "excited"
-        if v > 0.30 and a < -0.30:
+        if v > 0.18 and a < -0.18:
             return "content"
-        if v > 0.30:
+        if v > 0.18:
             return "pleased"
-        if v < -0.30 and a > 0.30:
+        if v < -0.18 and a > 0.18:
             return "agitated"
-        if v < -0.30 and a < -0.30:
+        if v < -0.18 and a < -0.18:
             return "depressed"
-        if v < -0.30:
+        if v < -0.18:
             return "sullen"
-        if a > 0.30:
+        if a > 0.18:
             return "restless"
-        if a < -0.30:
+        if a < -0.18:
             return "calm"
         return "neutral"
 

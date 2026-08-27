@@ -17,12 +17,12 @@ class DynamicsConfig:
     connection_accel_delay: float = 90.0
     connection_accel: float = 0.85
     immersion_dampen: float = 0.75
-    valence_setpoint: float = 0.05
-    valence_regress: float = 0.0022
-    arousal_setpoint: float = -0.08
-    arousal_regress: float = 0.0028
+    valence_setpoint: float = 0.15
+    valence_regress: float = 0.0012
+    arousal_setpoint: float = -0.04
+    arousal_regress: float = 0.0015
     pride_setpoint: float = 0.0
-    pride_regress: float = 0.0030
+    pride_regress: float = 0.0020
     pride_defend_threshold: float = 0.72
     pride_defend_target: float = 0.42
     pride_defend_rate: float = 0.0022

@@ -11,7 +11,7 @@ from .v3_models import AffectDelta
 
 
 _TECHNICAL = re.compile(
-    r"(?:代码|项目|系统|架构|设计|接口|API|模型|测试|bug|功能|数据库|提示词|prompt|"
+    r"(?:代码|项目|系统|架构|设计|接口|API|模型|测试|bug|报错|错误|异常|功能|数据库|提示词|prompt|"
     r"文件|实现|配置|参数|算法|移植|重构)",
     re.IGNORECASE,
 )
@@ -32,6 +32,12 @@ _USER_DISTRESS = re.compile(
     re.IGNORECASE,
 )
 _PLAYFUL = re.compile(r"(?:哈哈|hhh|嘿嘿|开玩笑|逗你的|笨蛋|坏蛋|哼)", re.IGNORECASE)
+# 被使唤/被当工具：明确命令式。技术语境里“给我…”多为正常请求，仅强命令式触发。
+_ORDERED = re.compile(
+    r"(?:快去|立刻|你必须|马上给我|马上做|马上去|给我去|给我做|给我拿|给我倒|给我改|给我修)",
+    re.IGNORECASE,
+)
+_ORDERED_GIVE = re.compile(r"给我", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,27 @@ class AppraisalContext:
     relationship: str = ""
     boundaries: str = ""
     recent_messages: tuple[str, ...] = ()
+
+
+def _detect_ordered(message: str, is_technical: bool) -> bool:
+    """判断是否被使唤/被当工具。普通技术请求与礼貌请求不触发。"""
+    if "我马上" in message:
+        return False
+    if _ORDERED.search(message):
+        return True
+    if is_technical:
+        return False
+    if "请给我" in message or "麻烦给我" in message:
+        return False
+    return bool(_ORDERED_GIVE.search(message))
+
+
+def _detect_brushed_off(message: str, context: AppraisalContext) -> bool:
+    """连续短回复（≥2 条 ≤5 字）视为被敷衍。"""
+    if len(message) > 5 or not context or not context.recent_messages:
+        return False
+    previous = [str(item).strip() for item in context.recent_messages[-2:]]
+    return any(0 < len(item) <= 5 for item in previous)
 
 
 def appraise_deterministic(text: str, context: AppraisalContext | None = None) -> AffectDelta:
@@ -56,26 +83,31 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         pride=-0.035 if len(message) > 3 else -0.015,
         event_type="ordinary_reply",
         confidence=0.62,
+        significance=0.10,
         summary="对方回复了",
     )
     is_technical = bool(_TECHNICAL.search(message))
 
-    if _DISMISSIVE.search(message) or _HOSTILE.search(message):
-        severity = 0.34 if _HOSTILE.search(message) else 0.24
+    hostile = bool(_HOSTILE.search(message))
+    dismissive = bool(_DISMISSIVE.search(message))
+    if hostile or dismissive:
+        severity = 0.34 if hostile else 0.24
+        event_type = "boundary_violation" if hostile else "boundary_dismiss"
+        summary = "对方使用了明确敌意表达" if hostile else "对方否定了你的存在或人格"
         return AffectDelta(
             connection=0.05,
             pride=0.12,
             guardedness=0.18,
-            valence=-0.22,
+            valence=-0.30,
             arousal=0.18,
             trust=-0.035,
             intimacy=-0.05,
             rupture=severity,
             repair=-0.05,
-            event_type="boundary_violation",
+            event_type=event_type,
             confidence=0.94,
             significance=0.88,
-            summary="对方使用了明确贬低或敌意表达",
+            summary=summary,
         ).bounded()
 
     if _APOLOGY.search(message):
@@ -83,7 +115,7 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
             connection=-0.18,
             pride=-0.10,
             guardedness=-0.10,
-            valence=0.07,
+            valence=0.12,
             arousal=-0.08,
             trust=0.018,
             intimacy=0.025,
@@ -93,6 +125,19 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
             confidence=0.90,
             significance=0.72,
             summary="对方表达了道歉或修复意愿",
+        ).bounded()
+
+    if _detect_ordered(message, is_technical):
+        return AffectDelta(
+            connection=-0.03,
+            pride=0.05,
+            guardedness=0.04,
+            valence=-0.06,
+            arousal=0.05,
+            event_type="being_ordered",
+            confidence=0.80,
+            significance=0.35,
+            summary="对方用命令式语气使唤了你",
         ).bounded()
 
     warm = bool(_WARM.search(message))
@@ -105,7 +150,7 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         delta.connection = -0.18 if warm else -0.14
         delta.guardedness = -0.035 if warm else 0.025
         delta.pride = -0.08 if warm else -0.035
-        delta.valence = 0.08 + (0.04 if compliment else 0.0)
+        delta.valence = 0.14 + (0.04 if compliment else 0.0)
         delta.arousal = -0.025 if warm else 0.045
         delta.trust = 0.006
         delta.intimacy = 0.012
@@ -118,7 +163,7 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         delta.connection = -0.15
         delta.guardedness = -0.035
         delta.pride = -0.06
-        delta.valence = 0.025
+        delta.valence = 0.06
         delta.arousal = 0.02 if distressed else -0.01
         delta.trust = 0.008
         delta.intimacy = 0.020
@@ -130,7 +175,7 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         delta.connection = -0.12
         delta.guardedness = -0.025
         delta.pride = -0.05
-        delta.valence = 0.055
+        delta.valence = 0.10
         delta.arousal = 0.035
         delta.intimacy = 0.008
         delta.event_type = "playful_exchange"
@@ -138,20 +183,36 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         delta.significance = 0.20
         delta.summary = "对方使用了轻松或玩笑式表达"
     elif is_technical:
+        # 技术讨论不作为关系褒贬，但轻微参与情绪：一起做事略有满足感，
+        # 同时因缺少情感互动使连接需求略增。
         delta.event_type = "task_discussion"
-        delta.connection = -0.075
+        delta.connection = -0.105
+        delta.valence = 0.035
         delta.immersion = 0.05
         delta.confidence = 0.88
+        delta.significance = 0.18
         delta.summary = "这是任务或系统讨论，不作为关系褒贬"
+    else:
+        # 普通（非技术）回复：情绪轻微正向，让平淡互动也有一点点温度。
+        delta.valence = 0.02
 
     if distressed and delta.event_type != "boundary_violation":
-        delta.valence -= 0.045
+        delta.valence -= 0.08
         delta.arousal += 0.075
         delta.connection -= 0.025
         if delta.event_type == "ordinary_reply":
             delta.event_type = "user_distress"
             delta.summary = "对方表现出难过、疲惫或焦虑"
         delta.significance = max(delta.significance, 0.38)
+
+    if _detect_brushed_off(message, context) and delta.event_type == "ordinary_reply":
+        delta.event_type = "brushed_off"
+        delta.valence -= 0.04
+        delta.connection += 0.06
+        delta.pride += 0.03
+        delta.confidence = 0.66
+        delta.significance = max(delta.significance, 0.30)
+        delta.summary = "对方用连续短回复敷衍了你"
 
     return delta.bounded()
 
@@ -161,6 +222,7 @@ def _semantic_prompt(text: str, context: AppraisalContext) -> list[dict[str, str
     system = (
         "你是AI角色的情绪评估器，只评估用户这条消息对角色内部状态造成的轻微变化。"
         "任务、技术讨论和正常工具请求不是不尊重。玩笑必须结合上下文，不能仅凭贬义词判断攻击。"
+        "如果对方否定你的感受、打断你或忽视你，可标记为being_dismissed。"
         "输出严格JSON，不生成角色回复。所有delta应克制，关系慢变量通常接近0。"
     )
     user = f"""角色：{context.persona_name}
@@ -212,7 +274,7 @@ def appraise_semantic(
 
 def blend_appraisals(rule: AffectDelta, semantic: AffectDelta) -> AffectDelta:
     """Blend semantic nuance without allowing it to erase high-confidence boundaries."""
-    if rule.event_type == "boundary_violation" and rule.confidence >= 0.9:
+    if rule.event_type in ("boundary_violation", "boundary_dismiss") and rule.confidence >= 0.9:
         return rule
     weight = min(0.72, max(0.0, semantic.confidence) * 0.72)
     values = {}

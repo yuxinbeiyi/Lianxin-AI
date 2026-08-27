@@ -986,6 +986,12 @@ _EMOTION_DEFAULTS = {
     "proactive_motive_enabled": True,
     "saga_bias_scale": 1.0,
     "tone_profiles": {},
+    # 挂念等级：connection 高于该值分别进入“想念/轻抱怨/委屈生气”。
+    "missing_tiers": {"warm": 0.36, "complain": 0.50, "upset": 0.75},
+    # 重逢反应：离开超过该小时数后回归时，前 2 轮呈现想念/抱怨/委屈。
+    "reunion_idle_hours": {"notice": 8, "complain": 24, "upset": 72},
+    "neglect_reaction": True,
+    "agency_strength": 0.7,
     "dynamics": {},
 }
 

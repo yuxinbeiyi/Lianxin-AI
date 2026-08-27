@@ -258,6 +258,14 @@ class ProactiveWorker(QThread):
             )
             if emotion_prompt:
                 parts.append(emotion_prompt)
+            missing_tier = _get_emotion_mgr().get_missing_tier(
+                persona_snapshot=getattr(self, "_persona_snapshot", None)
+            )
+            if missing_tier and missing_tier.get("level") not in ("", "T0"):
+                parts.append(
+                    f"【本次挂念等级】{missing_tier.get('level')}·{missing_tier.get('label')}\n"
+                    + str(missing_tier.get("guidance", ""))
+                )
         except Exception:
             pass
         if self._emotional_motive:
