@@ -260,6 +260,8 @@ def _ensure_worker() -> subprocess.Popen:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=env,
             cwd=gs_path,
         )

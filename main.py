@@ -362,7 +362,7 @@ def main():
             print(f"[PhysicalSim] 调试服务启动失败: {_physical_server.error}", flush=True)
         else:
             app.aboutToQuit.connect(stop_physical_sim_server)
-            print("[PhysicalSim] 调试服务已启动: http://127.0.0.1:8765/", flush=True)
+            print("[PhysicalSim] 调试服务已启动: http://127.0.0.1:8766/", flush=True)
     except Exception as exc:
         print(f"[PhysicalSim] 调试服务初始化失败: {exc}", flush=True)
 

@@ -37,7 +37,9 @@ def describe_image(image_path: str, prompt: str = "请详细描述这张图片�
             max_tokens=2048,
             timeout=120,
         )
-        return response.choices[0].message.content or "（模型未返回描述）"
+        content = response.choices[0].message.content or "（模型未返回描述）"
+        print(f"[视觉] 识图完成（{cfg['vision_model']}）: {content[:200]}{'…' if len(content) > 200 else ''}", flush=True)
+        return content
     except Exception as e:
         error_msg = str(e).lower()
         is_retryable = any(kw in error_msg for kw in [
@@ -63,7 +65,9 @@ def describe_image(image_path: str, prompt: str = "请详细描述这张图片�
                     max_tokens=2048,
                     timeout=120,
                 )
-                return response.choices[0].message.content or "（模型未返回描述）"
+                content = response.choices[0].message.content or "（模型未返回描述）"
+                print(f"[视觉] 识图完成（{cfg['vision_model']}）: {content[:200]}{'…' if len(content) > 200 else ''}", flush=True)
+                return content
             except Exception as e2:
                 return f"图片理解失败：{e2}"
         return f"图片理解失败：{e}"

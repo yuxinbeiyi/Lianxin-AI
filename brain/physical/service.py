@@ -255,7 +255,7 @@ def create_app(runtime: PhysicalRuntime | None = None) -> web.Application:
 
 class PhysicalSimServer:
     """在莲心主进程内运行 Web 调试服务，避免产生第二份世界状态。"""
-    def __init__(self, *, host: str = "127.0.0.1", port: int = 8765):
+    def __init__(self, *, host: str = "127.0.0.1", port: int = 8766):
         self.host = host
         self.port = port
         self._stop_event = threading.Event()
@@ -326,9 +326,9 @@ def stop_physical_sim_server() -> None:
 def main() -> None:
     host = os.getenv("LIANXIN_PHYSICAL_HOST", "127.0.0.1")
     try:
-        port = int(os.getenv("LIANXIN_PHYSICAL_PORT", "8765"))
+        port = int(os.getenv("LIANXIN_PHYSICAL_PORT", "8766"))
     except ValueError:
-        port = 8765
+        port = 8766
     web.run_app(create_app(), host=host, port=port)
 
 
