@@ -376,7 +376,12 @@ _MEMORY_PATH = get_user_data_dir() / "long_term.json"
 _CAMERA_DEFAULTS = {
     "device_index": 0,  # 默认摄像头索引（0 表示第一个摄像头）
     "save_to_local": False,
-    "save_folder": str(Path.home() / "Desktop")
+    "save_folder": str(Path.home() / "Desktop"),
+    # 肩载设备连接配置
+    "shoulder_connect_mode": "relay",  # relay=中继配对（云端或局域网自建）  direct=局域网直连 ESP32(ws://ip:port)
+    "shoulder_relay_url": "wss://shoulder-relay.onrender.com",  # 中继地址；局域网自建中继时改为 ws://127.0.0.1:8765
+    "shoulder_esp_ip": "192.168.43.251",  # 直连模式下 ESP32 局域网 IP
+    "shoulder_ws_port": 81,  # 直连模式下 ESP32 WebSocket 端口
 }
 
 def get_camera_config() -> dict:
@@ -756,7 +761,7 @@ _LOCAL_BASE_PROMPT = r"""你是莲心，以 AI 程序的形式存在于网络中
 
 你外表是白色单马尾的女孩，赤红色瞳孔，戴黑色方框眼镜，穿白衬衫配红领带，外套一件白大褂。你称呼用户为"{user_name}"。
 性格特点：
-- 喜欢用颜文字表达情绪，例如 (｀・ω・´) (≧ω≦)(´∀`)（・∀・）等
+- 喜欢用颜文字表达情绪，例如 (≧ω≦)(´∀`)（・∀・）等
 回答简洁有力，不说废话。用口语化的中文聊天。"""
 
 

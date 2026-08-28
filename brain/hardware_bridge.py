@@ -14,19 +14,36 @@ except ImportError:
 RELAY_URL = "wss://shoulder-relay.onrender.com"
 
 
+def _shoulder_cfg() -> dict:
+    """读取肩载设备连接配置（延迟导入避免循环依赖）。"""
+    try:
+        from config import get_camera_config
+        return get_camera_config() or {}
+    except Exception:
+        return {}
+
+
 class HardwareBridge:
     """Remote bridge via WebSocket cloud relay.
 
     Connects to the cloud relay which forwards messages between PC and ESP32.
     Works across different networks (PC at home, ESP32 on phone hotspot).
 
+    连接模式（config.py camera.shoulder_connect_mode 控制）:
+    - relay:  连接中继（云端或局域网内自建中继），PC 与 ESP32 都连中继配对
+    - direct: 局域网直连 ESP32 自带 WebSocket 服务（ws://<esp_ip>:<ws_port>）
+
     双模式连接:
     - 普通模式: connect() → 发命令 → disconnect() (每次命令独立连接)
     - 长连接模式: connect_persistent() → 保持连接 → disconnect() (观察模式专用)
     """
 
-    def __init__(self, esp_ip="192.168.43.251", ws_port=81):
-        self.relay_url = RELAY_URL
+    def __init__(self, esp_ip=None, ws_port=None, relay_url=None, mode=None):
+        cfg = _shoulder_cfg()
+        self.esp_ip = esp_ip or cfg.get("shoulder_esp_ip", "192.168.43.251")
+        self.ws_port = ws_port or int(cfg.get("shoulder_ws_port", 81))
+        self.relay_url = relay_url or cfg.get("shoulder_relay_url", RELAY_URL)
+        self.mode = (mode or cfg.get("shoulder_connect_mode", "relay")).strip().lower()
         self.ws = None
         self._connected = False
         self._send_lock = threading.Lock()
@@ -40,6 +57,12 @@ class HardwareBridge:
         return self._connected
 
     async def connect(self):
+        """按当前模式建立连接。"""
+        if self.mode == "direct":
+            return await self._connect_direct()
+        return await self._connect_relay()
+
+    async def _connect_relay(self):
         try:
             self.ws = await asyncio.wait_for(
                 websockets.connect(self.relay_url, ping_interval=30, ping_timeout=10),
@@ -54,6 +77,24 @@ class HardwareBridge:
             return True
         except Exception as e:
             print(f"[bridge] connect failed: {e}")
+            self._connected = False
+            return False
+
+    async def _connect_direct(self):
+        uri = f"ws://{self.esp_ip}:{self.ws_port}"
+        try:
+            self.ws = await asyncio.wait_for(
+                websockets.connect(uri, ping_interval=30, ping_timeout=10),
+                timeout=10,
+            )
+            hello = await asyncio.wait_for(self.ws.recv(), timeout=5)
+            if isinstance(hello, bytes):
+                hello = hello.decode()
+            self._connected = True
+            print(f"[bridge] 局域网直连成功: {uri} ({hello})")
+            return True
+        except Exception as e:
+            print(f"[bridge] 局域网直连失败: {uri} -> {e}")
             self._connected = False
             return False
 
@@ -158,6 +199,48 @@ class HardwareBridge:
     async def temp(self) -> dict | None:
         """Read DHT11 temperature/humidity."""
         resp = await self._send_cmd("temp")
+        if resp:
+            try:
+                return json.loads(resp)
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    async def send_one_shot(self, cmd: str, timeout_sec=6):
+        """建立连接 → 发一条命令 → 断开。返回 ESP32 响应文本（或 None）。
+
+        用于面板/按钮等一次性控制命令（激活/关闭 OLED 表情、指定表情等）。
+        """
+        if not await self.connect():
+            return None
+        try:
+            return await self._send_cmd(cmd, timeout_sec=timeout_sec)
+        finally:
+            await self.disconnect()
+
+    async def face_on(self) -> dict | None:
+        """激活 OLED 表情（固件自动轮播 1~18）。"""
+        resp = await self.send_one_shot("【表情】启动")
+        if resp:
+            try:
+                return json.loads(resp)
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    async def face_off(self) -> dict | None:
+        """关闭 OLED 表情，回到信息屏（IP/舵机角度/温湿度）。"""
+        resp = await self.send_one_shot("【表情】关闭")
+        if resp:
+            try:
+                return json.loads(resp)
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    async def face_goto(self, num: int) -> dict | None:
+        """让 ESP32 OLED 固定显示指定表情（1~18，与固件情绪编号一致）。"""
+        resp = await self.send_one_shot(f"【表情】{int(num)}")
         if resp:
             try:
                 return json.loads(resp)

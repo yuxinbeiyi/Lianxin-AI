@@ -25,7 +25,11 @@
   "camera": {
     "device_index": 0,
     "save_to_local": false,
-    "save_folder": ""
+    "save_folder": "",
+    "shoulder_connect_mode": "relay",
+    "shoulder_relay_url": "wss://shoulder-relay.onrender.com",
+    "shoulder_esp_ip": "192.168.43.251",
+    "shoulder_ws_port": 81
   },
   "web_fetch": {
     "baidu_cookie": ""

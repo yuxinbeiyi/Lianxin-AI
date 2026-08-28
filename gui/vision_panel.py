@@ -50,6 +50,7 @@ class VisionPanel(QDialog):
         self._worker = None
         self._current_frame = None  # 缓存当前帧，供"看看你面前的是谁"使用
         self._face_tracking_controller = None
+        self._oled_panel = None
 
         # 加载手势配置
         saved_cooldown = self._load_gesture_config()
@@ -205,6 +206,8 @@ class VisionPanel(QDialog):
         self.btn_face_tracking_sim = QPushButton("本机模拟追踪")
         self.btn_face_tracking_sim.setCheckable(True)
         self.btn_face_tracking_sim.setToolTip("使用电脑前置摄像头模拟 ESP32-CAM 人脸追踪，并在日志显示预期舵机动作")
+        self.btn_oled = QPushButton("OLED表情")
+        self.btn_oled.setToolTip("打开 OLED 表情控制面板：本地预览 + 一键激活/关闭 ESP32 OLED 表情（不经过 LLM）")
 
         self.btn_stop.setEnabled(False)
 
@@ -215,6 +218,7 @@ class VisionPanel(QDialog):
         self.btn_clear.clicked.connect(self.log_text.clear)
         self.btn_face_tracking.clicked.connect(self._toggle_face_tracking)
         self.btn_face_tracking_sim.clicked.connect(self._toggle_face_tracking_sim)
+        self.btn_oled.clicked.connect(self._open_oled_panel)
 
         btn_layout.addWidget(self.btn_start)
         btn_layout.addWidget(self.btn_stop)
@@ -222,6 +226,7 @@ class VisionPanel(QDialog):
         btn_layout.addWidget(self.btn_add_friend)
         btn_layout.addWidget(self.btn_face_tracking)
         btn_layout.addWidget(self.btn_face_tracking_sim)
+        btn_layout.addWidget(self.btn_oled)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_clear)
 
@@ -399,6 +404,18 @@ class VisionPanel(QDialog):
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+
+    def _open_oled_panel(self):
+        """打开 OLED 表情控制面板（本地预览 + 推送命令到 ESP32 OLED）。"""
+        try:
+            from gui.oled_panel import OledPanel
+        except Exception as exc:
+            self._append_log(f"❌ OLED 面板加载失败：{exc}")
+            return
+        if self._oled_panel is None or not self._oled_panel.isVisible():
+            self._oled_panel = OledPanel(self)
+        self._oled_panel.show()
+        self._oled_panel.activateWindow()
 
     def _toggle_face_tracking(self, checked):
         """启动独立 ESP32-CAM 人脸追踪，不进入莲心 LLM 工具链。"""
