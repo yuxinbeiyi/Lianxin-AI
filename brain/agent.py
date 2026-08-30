@@ -2398,6 +2398,19 @@ class AgentCore:
         self._request_context = request_context
         self._raw_request_text = str(user_message or "")
         self._current_request_text = request_context.routing_text
+        # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
+        # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
+        # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
+        # 正向的。颜文字与含 ASCII 的技术注释不受影响。
+        try:
+            from brain.text_hygiene import strip_parenthetical_asides as _strip_asides
+            for _hist_msg in self.history:
+                if isinstance(_hist_msg, dict) and _hist_msg.get("role") == "assistant":
+                    _hist_clean = _strip_asides(str(_hist_msg.get("content", "")))
+                    if _hist_clean != _hist_msg.get("content"):
+                        _hist_msg["content"] = _hist_clean
+        except Exception:
+            pass
         print(
             f"[请求上下文] quote={request_context.is_quote_reply} "
             f"active_chars={len(request_context.active_text)} "
@@ -3024,6 +3037,23 @@ class AgentCore:
                 )
             })
 
+        # ── 输出格式契约（所有路径真正的最后一条 system 消息） ──
+        # 【表情：】标签制度会让模型把"括号=元信息通道"当成合法输出元素，
+        # 全角括号旁白随机泄漏进正文；这里在近因位置重申唯一的合法标注，
+        # 并明确不给出任何违禁示例（示例本身会强化该模式）。
+        if not disable_tools:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "【输出格式契约】\n"
+                    "你的回复中唯一合法的括号元标注，是末尾单独一行的【表情：XX】情绪标签。\n"
+                    "除此之外，正文里不得出现任何用括号包裹的动作、神态、音效、场景或心理描写；"
+                    "也不要把工具调用写成正文文本。画面感直接用比喻和细节写在句子本身里，"
+                    "括号旁白会在显示前被系统移除。\n"
+                    "技术说明中的缩写注释（如 ASR、VGA）不受限制；颜文字一律使用半角括号。"
+                )
+            })
+
         # ── 禁用工具模式：直接纯文本对话，不走工具循环 ──────
         if disable_tools:
             for retry in range(2):
@@ -3086,7 +3116,12 @@ class AgentCore:
                             continue
                         return "（检测到异常的内部工具协议，已阻止其显示。请重新发送消息。）"
                     self._last_reasoning = reasoning if reasoning else None
-                    return content or "刚才的回复在生成时被截断了，请再发一次，我会继续处理。"
+                    try:
+                        from brain.text_hygiene import strip_parenthetical_asides
+                        return strip_parenthetical_asides(content or "") or \
+                            "刚才的回复在生成时被截断了，请再发一次，我会继续处理。"
+                    except Exception:
+                        return content or "刚才的回复在生成时被截断了，请再发一次，我会继续处理。"
                 except Exception as e:
                     if locals().get("_plain_model_step"):
                         try:
@@ -3593,6 +3628,15 @@ class AgentCore:
                     final_content, _msg_for_match, request_audit,
                     capabilities=route.capabilities, mode=route.mode.value,
                 )
+                # ── 括号卫生：显示前剥除全角括号旁白（兜底防线） ──
+                try:
+                    from brain.text_hygiene import strip_parenthetical_asides
+                    _visible_content = strip_parenthetical_asides(final_content)
+                    if _visible_content != final_content:
+                        print("[括号卫生] 已移除回复中的括号旁白", flush=True)
+                        final_content = _visible_content
+                except Exception:
+                    pass
                 if self._browser_task_state:
                     self._browser_task_state.complete()
                 return final_content
