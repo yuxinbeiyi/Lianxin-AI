@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import socket
 
 import websockets
@@ -64,13 +65,26 @@ class Esp32LocalRelay:
             await ws.send("WELCOME:unknown role: " + text[:64])
             return
 
+        print(f"[relay] {role.upper()} connected", flush=True)
+        peer = self._peer_of(ws)
+        if peer is not None:
+            print(f"[relay] paired: {role.upper()} <-> peer", flush=True)
+        else:
+            print(f"[relay] waiting for peer: {role.upper()}", flush=True)
+
         try:
             async for message in ws:
                 peer = self._peer_of(ws)
                 if peer is None:
+                    print(f"[relay] dropped message from {role.upper()} (peer offline)", flush=True)
                     continue
                 try:
                     await peer.send(message)
+                    direction = "PC -> ESP32" if role == "pc" else "ESP32 -> PC"
+                    if isinstance(message, bytes):
+                        print(f"[relay] {direction}: binary {len(message)} bytes", flush=True)
+                    else:
+                        print(f"[relay] {direction}: {str(message)[:200]}", flush=True)
                 except websockets.exceptions.ConnectionClosed:
                     break
         except websockets.exceptions.ConnectionClosed:
@@ -81,6 +95,7 @@ class Esp32LocalRelay:
                 self.pc = None
             elif self.esp32 is ws:
                 self.esp32 = None
+            print(f"[relay] {role.upper()} disconnected", flush=True)
 
 
 def _lan_ips() -> list[str]:
@@ -113,8 +128,19 @@ async def main(host: str, port: int) -> None:
     print("  配对方式 : 两端各自连接后自动配对，顺序不限")
     print("  退出     : Ctrl+C")
     print("=" * 60)
-    async with websockets.serve(relay.handler, host, port):
-        await asyncio.Future()  # run forever
+    # websockets 15.0.1 在握手阶段收到“连上即断”的探测连接时会抛
+    # InvalidMessage 并穿透连接任务组，把整个服务进程带崩（真机联调时
+    # 实测发生）。这里外层兜底自动重启；握手噪音日志也一并压掉。
+    logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
+    while True:
+        try:
+            async with websockets.serve(relay.handler, host, port) as server:
+                await server.serve_forever()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[relay] 服务异常，5 秒后自动重启: {exc!r}", flush=True)
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":

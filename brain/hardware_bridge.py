@@ -220,7 +220,7 @@ class HardwareBridge:
 
     async def face_on(self) -> dict | None:
         """激活 OLED 表情（固件自动轮播 1~18）。"""
-        resp = await self.send_one_shot("【表情】启动")
+        resp = await self.send_one_shot("emoji on")
         if resp:
             try:
                 return json.loads(resp)
@@ -230,7 +230,7 @@ class HardwareBridge:
 
     async def face_off(self) -> dict | None:
         """关闭 OLED 表情，回到信息屏（IP/舵机角度/温湿度）。"""
-        resp = await self.send_one_shot("【表情】关闭")
+        resp = await self.send_one_shot("emoji off")
         if resp:
             try:
                 return json.loads(resp)
@@ -240,7 +240,7 @@ class HardwareBridge:
 
     async def face_goto(self, num: int) -> dict | None:
         """让 ESP32 OLED 固定显示指定表情（1~18，与固件情绪编号一致）。"""
-        resp = await self.send_one_shot(f"【表情】{int(num)}")
+        resp = await self.send_one_shot(f"emoji {int(num)}")
         if resp:
             try:
                 return json.loads(resp)

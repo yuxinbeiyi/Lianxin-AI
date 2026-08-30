@@ -237,8 +237,8 @@ class OledPanel(QDialog):
         btn_row = QHBoxLayout()
         self.btn_on = QPushButton("激活OLED")
         self.btn_off = QPushButton("关闭OLED")
-        self.btn_on.clicked.connect(lambda: self._push("【表情】启动"))
-        self.btn_off.clicked.connect(lambda: self._push("【表情】关闭"))
+        self.btn_on.clicked.connect(lambda: self._push("emoji on"))
+        self.btn_off.clicked.connect(lambda: self._push("emoji off"))
         btn_row.addWidget(self.btn_on)
         btn_row.addWidget(self.btn_off)
         cl.addLayout(btn_row)
@@ -281,7 +281,7 @@ class OledPanel(QDialog):
         self.input.setText(str(n))
         self._show_current()
         if push:
-            self._push(f"【表情】{int(n)}")
+            self._push(f"emoji {int(n)}")
 
     def _show_current(self):
         num = self.face.current_num
