@@ -148,12 +148,12 @@ The Study Room provides a focused independent workspace built with PyQtWebEngine
 
 ### Memory flow and safeguards
 
-```text
-User message
-    -> candidate facts and current-state updates
-    -> provenance, category, confidence, and time-scope checks
-    -> local fact store / knowledge graph / working-memory summary
-    -> retrieval only when it is relevant to a later request
+```mermaid
+flowchart TB
+    A["User message"] --> B["Candidate facts and current-state updates"]
+    B --> C["Provenance, category, confidence, and time-scope checks"]
+    C --> D["Local fact store / knowledge graph / working-memory summary"]
+    D --> E["Retrieved only when relevant to a later request"]
 ```
 
 Memory is not treated as an instruction authority. Persona identity, privacy, permissions, and runtime safety rules remain authoritative even when historical conversation data conflicts with them. Entries can be traced back to their source messages and reviewed instead of being silently rewritten.
