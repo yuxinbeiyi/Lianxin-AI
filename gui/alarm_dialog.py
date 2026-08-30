@@ -1,7 +1,11 @@
 """
-AlarmDialog：闹钟/倒计时设置对话框
+AlarmDialog：闹钟/倒计时/提醒/待办/自动化 设置对话框
+
+视觉：深空玻璃（Windows 亚克力模糊 + 半透明深蓝卡片 + 莲心渐变强调色）。
+亚克力在不可用/老系统上自动回退为不透明深色卡片，功能不受影响。
 """
 
+import ctypes
 import os
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -18,6 +22,48 @@ from utils.alarm_manager import REPEAT_LABELS, REPEAT_VALUES
 from pathlib import Path
 
 
+def _apply_windows_acrylic(widget, gradient_abgr: int = 0x8C2B1A10) -> bool:
+    """给顶层窗口开启 Win10/11 亚克力模糊背景。
+
+    gradient_abgr 为 ABGR 格式的半透明底色（默认深蓝 55% 透明度）。
+    仅 Windows 可用；任何异常都返回 False，由调用方回退为不透明卡片。
+    """
+    try:
+        if ctypes.windll.user32 is None:
+            return False
+
+        class _ACCENT_POLICY(ctypes.Structure):
+            _fields_ = [
+                ("AccentState", ctypes.c_int),
+                ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint),
+                ("AnimationId", ctypes.c_int),
+            ]
+
+        class _WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
+            _fields_ = [
+                ("Attribute", ctypes.c_int),
+                ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t),
+            ]
+
+        hwnd = int(widget.winId())
+        # ACCENT_ENABLE_ACRYLICBLURBEHIND = 4；AccentFlags=2 表示绘制所有层级
+        accent = _ACCENT_POLICY(AccentState=4, AccentFlags=2,
+                                GradientColor=gradient_abgr, AnimationId=0)
+        data = _WINDOWCOMPOSITIONATTRIBDATA(
+            Attribute=19,  # WCA_ACCENT_POLICY
+            Data=ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+            SizeOfData=ctypes.sizeof(accent),
+        )
+        result = ctypes.windll.user32.SetWindowCompositionAttribute(
+            hwnd, ctypes.byref(data)
+        )
+        return bool(result)
+    except Exception:
+        return False
+
+
 class AlarmDialog(QDialog):
     """闹钟/倒计时/提醒/待办设置对话框"""
 
@@ -30,12 +76,16 @@ class AlarmDialog(QDialog):
         self._todo_manager = todo_manager  # 待办管理器
         self._reminder_manager = reminder_manager  # 提醒管理器（共享实例）
         self.setWindowTitle("⏰ 闹钟&提醒")
-        self.setMinimumSize(550, 620)
-        self.resize(580, 680)
+        self.setMinimumSize(560, 640)
+        self.resize(600, 700)
         self.setModal(False)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        # 磨砂玻璃：顶层透明，配合 Windows 亚克力模糊（失败自动回退不透明卡片）
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self._build_ui()
+        self.setStyleSheet(self._QSS)
+        self._apply_glass_backdrop()
         self._refresh_alarm_list()
         self._refresh_countdown_list()
         if self._todo_manager:
@@ -46,33 +96,203 @@ class AlarmDialog(QDialog):
         self._update_timer.timeout.connect(self._refresh_countdown_list)
         self._update_timer.start(1000)
 
+    # ── 磨砂玻璃 ─────────────────────────────────────────────
+
+    def _apply_glass_backdrop(self):
+        """尝试开启系统级亚克力模糊；失败则回退为不透明深色卡片。"""
+        if _apply_windows_acrylic(self, 0x8C2B1A10):
+            return
+        # 回退：不透明深色（视觉接近，但没有真实模糊）
+        card = self.findChild(QFrame, "glassCard")
+        if card is not None:
+            card.setStyleSheet(
+                "#glassCard { background-color: #10182B;"
+                " border: 1px solid rgba(120,140,220,90); border-radius: 14px; }"
+            )
+
+    # ── 全局设计令牌 ─────────────────────────────────────────
+
+    _QSS = """
+    QDialog { background: transparent; }
+    #glassCard {
+        background-color: rgba(16, 24, 43, 205);
+        border: 1px solid rgba(120, 140, 220, 90);
+        border-radius: 14px;
+    }
+    #glassTitle { color: #F0F3FF; font-size: 17px; font-weight: 700; }
+    #glassSubtitle { color: #8FA0C0; font-size: 11px; }
+    QLabel { color: #E9EDF2; background: transparent; }
+
+    QTabWidget::pane {
+        border: 1px solid rgba(120, 140, 220, 70);
+        border-radius: 10px;
+        top: -1px;
+        background: rgba(20, 27, 46, 130);
+    }
+    QTabBar { background: transparent; }
+    QTabBar::tab {
+        background: rgba(28, 38, 66, 120);
+        color: #8FA0C0;
+        padding: 7px 13px;
+        border-top-left-radius: 9px;
+        border-top-right-radius: 9px;
+        margin-right: 4px;
+        font-size: 12px;
+    }
+    QTabBar::tab:hover { color: #C7D2F2; }
+    QTabBar::tab:selected {
+        background: rgba(108, 123, 255, 60);
+        color: #FFFFFF;
+        border: 1px solid rgba(108, 123, 255, 130);
+        border-bottom: none;
+    }
+
+    QGroupBox {
+        border: 1px solid rgba(120, 140, 220, 70);
+        border-radius: 10px;
+        margin-top: 12px;
+        padding: 10px 8px 8px 8px;
+        color: #C7D2F2;
+        font-weight: 600;
+        background: rgba(28, 38, 66, 110);
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 12px;
+        padding: 0 6px;
+        color: #8ED6E8;
+    }
+
+    QLineEdit, QComboBox, QSpinBox, QTimeEdit, QDateTimeEdit {
+        background: rgba(9, 14, 28, 160);
+        color: #E9EDF2;
+        border: 1px solid #303A5C;
+        border-radius: 8px;
+        padding: 5px 8px;
+        selection-background-color: #6C7BFF;
+    }
+    QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTimeEdit:focus {
+        border: 1px solid #6C7BFF;
+        background: rgba(9, 14, 28, 200);
+    }
+    QComboBox::drop-down { border: none; width: 22px; }
+    QComboBox::down-arrow {
+        width: 0; height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 5px solid #8FA0C0;
+    }
+    QComboBox QAbstractItemView {
+        background: #141B2E; color: #E9EDF2;
+        border: 1px solid #303A5C; border-radius: 8px;
+        selection-background-color: rgba(108, 123, 255, 90);
+    }
+    QSpinBox::up-button, QTimeEdit::up-button,
+    QSpinBox::down-button, QTimeEdit::down-button {
+        background: rgba(38, 49, 79, 160); border: none; width: 16px;
+    }
+    QSpinBox::up-button:hover, QTimeEdit::up-button:hover { background: #33406B; }
+
+    QListWidget {
+        background: rgba(9, 14, 28, 140);
+        border: 1px solid rgba(120, 140, 220, 70);
+        border-radius: 10px;
+        color: #E9EDF2;
+    }
+    QListWidget::item { padding: 8px; border-radius: 6px; }
+    QListWidget::item:selected {
+        background: rgba(108, 123, 255, 75); color: #FFFFFF;
+    }
+    QListWidget::item:hover { background: rgba(108, 123, 255, 38); }
+
+    QCheckBox { color: #AEB7D4; spacing: 6px; background: transparent; }
+    QCheckBox::indicator {
+        width: 16px; height: 16px;
+        border: 1px solid #3D4A73; border-radius: 4px;
+        background: rgba(9, 14, 28, 160);
+    }
+    QCheckBox::indicator:checked { background: #6C7BFF; border-color: #7C8BFF; }
+
+    QPlainTextEdit {
+        background: rgba(9, 14, 28, 140);
+        color: #AEB7D4;
+        border: 1px solid rgba(120, 140, 220, 70);
+        border-radius: 10px;
+        padding: 4px;
+    }
+
+    QPushButton {
+        background: rgba(38, 49, 79, 200);
+        color: #E9EDF2;
+        border: 1px solid #3D4A73;
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 12px;
+    }
+    QPushButton:hover { background: rgba(51, 64, 107, 220); border-color: #6C7BFF; }
+    QPushButton:pressed { background: rgba(28, 36, 60, 230); }
+    QPushButton[variant="primary"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #7C8BFF, stop:1 #5F6FF0);
+        color: #FFFFFF; border: none; font-weight: 600;
+    }
+    QPushButton[variant="primary"]:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #8D9BFF, stop:1 #6B7BFA);
+    }
+    QPushButton[variant="success"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #3BC96A, stop:1 #2A9E4F);
+        color: #FFFFFF; border: none; font-weight: 600;
+    }
+    QPushButton[variant="warning"] {
+        background: rgba(224, 138, 46, 200);
+        color: #FFFFFF; border: none;
+    }
+    QPushButton[variant="danger"] {
+        background: rgba(255, 90, 110, 26);
+        color: #FF8A9B; border: 1px solid rgba(255, 90, 110, 100);
+    }
+    QPushButton[variant="danger"]:hover { background: rgba(255, 90, 110, 60); }
+
+    QMenu { background: #141B2E; color: #E9EDF2; border: 1px solid #303A5C; border-radius: 8px; padding: 4px; }
+    QMenu::item { padding: 6px 18px; border-radius: 6px; }
+    QMenu::item:selected { background: rgba(108, 123, 255, 90); }
+
+    QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+    QScrollBar::handle:vertical { background: rgba(108, 123, 255, 110); border-radius: 4px; min-height: 30px; }
+    QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+    QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+    """
+
     # ── 界面构建 ─────────────────────────────────────────────
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card = QFrame()
+        card.setObjectName("glassCard")
+        outer.addWidget(card)
 
-        # 标题
-        title = QLabel("⏰ 闹钟&提醒")
-        title.setFont(QFont("Microsoft YaHei UI", 16, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #5060DD;")
-        layout.addWidget(title)
+        layout = QVBoxLayout(card)
+        layout.setSpacing(10)
+        layout.setContentsMargins(18, 14, 18, 14)
+
+        # 标题区
+        title_row = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title = QLabel("⏰ 闹钟与提醒")
+        title.setObjectName("glassTitle")
+        title_col.addWidget(title)
+        subtitle = QLabel("定时响铃 · 倒计时 · 重复提醒 · 待办清单 · 自动化任务")
+        subtitle.setObjectName("glassSubtitle")
+        title_col.addWidget(subtitle)
+        title_row.addLayout(title_col)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
         # 标签页
         self._tab_widget = QTabWidget()
-        self._tab_widget.setStyleSheet("""
-            QTabWidget::pane {
-                border: 1px solid #D8D8EE;
-                border-radius: 8px;
-                background-color: rgba(30, 30, 45, 200);
-            }
-            QTabBar::tab {
-                padding: 6px 16px;
-                font-size: 11px;
-            }
-        """)
 
         # 闹钟标签页
         alarm_tab = self._build_alarm_tab()
@@ -100,19 +320,6 @@ class AlarmDialog(QDialog):
         # 添加闹钟表单
         form_group = QGroupBox("添加新闹钟")
         form_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        form_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-            }
-        """)
         form_layout = QVBoxLayout(form_group)
 
         # 闹钟名称
@@ -123,19 +330,14 @@ class AlarmDialog(QDialog):
         name_row.addWidget(self._alarm_name_edit)
         form_layout.addLayout(name_row)
 
-        # 时间设置
+        # 时间设置（QTimeEdit 滚轮/上下键直观选择）
         time_row = QHBoxLayout()
         time_row.addWidget(QLabel("时间："))
-        self._alarm_hour_spin = QSpinBox()
-        self._alarm_hour_spin.setRange(0, 23)
-        self._alarm_hour_spin.setSuffix(" 时")
-        self._alarm_hour_spin.setFixedWidth(80)
-        self._alarm_min_spin = QSpinBox()
-        self._alarm_min_spin.setRange(0, 59)
-        self._alarm_min_spin.setSuffix(" 分")
-        self._alarm_min_spin.setFixedWidth(80)
-        time_row.addWidget(self._alarm_hour_spin)
-        time_row.addWidget(self._alarm_min_spin)
+        self._alarm_time_edit = QTimeEdit()
+        self._alarm_time_edit.setDisplayFormat("HH:mm")
+        self._alarm_time_edit.setTime(QTime.currentTime())
+        self._alarm_time_edit.setFixedWidth(120)
+        time_row.addWidget(self._alarm_time_edit)
         time_row.addStretch()
         form_layout.addLayout(time_row)
 
@@ -150,17 +352,9 @@ class AlarmDialog(QDialog):
 
         # 添加按钮
         add_btn = QPushButton("➕ 添加闹钟")
-        add_btn.setFixedHeight(32)
+        add_btn.setFixedHeight(34)
         add_btn.setCursor(Qt.PointingHandCursor)
-        add_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6C7BFF;
-                color: white;
-                border-radius: 8px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #5A6AEE; }
-        """)
+        add_btn.setProperty("variant", "primary")
         add_btn.clicked.connect(self._on_add_alarm)
         form_layout.addWidget(add_btn)
 
@@ -169,37 +363,15 @@ class AlarmDialog(QDialog):
         # 闹钟列表
         list_group = QGroupBox("闹钟列表")
         list_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        list_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-            }
-        """)
         list_layout = QVBoxLayout(list_group)
 
         self._alarm_list = QListWidget()
-        self._alarm_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #E0E0E8;
-                border-radius: 6px;
-                background-color: rgba(30, 30, 45, 200);
-            }
-            QListWidget::item {
-                padding: 8px;
-            }
-        """)
         list_layout.addWidget(self._alarm_list)
 
         # 操作按钮行
         alarm_btn_row = QHBoxLayout()
-        self._alarm_delete_btn = QPushButton("删除选中")
+        self._alarm_delete_btn = QPushButton("🗑 删除选中")
+        self._alarm_delete_btn.setProperty("variant", "danger")
         self._alarm_delete_btn.setCursor(Qt.PointingHandCursor)
         self._alarm_delete_btn.clicked.connect(self._on_delete_alarm)
         self._alarm_toggle_btn = QPushButton("启用/禁用")
@@ -224,26 +396,17 @@ class AlarmDialog(QDialog):
         self._dynamic_countdown_label = QLabel("")
         self._dynamic_countdown_label.setFont(QFont("Consolas", 28, QFont.Bold))
         self._dynamic_countdown_label.setAlignment(Qt.AlignCenter)
-        self._dynamic_countdown_label.setStyleSheet("color: #FF6B6B; padding: 15px; background-color: rgba(255, 255, 255, 150); border-radius: 12px;")
+        self._dynamic_countdown_label.setStyleSheet(
+            "color: #7C8BFF; padding: 15px;"
+            " background-color: rgba(28, 38, 66, 130);"
+            " border: 1px solid rgba(108, 123, 255, 90); border-radius: 12px;"
+        )
         self._dynamic_countdown_label.hide()
         layout.addWidget(self._dynamic_countdown_label)
 
         # 添加倒计时表单
         form_group = QGroupBox("开始倒计时")
         form_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        form_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-            }
-        """)
         form_layout = QVBoxLayout(form_group)
 
         # 倒计时名称
@@ -277,17 +440,9 @@ class AlarmDialog(QDialog):
 
         # 开始按钮
         start_btn = QPushButton("▶ 开始倒计时")
-        start_btn.setFixedHeight(32)
+        start_btn.setFixedHeight(34)
         start_btn.setCursor(Qt.PointingHandCursor)
-        start_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #34C759;
-                color: white;
-                border-radius: 8px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #2DA84D; }
-        """)
+        start_btn.setProperty("variant", "success")
         start_btn.clicked.connect(self._on_start_countdown)
         form_layout.addWidget(start_btn)
 
@@ -296,47 +451,15 @@ class AlarmDialog(QDialog):
         # 运行中倒计时列表
         running_group = QGroupBox("运行中的倒计时")
         running_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        running_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding-top: 8px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-            }
-        """)
         running_layout = QVBoxLayout(running_group)
 
         self._countdown_list = QListWidget()
-        self._countdown_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #E0E0E8;
-                border-radius: 6px;
-                background-color: rgba(30, 30, 45, 200);
-            }
-            QListWidget::item {
-                padding: 8px;
-            }
-        """)
         running_layout.addWidget(self._countdown_list)
 
         # 取消按钮
         cancel_btn = QPushButton("✖ 取消选中")
-        cancel_btn.setFixedHeight(32)
+        cancel_btn.setProperty("variant", "warning")
         cancel_btn.setCursor(Qt.PointingHandCursor)
-        cancel_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9500;
-                color: white;
-                border-radius: 8px;
-                border: none;
-            }
-            QPushButton:hover { background-color: #E08600; }
-        """)
         cancel_btn.clicked.connect(self._on_cancel_countdown)
         running_layout.addWidget(cancel_btn)
 
@@ -410,10 +533,7 @@ class AlarmDialog(QDialog):
             QMessageBox.warning(self, "提示", "请输入闹钟名称")
             return
 
-        hour = self._alarm_hour_spin.value()
-        minute = self._alarm_min_spin.value()
-        time_str = f"{hour:02d}:{minute:02d}"
-
+        time_str = self._alarm_time_edit.time().toString("HH:mm")
         repeat_text = self._alarm_repeat_combo.currentText()
         repeat = REPEAT_VALUES.get(repeat_text, "once")
 
@@ -527,6 +647,8 @@ class AlarmDialog(QDialog):
         add_layout.addWidget(self._rem_rule_combo)
 
         add_btn = QPushButton("添加")
+        add_btn.setProperty("variant", "primary")
+        add_btn.setCursor(Qt.PointingHandCursor)
         add_btn.clicked.connect(self._add_reminder)
         add_layout.addWidget(add_btn)
         layout.addLayout(add_layout)
@@ -623,23 +745,20 @@ class AlarmDialog(QDialog):
         self._todo_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._todo_list.customContextMenuRequested.connect(self._todo_context_menu)
         self._todo_list.setAlternatingRowColors(True)
-        self._todo_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #E0E0E8;
-                border-radius: 6px;
-                background-color: rgba(30, 30, 45, 200);
-            }
-            QListWidget::item {
-                padding: 4px;
-            }
-        """)
+        self._todo_list.setStyleSheet(
+            "QListWidget::item { padding: 4px; border-radius: 6px; }"
+            "QListWidget::alternating-background-color: rgba(28, 38, 66, 90);"
+        )
         layout.addWidget(self._todo_list)
 
         # 按钮行
         btn_layout = QHBoxLayout()
         add_btn = QPushButton("➕ 添加待办")
+        add_btn.setProperty("variant", "primary")
+        add_btn.setCursor(Qt.PointingHandCursor)
         add_btn.clicked.connect(self._todo_add)
         del_btn = QPushButton("🗑️ 删除")
+        del_btn.setProperty("variant", "danger")
         del_btn.clicked.connect(self._todo_delete)
         complete_btn = QPushButton("✔️ 完成/重开")
         complete_btn.clicked.connect(self._todo_toggle_complete)
@@ -653,7 +772,7 @@ class AlarmDialog(QDialog):
         from config import get_todo_auto_confirm, save_todo_auto_confirm
         self._todo_confirm_check = QCheckBox("自动添加待办时询问我")
         self._todo_confirm_check.setChecked(get_todo_auto_confirm())
-        self._todo_confirm_check.setStyleSheet("font-size: 12px; color: #888; margin-top: 4px;")
+        self._todo_confirm_check.setStyleSheet("font-size: 12px; color: #8FA0C0; margin-top: 4px; background: transparent;")
         self._todo_confirm_check.toggled.connect(
             lambda checked: save_todo_auto_confirm(checked)
         )
@@ -662,7 +781,7 @@ class AlarmDialog(QDialog):
         if self._todo_manager is None:
             empty_label = QLabel("待办功能不可用")
             empty_label.setAlignment(Qt.AlignCenter)
-            empty_label.setStyleSheet("color: #A0522D; padding: 40px;")
+            empty_label.setStyleSheet("color: #FF8A9B; padding: 40px; background: transparent;")
             layout.addWidget(empty_label)
 
         return tab
@@ -889,19 +1008,12 @@ class AlarmDialog(QDialog):
 
         hint = QLabel("🤖 莲心可根据自然语言指令自动执行定时任务，如「每天14:00清理回收站」")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #6C7BFF; font-size: 12px; padding: 4px;")
+        hint.setStyleSheet("color: #8ED6E8; font-size: 12px; padding: 4px; background: transparent;")
         layout.addWidget(hint)
 
         # 添加任务表单
         form_group = QGroupBox("添加自动化任务")
         form_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        form_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE; border-radius: 8px;
-                margin-top: 8px; padding-top: 8px;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-        """)
         form_layout = QVBoxLayout(form_group)
 
         name_row = QHBoxLayout()
@@ -945,12 +1057,9 @@ class AlarmDialog(QDialog):
         form_layout.addLayout(missed_row)
 
         add_btn = QPushButton("➕ 添加任务")
-        add_btn.setFixedHeight(32)
+        add_btn.setFixedHeight(34)
         add_btn.setCursor(Qt.PointingHandCursor)
-        add_btn.setStyleSheet("""
-            QPushButton { background-color: #6C7BFF; color: white; border-radius: 8px; border: none; }
-            QPushButton:hover { background-color: #5A6AEE; }
-        """)
+        add_btn.setProperty("variant", "primary")
         add_btn.clicked.connect(self._on_add_auto_task)
         form_layout.addWidget(add_btn)
 
@@ -959,23 +1068,9 @@ class AlarmDialog(QDialog):
         # 任务列表
         list_group = QGroupBox("自动化任务列表")
         list_group.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        list_group.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #D8D8EE; border-radius: 8px;
-                margin-top: 8px; padding-top: 8px;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-        """)
         list_layout = QVBoxLayout(list_group)
 
         self._auto_task_list = QListWidget()
-        self._auto_task_list.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #E0E0E8; border-radius: 6px;
-                background-color: rgba(30, 30, 45, 200);
-            }
-            QListWidget::item { padding: 8px; }
-        """)
         self._auto_task_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._auto_task_list.customContextMenuRequested.connect(self._auto_context_menu)
         list_layout.addWidget(self._auto_task_list)
