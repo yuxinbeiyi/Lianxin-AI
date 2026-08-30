@@ -13,6 +13,13 @@ from dataclasses import dataclass
 
 _QUOTE_MARKER_RE = re.compile(r"\n---\n我的回复[：:]")
 _QUOTE_PREFIX = "[引用回复]"
+
+# 视觉层注入的识图结果块。描述是给模型看的回答素材，不是用户指令；
+# 路由/权限层必须把它剥离，否则描述正文里的“ESP32”“调试”“物联网”
+# 等词汇会被误当成用户意图，诱发无关工具调用。
+_IMAGE_RESULT_MARKER = "[用户发了一张图片，视觉分析结果如下]"
+_IMAGE_FAILURE_MARKER = "[图片分析失败]"
+_IMAGE_RESULT_END = "[图片描述结束]"
 _ACK_RE = re.compile(
     r"(?:看过|刷到过|看过了|知道了|了解了|收到|谢谢(?:推荐|分享|提醒)?|"
     r"不用了|不必了|已经看过|见过了|听过了|了解啦|知道啦)",
@@ -38,6 +45,9 @@ class RequestContext:
     quoted_text: str = ""
     is_quote_reply: bool = False
     quote_sender: str = ""
+    image_descriptions: tuple[str, ...] = ()
+    non_image_text: str = ""
+    has_image_blocks: bool = False
 
     @property
     def is_quote_ack(self) -> bool:
@@ -50,7 +60,17 @@ class RequestContext:
         引用内容默认完全隔离；只有当前回复明确要求操作“这个链接/页面”
         时，才把引用中的 URL 作为候选参数带入路由。引用中的其他关键词
         （例如 B 站、旧项目名）永远不会成为本轮能力信号。
+
+        识图结果块同样完全隔离：路由只能看到图片之外的用户配文，
+        描述正文（含其中出现的 ESP32/调试/物联网等词）不参与意图判断。
+        图片与引用同时出现时，剥离后的文本会再做一次引用隔离。
         """
+        if self.has_image_blocks:
+            base = self.non_image_text
+            if _QUOTE_PREFIX in base:
+                # 递归深度为 1：剥离后的文本不含识图块标记，不会再进本分支。
+                return parse_request_context(base).routing_text.strip()
+            return base.strip()
         if not self.is_quote_reply:
             return self.raw_text.strip()
         active = self.active_text.strip()
@@ -63,20 +83,77 @@ class RequestContext:
         return active
 
 
+def extract_image_blocks(raw_text: str) -> tuple[str, tuple[str, ...]]:
+    """把识图结果块从消息文本中剥离。
+
+    返回 ``(剥离后的文本, 各图片描述)``。消息由若干 ``[用户发了一张图片，
+    视觉分析结果如下]\\n<描述>`` 块加用户配文以空行拼接而成；新格式的
+    描述以 ``[图片描述结束]`` 收尾，可精确定位。旧格式没有结束标记，
+    按“块吃到消息末尾”处理——此时路由只保留块前文本，宁可少路由
+    也不能把描述正文当用户意图。``[图片分析失败]`` 是单行块，同样剥离。
+    """
+    raw = str(raw_text or "")
+    if _IMAGE_RESULT_MARKER not in raw and _IMAGE_FAILURE_MARKER not in raw:
+        return raw, ()
+
+    descriptions: list[str] = []
+    kept_parts: list[str] = []
+    cursor = 0
+    while cursor < len(raw):
+        result_at = raw.find(_IMAGE_RESULT_MARKER, cursor)
+        failure_at = raw.find(_IMAGE_FAILURE_MARKER, cursor)
+        starts = [pos for pos in (result_at, failure_at) if pos >= 0]
+        if not starts:
+            kept_parts.append(raw[cursor:])
+            break
+        start = min(starts)
+        kept_parts.append(raw[cursor:start])
+        if failure_at == start:
+            line_end = raw.find("\n", start)
+            cursor = len(raw) if line_end < 0 else line_end + 1
+            continue
+        body_start = start + len(_IMAGE_RESULT_MARKER)
+        if raw.startswith("\r\n", body_start):
+            body_start += 2
+        elif raw.startswith("\n", body_start):
+            body_start += 1
+        end = raw.find(_IMAGE_RESULT_END, body_start)
+        if end < 0:
+            descriptions.append(raw[body_start:].strip())
+            cursor = len(raw)
+        else:
+            descriptions.append(raw[body_start:end].strip("\r\n").strip())
+            cursor = end + len(_IMAGE_RESULT_END)
+
+    remainder = "\n\n".join(part for part in kept_parts if part.strip())
+    return remainder, tuple(descriptions)
+
+
 def parse_request_context(raw_text: str) -> RequestContext:
     """解析 GUI/桥接层生成的结构化引用文本。
 
     只有同时存在引用前缀和 ``我的回复：`` 分隔符时才拆分，普通用户消息
     中单独出现这些词不会被误处理。
+
+    识图块在进入解析前先被剥离并存入 ``image_descriptions``；
+    ``active_text``/``raw_text`` 保持完整（模型回答仍依赖描述正文），
+    只有 ``routing_text`` 使用剥离后的 ``non_image_text``。
     """
     raw = str(raw_text or "")
+    non_image_text, image_descriptions = extract_image_blocks(raw)
     prefix_at = raw.find(_QUOTE_PREFIX)
     marker_match = (
         _QUOTE_MARKER_RE.search(raw, prefix_at + len(_QUOTE_PREFIX))
         if prefix_at >= 0 else None
     )
     if prefix_at < 0 or marker_match is None:
-        return RequestContext(raw_text=raw, active_text=raw.strip())
+        return RequestContext(
+            raw_text=raw,
+            active_text=raw.strip(),
+            image_descriptions=image_descriptions,
+            non_image_text=non_image_text,
+            has_image_blocks=non_image_text != raw,
+        )
 
     quoted_start = prefix_at + len(_QUOTE_PREFIX)
     quoted_block = raw[quoted_start:marker_match.start()].strip()
@@ -92,6 +169,9 @@ def parse_request_context(raw_text: str) -> RequestContext:
         quoted_text=quoted_block,
         is_quote_reply=True,
         quote_sender=sender,
+        image_descriptions=image_descriptions,
+        non_image_text=non_image_text,
+        has_image_blocks=non_image_text != raw,
     )
 
 

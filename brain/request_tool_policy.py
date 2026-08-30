@@ -89,12 +89,18 @@ def _normalized_request_text(text: str) -> str:
     return parse_request_context(text).routing_text
 
 
+# “联网”需要词边界保护：描述性文本中的“物联网”“互联网”包含“联网”
+# 二字，曾把普通图片描述误判成联网配置变更请求，导致回复被守卫替换。
+_NETWORK_CONTEXT_RE = re.compile(
+    r"(?<![物互])联网|网络工具|搜索工具|抓取工具|知乎搜索|tavily|firecrawl"
+)
+
+
 def network_change_requested(text: str) -> bool:
     value = _normalized_request_text(text).lower()
-    has_context = any(token in value for token in (
-        "联网", "网络工具", "搜索工具", "抓取工具", "知乎搜索", "tavily", "firecrawl",
-    ))
-    return has_context and any(token in value for token in _EXPLICIT_CHANGE_WORDS)
+    if not _NETWORK_CONTEXT_RE.search(value):
+        return False
+    return any(token in value for token in _EXPLICIT_CHANGE_WORDS)
 
 
 def requires_verified_web_content(text: str) -> bool:

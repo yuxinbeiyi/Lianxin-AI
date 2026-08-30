@@ -311,6 +311,23 @@ def _looks_like_action(text: str) -> bool:
     ))
 
 
+def _image_caption_requests_action(text: str) -> bool:
+    """判断图片消息的配文是否明确要求了需要工具的动作。
+
+    只有显式动作（帮我/请你…）或点名网络/浏览器能力/带 URL 时才保留
+    任务路由；单纯描述性配文（“这就是我的电路板”“看看这张图”）一律
+    走纯文本图片回应。
+    """
+    return bool(
+        _looks_like_action(text)
+        or _DIRECT_WEB_SEARCH_RE.search(text)
+        or _DIRECT_WEB_FETCH_RE.search(text)
+        or _BROWSER_INTERACTION_RE.search(text)
+        or _WEB_RESEARCH_RE.search(text)
+        or _URL_RE.search(text)
+    )
+
+
 def _recent_text(messages: Iterable[dict]) -> str:
     """Return a bounded transcript used only for follow-up intent detection."""
     return "\n".join(
@@ -373,6 +390,17 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             RequestMode.CHAT_LIGHT,
             frozenset(),
             "引用回复确认型消息，不启动工具",
+        )
+
+    # 识图消息的默认意图是“回应图片”。视觉描述已作为回答素材注入消息
+    # （routing_text 中已剥离），配文没有明确操作意图时不进入任务模式，
+    # 避免描述/配文里的设备词汇诱发无关工具调用（如发电路板照片却去查
+    # shoulder_status）。配文明确要求动作时仍照常进入下方能力扫描。
+    if request_context.has_image_blocks and not _image_caption_requests_action(text):
+        return RequestRoute(
+            RequestMode.CHAT_LIGHT,
+            frozenset(),
+            "图片回应：基于已注入的视觉描述作答，不启动工具",
         )
 
     capabilities: set[str] = set()
@@ -484,6 +512,14 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if _SOCIAL_RE.fullmatch(text) or (len(text) <= 18 and not _looks_like_action(text)):
         return RequestRoute(RequestMode.CHAT_LIGHT, frozenset(), "短问候或日常交流")
     if _looks_like_action(text) and not _NEGATED_SEARCH_RE.search(text):
+        if request_context.has_image_blocks:
+            # 泛化的“帮我看看”没有指向具体能力，图片回应优先用已注入
+            # 的视觉描述作答，而不是进入能力发现流程。
+            return RequestRoute(
+                RequestMode.CHAT_LIGHT,
+                frozenset(),
+                "图片回应：基于已注入的视觉描述作答，不启动工具",
+            )
         return RequestRoute(RequestMode.TASK_DISCOVERY, frozenset(), "存在操作意图但领域不确定")
     return RequestRoute(RequestMode.CHAT_LIGHT, frozenset(), "无外部能力强信号，先按纯文本交流")
 

@@ -2828,7 +2828,7 @@ class QQBridgeWorker(QThread):
 
         parts = []
         for d in descriptions:
-            parts.append(f"[用户发了一张图片，视觉分析结果如下]\n{d}")
+            parts.append(f"[用户发了一张图片，视觉分析结果如下]\n{d}\n[图片描述结束]")
         if text.strip():
             parts.append(text)
         return "\n\n".join(parts)

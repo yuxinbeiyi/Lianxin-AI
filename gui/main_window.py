@@ -1461,7 +1461,7 @@ class MainWindow(QMainWindow):
         context_parts = []
         for i, (_, _) in enumerate(self._staged_bubbles):
             if i in self._staged_image_results:
-                context_parts.append(f"[用户发了一张图片，视觉分析结果如下]\n{self._staged_image_results[i]}")
+                context_parts.append(f"[用户发了一张图片，视觉分析结果如下]\n{self._staged_image_results[i]}\n[图片描述结束]")
             elif i in self._staged_image_errors:
                 context_parts.append(f"[图片分析失败] {self._staged_image_errors[i]}")
 
@@ -3651,7 +3651,7 @@ class MainWindow(QMainWindow):
             print(f"[成就记录] 图片事件记录失败: {exc}")
         self._schedule_achievement_unlock_check()
 
-        context = f"[用户发了一张图片，视觉分析结果如下]\n{description}\n\n请根据你看到的内容自然地回应，描述你看到了什么。"
+        context = f"[用户发了一张图片，视觉分析结果如下]\n{description}\n[图片描述结束]\n\n请根据你看到的内容自然地回应，描述你看到了什么。"
         self._send_user_text_to_agent(context, skip_bubble=True)
 
     def _on_vision_error(self, err: str):
