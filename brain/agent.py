@@ -50,6 +50,7 @@ from brain.context_compressor import (
     merge_summaries_bounded,
     prune_stale_tool_outputs,
     select_history_window,
+    strip_textual_tool_protocol,
 )
 from pathlib import Path
 from brain.mcp import get_all_mcp_tool_definitions
@@ -2404,9 +2405,11 @@ class AgentCore:
         # 正向的。颜文字与含 ASCII 的技术注释不受影响。
         try:
             from brain.text_hygiene import strip_parenthetical_asides as _strip_asides
+            from brain.context_compressor import strip_textual_tool_protocol as _strip_protocol
             for _hist_msg in self.history:
                 if isinstance(_hist_msg, dict) and _hist_msg.get("role") == "assistant":
                     _hist_clean = _strip_asides(str(_hist_msg.get("content", "")))
+                    _hist_clean, _ = _strip_protocol(_hist_clean)
                     if _hist_clean != _hist_msg.get("content"):
                         _hist_msg["content"] = _hist_clean
         except Exception:
@@ -3513,23 +3516,48 @@ class AgentCore:
                     return "联网工具配置没有修改成功，因此我没有把它当成已停用或已调整；本轮后续搜索也已停止。"
 
                 if contains_textual_tool_protocol(content, has_real_tool_result=_has_real_tool_result):
-                    _text_protocol_retry_count += 1
-                    print(
-                        "[协议防泄漏] 检测到正文伪工具调用，已丢弃并请求安全收尾",
-                        flush=True,
+                    # 先剥离伪协议、尽量保留实质回答：工具结果往往已经拿到，
+                    # 全文丢弃会把"成功执行"变成"失败"。
+                    _protocol_scope = {
+                        item.get("function", {}).get("name", "") for item in all_tools
+                    } - {""}
+                    _cleaned_content, _stripped = strip_textual_tool_protocol(
+                        content, tool_names=_protocol_scope
                     )
-                    if _text_protocol_retry_count <= 1:
-                        # 纯文本工具调用不能当作最终回复；下一轮重新允许原生 tool_call。
-                        _force_text_response = False
-                        messages.append({
-                            "role": "system",
-                            "content": (
-                                "上一轮把工具写成了纯文本函数调用。请改用接口提供的原生工具调用获取真实结果，"
-                                "工具完成后再用自然语言回答；不要继续输出 function(...) 或 JSON 调用文本。"
-                            ),
-                        })
-                        continue
-                    return "这次没有成功执行所需工具，请稍后重试。"
+                    if (
+                        _stripped
+                        and len(_cleaned_content.strip()) >= 80
+                        and not contains_textual_tool_protocol(
+                            _cleaned_content, has_real_tool_result=True
+                        )
+                    ):
+                        print(
+                            f"[协议防泄漏] 已剥离正文伪工具调用"
+                            f"（{len(content)}字→{len(_cleaned_content)}字），采用清理后的回答",
+                            flush=True,
+                        )
+                        content = _cleaned_content
+                    else:
+                        _text_protocol_retry_count += 1
+                        print(
+                            f"[协议防泄漏] 检测到正文伪工具调用且无可保留正文，已丢弃"
+                            f"（第{_text_protocol_retry_count}次）。片段: {str(content or '')[:200]}",
+                            flush=True,
+                        )
+                        if _text_protocol_retry_count <= 1:
+                            # 纯文本工具调用不能当作最终回复；下一轮重新允许原生 tool_call。
+                            _force_text_response = False
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "工具调用已经执行完成，真实结果就在上文的工具消息里。"
+                                    "请直接基于已有结果用自然语言给出最终回答；正文中不得出现 "
+                                    "<tool_call>、<function>、<parameter> 或「调用 xxx(...)」等任何调用语法。"
+                                    "除非确有必要，不要再次调用工具。"
+                                ),
+                            })
+                            continue
+                        return "这次没有成功执行所需工具，请稍后重试。"
                 # 工具激活重试：只补充当前语义类别或模型明确点名的工具。
                 if (not self._use_local and not _full_tools_injected
                         and not any(t.get("function", {}).get("name") == "request_tools" for t in all_tools)
@@ -3655,6 +3683,8 @@ class AgentCore:
                     )
                     for tc in stream_tool_calls
                 ]
+                # 伪协议不进入上下文（历史里的伪调用文本是后续轮次的模仿示范）
+                content, _ = strip_textual_tool_protocol(content, tool_names=None)
                 fake_msg = {
                     "role": "assistant",
                     "content": content,
@@ -3693,6 +3723,7 @@ class AgentCore:
                         "content": (
                             "本轮搜索预算已经用完。下一轮禁止继续调用 web_search 或 github_search_repositories；"
                             "请去重已有来源、说明证据边界，并直接给出最终回答。"
+                            "正文中不得出现任何工具调用语法（如 <tool_call>、函数调用样式文本）。"
                         ),
                     })
 
@@ -3786,6 +3817,7 @@ class AgentCore:
                         "content": (
                             "检测到连续多轮返回相同结果，判定为死循环。"
                             "系统已强制关闭本轮工具调用能力（tool_choice=none），你无法再调用任何工具。请基于已有信息直接给出最终回答，不要尝试调用工具。"
+                            "正文中不得出现任何工具调用语法（如 <tool_call>、函数调用样式文本）。"
                         ),
                     })
 
@@ -3856,6 +3888,7 @@ class AgentCore:
                         "content": (
                             f"检测到{_breaker_reason}，判定为陷入循环。"
                             "下一轮你必须停止调用工具，基于已有信息直接给出最终回答。"
+                            "正文中不得出现任何工具调用语法（如 <tool_call>、函数调用样式文本）。"
                             f"{_breaker_hint}"
                         ),
                     })

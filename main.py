@@ -385,6 +385,22 @@ def main():
     else:
         window.show()
 
+    # ── Torch 预热：把懒加载的首卡顿挪到启动窗口期 ───────────────
+    # Windows 上 torch 必须在主线程导入（utils/torch_runtime 的约束），
+    # 与其让语音/记忆检索首次触发时冻结对话 7 秒，不如在窗口显示后
+    # 立刻预热一次；此后 sys.modules 已缓存，本轮不会再卡。
+    def _preload_torch_runtime():
+        try:
+            from utils.torch_runtime import ensure_ready
+            import time as _time
+            _started = _time.monotonic()
+            ensure_ready(timeout=120.0)
+            print(f"[预载] Torch 运行时就绪（{_time.monotonic() - _started:.1f}s）", flush=True)
+        except Exception as exc:
+            print(f"[预载] Torch 预热失败，将在首次使用时重试: {exc}", flush=True)
+
+    QTimer.singleShot(600, _preload_torch_runtime)
+
     # ── 非模态体检报告（事件循环启动后出现，不阻塞窗口）────────
     if _check_report and not autostart_mode:
         QTimer.singleShot(300, lambda r=_check_report: _show_check_dialog(window, r))

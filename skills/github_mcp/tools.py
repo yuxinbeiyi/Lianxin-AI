@@ -45,9 +45,41 @@ def github_search_repositories(args: dict) -> str:
     try:
         query = str(args.get("query", "")).strip()
         if not query or len(query) > 300: raise ValueError("query 长度无效")
-        result = get_mcp().search_repos(query, args.get("per_page", 10))
-        items = [{k: item.get(k) for k in ("name", "full_name", "description", "html_url", "language", "stargazers_count", "forks_count")} for item in result.get("items", [])]
-        return json.dumps({"note": _NOTICE, "results": items}, ensure_ascii=False)
+        per_page = args.get("per_page", 10)
+        mcp = get_mcp()
+
+        # GitHub 搜索是多词 AND 语义：模型常给出一长串同义词（如
+        # "AI companion virtual assistant chatbot open source"），逐词 AND
+        # 之后 0 结果。这里做降级重试：逐轮精简关键词直到拿到结果。
+        def _candidates(q: str) -> list[str]:
+            terms = [t for t in q.split() if t]
+            candidates = [q]
+            if len(terms) > 3:
+                candidates.append(" ".join(terms[:3]))
+            if len(terms) > 1:
+                candidates.append(" ".join(terms[:2]))
+            seen, unique = set(), []
+            for c in candidates:
+                if c not in seen:
+                    seen.add(c)
+                    unique.append(c)
+            return unique
+
+        items: list = []
+        used_query = query
+        attempts = 0
+        for candidate in _candidates(query):
+            attempts += 1
+            used_query = candidate
+            result = mcp.search_repos(candidate, per_page)
+            items = [{k: item.get(k) for k in ("name", "full_name", "description", "html_url", "language", "stargazers_count", "forks_count")} for item in result.get("items", [])]
+            if items:
+                break
+
+        payload = {"note": _NOTICE, "query_used": used_query, "results": items}
+        if attempts > 1:
+            payload["note"] = _NOTICE + f"（原始查询 0 结果，已自动精简为「{used_query}」重试）"
+        return json.dumps(payload, ensure_ascii=False)
     except Exception as exc: return _error(exc)
 
 

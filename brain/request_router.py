@@ -374,6 +374,14 @@ def _is_city_recall_for_weather(text: str, recent_messages: Iterable[dict]) -> b
     return bool(re.search(r"(?:天气|气温|温度|下雨|降水|预报)", _recent_text(recent_messages)))
 
 
+# 强任务词：消息里出现这些词时，“记得/回忆”更可能是祈使用法（如“记得附上链接”）
+# 或混合任务，不应劫持整条路由进入纯回忆模式。
+_STRONG_TASK_HINT_RE = re.compile(
+    r"(?:搜索|搜一?下|帮我搜|新闻|资讯|链接|网址|附上|天气|气温|截屏|打开|图片|文件"
+    r"|PPT|excel|表格|查一?下|帮我查|找一下)"
+)
+
+
 def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                      forced_tool: str | None = None,
                      session_state: ToolSessionState | None = None) -> RequestRoute:
@@ -411,7 +419,11 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                 frozenset({"memory_read", "weather"}),
                 "回忆地点并延续近期天气查询",
             )
-        return RequestRoute(RequestMode.CHAT_MEMORY, frozenset({"memory_read"}), "明确回忆历史")
+        # “记得附上链接”这类祈使用法或混合任务不劫持路由：落入下方能力扫描，
+        # 让搜索等真实需求拿到对应工具（扫描中会补 memory_read）。
+        # 仅纯回忆（无强任务词）才进入纯回忆路由。
+        if not _STRONG_TASK_HINT_RE.search(text):
+            return RequestRoute(RequestMode.CHAT_MEMORY, frozenset({"memory_read"}), "明确回忆历史")
     if re.search(r"(?:请|帮我|你要)?记住|保存到长期记忆|删掉.{0,8}记忆|修改.{0,8}记忆", text):
         return RequestRoute(RequestMode.TASK_DIRECT, frozenset({"memory_write"}), "明确修改长期记忆")
 
@@ -564,6 +576,11 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         if _mentioned_cap:
             capabilities.add(_mentioned_cap)
             reasons.append(f"点名工具 {_mentioned}")
+    # 混合任务里的回忆成分：“还记得…吗，帮我搜下…”这类消息在扫描时补上
+    # memory_read，让记忆工具与搜索工具同轮可用。
+    if re.search(r"(?:记得|还记得|回忆|之前说过|以前聊过|记忆|昨天.{0,4}说|前天.{0,4}说)", text):
+        capabilities.add("memory_read")
+        reasons.append("消息附带回忆或记忆检索需求")
     if any(token in lowered for token in (
         "坦克", "贪吃蛇", "虚拟世界", "地图标记", "食物", "标记的位置", "标记点", "前往标记", "到达标记",
         "左转", "右转", "急停", "取消任务",

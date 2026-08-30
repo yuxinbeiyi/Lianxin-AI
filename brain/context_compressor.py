@@ -226,9 +226,79 @@ def contains_textual_tool_protocol(content: Any, *, has_real_tool_result: bool =
         return True
     if "dsml" in lowered and ("tool_call" in lowered or "<｜" in text):
         return True
+    # DSML 序列化形态（含只有闭合标签的残片）：无论本轮是否已有工具结果都算泄漏
+    if _DSML_REGION_RE.search(text) or _DSML_TAG_RE.search(text) or _DSML_ORPHAN_RE.search(text):
+        return True
+    if _TOOL_TOKEN_RE.search(text):
+        return True
     if has_real_tool_result:
         return False
     return _TEXT_FUNCTION_CALL_RE.match(text) is not None
+
+
+# 伪工具调用的可剥离形态：成对 XML 块、流式截断的未闭合块、
+# DeepSeek 系网关的 DSML 序列化文本、整行「【调用 xxx(...)】」。
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<\s*(?:tool_call|function_call)\s*>.*?<\s*/\s*(?:tool_call|function_call)\s*>|"
+    r"<\s*(?:function|tool)\s*>.*?<\s*/\s*(?:function|tool)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_OPEN_TOOL_BLOCK_RE = re.compile(
+    r"<\s*(?:tool_call|function_call|function)\s*>.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+# DSML 形态：<｜DSML｜function_calls><｜DSML｜invoke name="...">…</｜DSML｜invoke></｜DSML｜function_calls>
+# 必须整区域删除（区域内只有调用结构，没有用户正文），只删标签前缀会留下孤儿残肢。
+_DSML_REGION_RE = re.compile(
+    r"<\s*/?\s*｜DSML｜\s*function_calls\s*>.*?(?:<\s*/?\s*｜DSML｜\s*function_calls\s*>|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_TAG_RE = re.compile(r"<\s*/?\s*｜DSML｜[^>\n]*>")
+_DSML_ORPHAN_RE = re.compile(
+    r"^\s*(?:function_calls?|invoke|parameter)\b[^>\n]*>",
+    re.MULTILINE | re.IGNORECASE,
+)
+_TOOL_TOKEN_RE = re.compile(r"<\s*[｜|]\s*tool[^>\n]{0,30}[｜|]\s*>?")
+_NAMED_CALL_LINE_RE = re.compile(
+    r"^\s*【?\s*(?:调用|执行|工具调用)[^】()\n]{0,60}\([^)\n]{0,400}\)\s*】?\s*[：:]?\s*$",
+    re.MULTILINE,
+)
+
+
+def strip_textual_tool_protocol(content: Any, *, tool_names=None) -> tuple[str, bool]:
+    """剥离正文中的伪工具调用标记，尽量保留正常回答文本。
+
+    返回 ``(清理后的文本, 是否发生了剥离)``。提供 ``tool_names``（已知工具
+    名集合）时，成对标签块只有在其内容引用了这些工具名时才剥离，避免误伤
+    正常讨论工具调用语法的回答；传 ``None`` 则无条件剥离（用于历史洗白）。
+    """
+    text = _content_text(content)
+    if not text:
+        return text, False
+
+    def _drop_block(block: str) -> bool:
+        if not tool_names:
+            return True
+        return not any(name and name in block for name in tool_names)
+
+    cleaned = _DSML_REGION_RE.sub("", text)
+    cleaned = _DSML_TAG_RE.sub("", cleaned)
+    cleaned = _DSML_ORPHAN_RE.sub("", cleaned)
+    cleaned = _TOOL_TOKEN_RE.sub("", cleaned)
+    cleaned = _TOOL_CALL_BLOCK_RE.sub(
+        lambda m: "" if _drop_block(m.group(0)) else m.group(0), cleaned
+    )
+    cleaned = _OPEN_TOOL_BLOCK_RE.sub(
+        lambda m: "" if _drop_block(m.group(0)) else m.group(0), cleaned
+    )
+    cleaned = _NAMED_CALL_LINE_RE.sub("", cleaned)
+    # 整体就是一条函数调用文本 → 没有可保留的正文
+    if _TEXT_FUNCTION_CALL_RE.match(cleaned.strip()):
+        return "", True
+    if cleaned != text:
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, True
+    return cleaned, False
 
 
 _MEMORY_BLOCK_RE = re.compile(
