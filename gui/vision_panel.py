@@ -20,7 +20,7 @@ class VisionPanel(QDialog):
 
     # 视觉事件信号（发送给主界面）
     user_entered = pyqtSignal()
-    user_returned = pyqtSignal()
+    user_returned = pyqtSignal(float)  # 携带失陪秒数
     user_left = pyqtSignal()
     long_work = pyqtSignal()
     stranger_detected = pyqtSignal()
@@ -198,7 +198,6 @@ class VisionPanel(QDialog):
         self.btn_start = QPushButton("启动")
         self.btn_stop = QPushButton("停止")
         self.btn_enroll = QPushButton("录入本人")
-        self.btn_add_friend = QPushButton("录入朋友")
         self.btn_clear = QPushButton("清空日志")
         self.btn_face_tracking = QPushButton("人脸追踪")
         self.btn_face_tracking.setCheckable(True)
@@ -214,7 +213,6 @@ class VisionPanel(QDialog):
         self.btn_start.clicked.connect(self._start_vision)
         self.btn_stop.clicked.connect(self._stop_vision)
         self.btn_enroll.clicked.connect(self._enroll_self)
-        self.btn_add_friend.clicked.connect(self._enroll_friend)
         self.btn_clear.clicked.connect(self.log_text.clear)
         self.btn_face_tracking.clicked.connect(self._toggle_face_tracking)
         self.btn_face_tracking_sim.clicked.connect(self._toggle_face_tracking_sim)
@@ -223,7 +221,6 @@ class VisionPanel(QDialog):
         btn_layout.addWidget(self.btn_start)
         btn_layout.addWidget(self.btn_stop)
         btn_layout.addWidget(self.btn_enroll)
-        btn_layout.addWidget(self.btn_add_friend)
         btn_layout.addWidget(self.btn_face_tracking)
         btn_layout.addWidget(self.btn_face_tracking_sim)
         btn_layout.addWidget(self.btn_oled)
@@ -608,25 +605,6 @@ class VisionPanel(QDialog):
         self._worker.begin_face_enrollment(name.strip())
         self._append_log(f"📸 开始录入本人：{name.strip()}（请正对摄像头，保持15帧）")
 
-    def _enroll_friend(self):
-        """录入朋友（多人识别）"""
-        if self._worker is None:
-            self._append_log("❌ 请先启动视觉感知")
-            return
-
-        name, ok = QInputDialog.getText(self, "录入朋友", "请输入朋友的名字（例如：小明）：")
-        if not ok or not name.strip():
-            return
-
-        # 确保人脸识别已启用
-        if not self.check_face.isChecked():
-            self.check_face.setChecked(True)
-            self._worker.set_feature_enabled("face", True)
-
-        # TODO: 实现多人识别录入（当前 VisionWorker 只支持单人）
-        self._append_log(f"📸 开始录入朋友：{name.strip()}（多人识别功能开发中）")
-        QMessageBox.information(self, "功能开发中", "多人识别功能正在开发中，敬请期待！")
-
     @pyqtSlot(object)
     def _on_frame_ready(self, frame):
         """接收并显示视频帧"""
@@ -689,8 +667,12 @@ class VisionPanel(QDialog):
         # 触发对应的信号，发送给主界面
         if event == "USER_ENTER":
             self.user_entered.emit()
-        elif event == "USER_RETURN":
-            self.user_returned.emit()
+        elif event.startswith("USER_RETURN"):
+            try:
+                absence_seconds = float(event.split("|", 1)[1])
+            except (IndexError, ValueError):
+                absence_seconds = 0.0
+            self.user_returned.emit(absence_seconds)
         elif event == "USER_LEAVE":
             self.user_left.emit()
         elif event == "LONG_WORK":

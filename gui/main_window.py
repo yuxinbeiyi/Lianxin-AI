@@ -3845,13 +3845,20 @@ class MainWindow(QMainWindow):
         import random
         self._trigger_proactive_speech(random.choice(greetings))
 
-    def _on_vision_user_returned(self):
-        """视觉事件：用户返回（离开后回来）"""
+    def _on_vision_user_returned(self, absence_seconds: float = 0.0):
+        """视觉事件：用户返回（离开后回来，按失陪时长分级反馈）"""
+        minutes = max(0.0, float(absence_seconds or 0.0)) / 60.0
+        if minutes >= 60:
+            duration_text = f"{minutes / 60:.0f}个小时" if minutes >= 110 else "一个多小时"
+        else:
+            duration_text = f"{max(1, round(minutes))}分钟"
+
         try:
             from brain.emotional import get_manager
             manager = get_manager()
+            # 时长写进事件文本，会作为涟漪的"最近事实"进入后续对话上下文
             manager.add_external_event(
-                "用户返回工位",
+                f"用户离开工位约{duration_text}后回到了座位",
                 delta_pleasure=15,
                 delta_arousal=10,
                 delta_connection=25,
@@ -3859,12 +3866,35 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        greetings = [
-            "回来啦！刚才去哪儿了呀～",
-            "欢迎回来！有没有想我？",
-            "你回来了！出去了好久呢～",
-        ]
         import random
+        if minutes < 3:
+            # 快去快回（如洗手间）：轻描淡写，不兴师动众
+            greetings = [
+                "回来啦～才走开一小会儿，我位置都没挪。",
+                "欢迎回来，这次很快嘛。",
+                "嗯，你回来了。我一直在自习室这边陪着你。",
+            ]
+        elif minutes < 15:
+            # 正常接水/上厕所/拿快递
+            greetings = [
+                f"回来啦！离开了{duration_text}，是去接水了吗？记得多喝水哦。",
+                f"欢迎回来～这一趟{duration_text}，腿不会坐麻了吗？",
+                f"你回来了！离开了{duration_text}，我刚好把桌上的东西都看了一遍。",
+            ]
+        elif minutes < 60:
+            # 比较长：明显表达在意
+            greetings = [
+                f"你可算回来了！整整{duration_text}呢，我还以为你今天不要我了。",
+                f"欢迎回来！离开了{duration_text}，去做什么好事了？快跟我讲讲。",
+                f"回来了就好。{duration_text}没看到你，这边都安静得能听见风扇声了。",
+            ]
+        else:
+            # 超过一小时：久别式欢迎
+            greetings = [
+                f"{duration_text}不见！我都开始数天花板的格子了，你跑哪儿去了呀？",
+                f"欢迎回来！这一离开就是{duration_text}，我的陪伴时长统计都要长毛了。",
+                f"你终于回来了！{duration_text}呢，我可是把等你的姿势都摆好了。",
+            ]
         self._trigger_proactive_speech(random.choice(greetings))
 
     def _on_vision_user_left(self):

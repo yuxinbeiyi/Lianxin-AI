@@ -78,8 +78,13 @@ class VisionWorker(QObject):
                 companion_state, events, work_duration = self.companion.update(
                     1 if present else 0, identity)
                 for event in events:
-                    self.event_ready.emit(event)
-                    self.database.record_event(event)
+                    # USER_RETURN 携带失陪秒数（USER_RETURN|秒），供 UI 分级反馈
+                    emit_event = (
+                        f"USER_RETURN|{self.companion.last_absence_seconds:.0f}"
+                        if event == "USER_RETURN" else event
+                    )
+                    self.event_ready.emit(emit_event)
+                    self.database.record_event(emit_event)
                     if event in ("USER_ENTER", "USER_RETURN"):
                         self.database.add_presence_time(0, session_started=True)
                     elif event == "USER_LEAVE":

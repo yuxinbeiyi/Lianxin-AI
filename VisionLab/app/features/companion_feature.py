@@ -16,6 +16,9 @@ class CompanionFeature:
         self._work_started = None
         self._stranger_since = None
         self._long_work_sent = False
+        # 失陪时长跟踪：离开期间持续累计，USER_RETURN 时读取
+        self._pending_absence = 0.0
+        self.last_absence_seconds = 0.0
 
     def reset(self):
         self.state = "NO_PERSON"
@@ -24,6 +27,8 @@ class CompanionFeature:
         self._work_started = None
         self._stranger_since = None
         self._long_work_sent = False
+        self._pending_absence = 0.0
+        self.last_absence_seconds = 0.0
 
     def update(self, face_count, identity="UNKNOWN", now=None):
         if now is None:
@@ -45,14 +50,17 @@ class CompanionFeature:
             present_for = now - self._present_since
             if self.state == "NO_PERSON" and present_for >= self.PRESENCE_CONFIRM_SECONDS:
                 self.state = "PERSON_PRESENT"
+                self.last_absence_seconds = 0.0
                 events.append("USER_ENTER")
             elif self.state == "AWAY" and present_for >= self.PRESENCE_CONFIRM_SECONDS:
                 self.state = "PERSON_PRESENT"
+                self.last_absence_seconds = self._pending_absence
                 events.append("USER_RETURN")
         else:
             self._present_since = None
             if self._absent_since is None:
                 self._absent_since = now
+            self._pending_absence = max(0.0, now - self._absent_since)
             if self.state == "PERSON_PRESENT" and now - self._absent_since >= self.ABSENCE_SECONDS:
                 self.state = "AWAY"
                 events.append("USER_LEAVE")
