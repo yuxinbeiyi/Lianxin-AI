@@ -224,15 +224,19 @@ class MainWindow(QMainWindow):
         self._auto_task_scheduler = AutoTaskScheduler(self)
         self._auto_task_scheduler.task_due.connect(self._on_auto_task_due)
         self._auto_task_scheduler.task_missed.connect(self._on_auto_task_missed)
+        self._auto_task_scheduler.todo_due.connect(self._on_todo_due)
         self._auto_task_scheduler.start()
         self._auto_task_parsed_signal.connect(self._on_auto_task_parsed)
         self._auto_task_done_signal.connect(self._on_auto_task_completed)
         # ── 待办清单模块（数据层，UI 无关部分）──────────────
-        self._todo_manager = TodoManager()
+        # 使用进程级单例：GUI、LLM 工具线程、调度线程共用同一份数据。
+        from utils.todo_manager import get_todo_manager
+        self._todo_manager = get_todo_manager()
         # 将同一实例注入工具层，确保 AI 工具和 UI 共享同一个 TodoManager，
         # 避免 tools.py 懒创建独立实例导致观察者无法收到通知。
         import brain.tools as _brain_tools
         _brain_tools._todo_manager = self._todo_manager
+        self._reminder_banners: dict = {}  # todo_id -> ReminderBanner
 
         # ── 待机模式（文件中转模式）──────────────────────────────────────────
         self._standby_state = "IDLE"              # IDLE / STANDBY
@@ -305,11 +309,8 @@ class MainWindow(QMainWindow):
         self._diary_timer = QTimer(self)
         self._diary_timer.timeout.connect(self._on_diary_timer_timeout)
         self._setup_diary_timer()
-        # ── 待办提醒定时器（须在 _build_ui 后，_chat_widget 已就绪）──
-        self._todo_reminder_timer = QTimer(self)
-        self._todo_reminder_timer.timeout.connect(self._check_overdue_todos)
-        self._todo_reminder_timer.start(30 * 60 * 1000)  # 30分钟
-        self._reminded_todo_ids = set()  # 今日已提醒过的待办ID，防止重复提醒
+        # ── 待办提醒：由 AutoTaskScheduler 的 todo_due 信号准点触发 ──
+        # （旧版 30 分钟过期轮询已移除；横幅交互见 _on_todo_due）
 
         # ── 初始化情感系统（涟漪） ─────────────────────────────
         try:
@@ -334,7 +335,9 @@ class MainWindow(QMainWindow):
 
 
         # ── ReminderManager（供 DutyScheduler 和 reminder_dialog 使用）
-        self.reminder_manager = ReminderManager()
+        # 进程级单例：GUI 面板、DutyScheduler、LLM set_reminder 工具共享数据。
+        from utils.reminder_manager import get_reminder_manager
+        self.reminder_manager = get_reminder_manager()
 
         # ── 统一后台职责调度器（替代 3 个独立 QTimer）─────────
         from utils.duty_scheduler import (
@@ -441,8 +444,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._window_experience.apply_startup_state(autostart=self._autostart_mode)
-        # 首次提醒可能触发 TTS，必须等动作路由器与窗口体验完成初始化。
-        QTimer.singleShot(0, self._check_overdue_todos)
+        # 过期待办提醒由 AutoTaskScheduler 的 todo_due 信号接管（启动后 30s 内首轮扫描）。
 
         # ── 全局热键过滤器 + 注册热键（启动即生效） ──────────
         self._hotkey_filter = None
@@ -2767,34 +2769,66 @@ class MainWindow(QMainWindow):
             self._chat_widget.add_system_tip(f"🌙 莲心的书页暂时没有写好：{result}")
 
 
-    def _check_overdue_todos(self):
-        """检查过期待办并主动提醒（同一待办每天只提醒一次）"""
-        # 跨天自动清零
-        today = datetime.now().strftime("%Y-%m-%d")
-        if getattr(self, "_reminded_todo_date", "") != today:
-            self._reminded_todo_ids.clear()
-            self._reminded_todo_date = today
-
-        overdue = self._todo_manager.get_overdue_todos()
-        if not overdue:
-            return
-        for todo in overdue[:3]:
-            if todo.id in self._reminded_todo_ids:
-                continue
-            self._reminded_todo_ids.add(todo.id)
-            due_str = ""
-            if todo.due_time:
-                try:
-                    dt = datetime.fromisoformat(todo.due_time)
-                    due_str = f"（原定于{dt.strftime('%Y-%m-%d %H:%M')}）"
-                except:
-                    pass
-            msg = f"⚠️ 过期待办提醒：{todo.title}{due_str}"
+    def _on_todo_due(self, todo):
+        """待办到期（调度线程准点触发）：气泡 + TTS + 非模态横幅。"""
+        # 立即标记"今日已提醒"，防止 30 秒后重复触发；后续由横幅按钮接管。
+        try:
+            self._todo_manager.mark_reminded(todo.id)
+        except Exception:
+            pass
+        msg = f"⏰ 提醒：{todo.title}"
+        if todo.due_time:
+            try:
+                dt = datetime.fromisoformat(todo.due_time)
+                msg += f"（原定时间 {dt.strftime('%H:%M')}）"
+            except Exception:
+                pass
+        try:
             self._agent.get_history_manager().save_message(
                 self._agent._session_id, "assistant", f"[提醒] {msg}"
             )
-            self._chat_widget.add_ai_message(msg)
-            self._speak(msg)
+        except Exception:
+            pass
+        self._chat_widget.add_ai_message(msg)
+        self._speak(msg)
+        self._show_todo_banner(todo)
+
+    def _show_todo_banner(self, todo):
+        """弹出非模态提醒横幅（完成 / 10分钟后再提醒 / 忽略今天）。"""
+        try:
+            from gui.reminder_banner import ReminderBanner
+        except Exception as exc:
+            print(f"[待办提醒] 横幅加载失败: {exc}")
+            return
+        existing = self._reminder_banners.get(todo.id)
+        if existing is not None and existing.isVisible():
+            existing.close()
+        due_text = ""
+        if todo.due_time:
+            try:
+                dt = datetime.fromisoformat(todo.due_time)
+                due_text = f"原定时间 {dt.strftime('%Y-%m-%d %H:%M')}"
+            except Exception:
+                pass
+        banner = ReminderBanner(todo.id, todo.title, due_text, parent=self)
+        banner.completed.connect(self._on_todo_banner_done)
+        banner.snoozed.connect(self._on_todo_banner_snoozed)
+        banner.dismissed.connect(self._on_todo_banner_dismissed)
+        self._reminder_banners[todo.id] = banner
+        banner.show_reminder()
+
+    def _on_todo_banner_done(self, todo_id: str):
+        todo = self._todo_manager.get_todo_by_id(todo_id)
+        title = todo.title if todo is not None else todo_id
+        self._todo_manager.complete_todo(todo_id)
+        self._chat_widget.add_ai_message(f"✔️ 已完成待办：「{title}」")
+
+    def _on_todo_banner_snoozed(self, todo_id: str, minutes: int):
+        self._todo_manager.snooze_todo(todo_id, minutes)
+        self._chat_widget.add_ai_message(f"⏰ 好，{minutes} 分钟后再提醒你。")
+
+    def _on_todo_banner_dismissed(self, todo_id: str):
+        pass  # 触发时已标记"今日已提醒"，关闭横幅即可
 
     # ── 主动聊天 ─────────────────────────────────────────────
 

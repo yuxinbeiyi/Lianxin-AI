@@ -59,7 +59,7 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "system": {"open_app", "get_clipboard", "send_file_to_qq", "plan_tasks", "delegate_task",
                "track_tasks", "toggle_proactive_chat", "get_balance", "list_skills",
                "activate_skill", "deactivate_skill", "query_capabilities"},
-    "todo": {"add_todo", "list_todos", "complete_todo"},
+    "todo": {"add_todo", "list_todos", "complete_todo", "set_reminder"},
     "weather": {"get_weather", "set_user_city"},
     "bilibili": {"bilibili_search", "bilibili_add_tag", "bilibili_list_tags"},
     "time_capsule": {"read_diary", "write_diary"},
@@ -522,9 +522,9 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if re.search(r"(?:这段代码|代码块|函数|脚本|仓库|git |commit|单元测试|调试|修复.{0,8}(?:bug|代码)|运行.{0,8}(?:代码|脚本))", lowered):
         capabilities.add("code")
         reasons.append("明确代码任务")
-    if re.search(r"(?:待办|todo|提醒我|加入清单)", lowered):
+    if re.search(r"(?:待办|todo|提醒我|加入清单|闹钟|倒计时|定时提醒|设置提醒|定个提醒)", lowered):
         capabilities.add("todo")
-        reasons.append("明确待办任务")
+        reasons.append("明确待办/提醒任务")
     if re.search(r"(?:b站|哔哩哔哩|bilibili)", lowered):
         capabilities.add("bilibili")
         reasons.append("明确 B 站任务")

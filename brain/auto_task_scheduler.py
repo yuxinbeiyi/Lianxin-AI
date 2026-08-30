@@ -18,6 +18,7 @@ class AutoTaskScheduler(QThread):
 
     task_due = pyqtSignal(object)          # 单个任务到期 → AutoTask
     task_missed = pyqtSignal(object)       # 错过任务需要询问 → AutoTask
+    todo_due = pyqtSignal(object)          # 待办到期 → TodoItem
     status_changed = pyqtSignal()          # 任务列表有变化
 
     def __init__(self, parent=None):
@@ -37,6 +38,7 @@ class AutoTaskScheduler(QThread):
         while self._running:
             try:
                 self._check_due_tasks()
+                self._check_due_todos()
                 self._check_missed_tasks()
                 # P4: 每 10 分钟自动清理已完成的 once 任务
                 self._cleanup_check_count += 1
@@ -80,3 +82,16 @@ class AutoTaskScheduler(QThread):
             logger.info(f"[AutoTaskScheduler] 错过任务: {task.name} (ID: {task.task_id})")
             print(f"[AutoTaskScheduler] 错过任务 -> {task.name} (ID:{task.task_id})，将询问用户")
             self.task_missed.emit(task)
+
+    def _check_due_todos(self):
+        """扫描到期待办（待办不走 GUI 30 分钟轮询，统一在此准点触发）。"""
+        try:
+            from utils.todo_manager import get_todo_manager
+            due = get_todo_manager().get_due_todos()
+            for todo in due:
+                logger.info(f"[AutoTaskScheduler] 待办到期: {todo.title}")
+                print(f"[AutoTaskScheduler] 待办到期 -> {todo.title}")
+                self.todo_due.emit(todo)
+        except Exception as e:
+            logger.error(f"[AutoTaskScheduler] 待办检查异常: {e}")
+            print(f"[AutoTaskScheduler] 待办检查异常: {e}")

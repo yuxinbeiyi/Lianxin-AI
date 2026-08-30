@@ -164,3 +164,14 @@ class ReminderManager:
                 self._save()
                 return True
         return False
+
+
+_SHARED: Optional["ReminderManager"] = None
+
+
+def get_reminder_manager() -> "ReminderManager":
+    """进程内共享实例（GUI 面板、DutyScheduler、LLM 工具共用同一份数据）。"""
+    global _SHARED
+    if _SHARED is None:
+        _SHARED = ReminderManager()
+    return _SHARED

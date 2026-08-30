@@ -525,8 +525,9 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "add_todo",
             "description": (
-                "【必须调用】当用户要求添加待办事项、设置提醒、记录任务时，必须使用此工具，绝对不要直接回复用户说'已添加'。"
-                "用户话语示例：'提醒我明天下午3点开会'、'添加待办 买牛奶'、'帮我记一下 明天上午10点打电话'、'设置一个提醒 晚上8点吃药'。"
+                "添加纯文本待办事项（可带截止时间，但不支持重复提醒，也不会准点响铃）。"
+                "当用户要求'每天X点提醒'、'N分钟后提醒'、'设置闹钟'这类需要准点触发的提醒时，"
+                "必须改用 set_reminder 工具。本工具适合：'添加待办 买牛奶'、'记一下这件事'。"
                 "调用此工具后，系统会真实存储待办，然后你才能告知用户已添加。"
             ),
             "parameters": {
@@ -563,6 +564,61 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {},
                 "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": (
+                "【设置提醒/闹钟/定时任务的首选工具】支持一次性提醒、重复提醒（每天/每周/工作日/每月）和到点自动执行动作。"
+                "用户话语示例：'10分钟后提醒我喝水'、'每天早上8点提醒我吃药'、'工作日下午6点提醒我打卡'、"
+                "'每天14点帮我清理回收站'。when 字段原样传入用户说的时间，系统会自动解析相对时间、"
+                "'HH:MM' 和自然语言；解析失败会返回错误，此时必须向用户追问准确时间，禁止编造时间。"
+                "纯文本待办（没有触发时间语义）请改用 add_todo。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "提醒事项名称，例如'喝水'、'吃药'、'开会'"
+                    },
+                    "when": {
+                        "type": "string",
+                        "description": "提醒时间，原样传用户表达：'10分钟后'、'半小时后'、'08:00'、'明早八点'、ISO格式均可"
+                    },
+                    "repeat": {
+                        "type": "string",
+                        "enum": ["once", "daily", "weekly", "weekdays", "monthly"],
+                        "description": "重复类型，默认once。'每天'→daily，'工作日'→weekdays，'每周X'→weekly并填weekdays，'每月X号'→monthly"
+                    },
+                    "weekdays": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0, "maximum": 6},
+                        "description": "repeat=weekly 时必填：0=周一…6=周日，例如周一三五填[0,2,4]"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "到点需要执行的动作描述（如'整理回收站'）。纯提醒留空"
+                    },
+                    "channel": {
+                        "type": "string",
+                        "enum": ["auto", "todo", "reminder", "auto_task"],
+                        "description": "存储通道，默认auto自动分派。仅当用户明确要求'加到待办清单'时用todo"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "优先级，仅待办通道有效"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "补充说明，可选"
+                    }
+                },
+                "required": ["name", "when"]
             }
         }
     },
@@ -3783,6 +3839,113 @@ def _add_todo(title: str, due_time: str = None, priority: str = "medium", descri
     return f"已添加待办：{title}（优先级：{priority_cn}{due_str}）"
 
 
+def _set_reminder(name: str, when: str, repeat: str = "once",
+                  weekdays=None, action: str = "", channel: str = "auto",
+                  priority: str = "medium", description: str = "") -> str:
+    """统一提醒入口：按语义分派到 待办(准点响) / 重复提醒 / 自动化任务。
+
+    分派规则（channel=auto 时）：
+    - 带 action → 自动化任务（到点 ReAct 执行）
+    - 重复（daily/weekly/weekdays/monthly）→ ReminderManager（LLM 口吻文案）
+    - 一次性纯提醒 → 待办（30s 级准点触发 + 贪睡 + 完成闭环）
+    时间解析在 todo_manager.parse_when 完成，失败返回 ask_user 结构化错误，
+    由模型向用户追问——绝不静默生成永远不会触发的死提醒。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return "提醒名称不能为空。"
+    repeat = str(repeat or "once").lower()
+    if repeat not in ("once", "daily", "weekly", "weekdays", "monthly"):
+        return f"不支持的重复类型「{repeat}」，可选：once/daily/weekly/weekdays/monthly。"
+    action = str(action or "").strip()
+    weekdays = []
+    for w in (weekdays or []):
+        try:
+            w_int = int(w)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= w_int <= 6 and w_int not in weekdays:
+            weekdays.append(w_int)
+    if repeat == "weekly" and not weekdays:
+        return (
+            "每周重复需要指定星期几（weekdays：0=周一…6=周日）。"
+            "请向用户确认应该在周几提醒后重试。"
+        )
+
+    from utils.todo_manager import TodoManager, parse_when
+    from utils.reminder_manager import get_reminder_manager
+    from brain.auto_task_manager import get_auto_task_manager
+    from utils.auto_task_data import AutoTask
+
+    try:
+        due_dt = TodoManager.parse_when(when)
+    except ValueError as exc:
+        return json.dumps(
+            {"error": "时间解析失败", "detail": str(exc), "ask_user": True},
+            ensure_ascii=False,
+        )
+
+    resolved = str(channel or "auto").lower()
+    if resolved == "auto":
+        resolved = "auto_task" if action else ("reminder" if repeat != "once" else "todo")
+    # 通道语义修正
+    if repeat != "once" and resolved == "todo":
+        resolved = "reminder"      # 待办不支持重复
+    if repeat == "once" and resolved == "reminder":
+        resolved = "todo"          # 提醒管理器的一次性无日期概念，交给待办
+
+    if resolved == "todo":
+        manager = _get_todo_manager()
+        manager.add_todo(name, due_dt.isoformat(timespec="minutes"), priority, description)
+        return (
+            f"已设置提醒：「{name}」，时间 {due_dt.strftime('%Y-%m-%d %H:%M')}。"
+            "到点会准时报，可在待办清单中查看。"
+        )
+
+    if resolved == "reminder":
+        rule = {"daily": "daily", "weekly": "weekly", "weekdays": "weekly", "monthly": "monthly"}[repeat]
+        if repeat == "monthly":
+            day_of_month = due_dt.day
+        else:
+            day_of_month = None
+        if repeat == "weekdays" and not weekdays:
+            weekdays = [0, 1, 2, 3, 4]
+        get_reminder_manager().add(
+            name=name, rule=rule, time_str=due_dt.strftime("%H:%M"),
+            weekdays=weekdays, day_of_month=day_of_month, smart_reply=True,
+        )
+        repeat_cn = {"daily": "每天", "weekly": "每周", "weekdays": "工作日", "monthly": "每月"}[repeat]
+        return f"已设置{repeat_cn}提醒：「{name}」，时间 {due_dt.strftime('%H:%M')}。"
+
+    if resolved == "auto_task":
+        schedule_type = (
+            "once" if repeat == "once"
+            else {"daily": "daily", "weekly": "weekly", "weekdays": "weekly", "monthly": "monthly"}[repeat]
+        )
+        task = AutoTask(
+            name=name,
+            description=action or f"完成「{name}」",
+            source="manual",
+            schedule_type=schedule_type,
+            schedule_time=due_dt.strftime("%H:%M"),
+            weekdays=weekdays,
+            day_of_month=due_dt.day if repeat == "monthly" else None,
+        )
+        if repeat == "once":
+            task.next_run = due_dt.strftime("%Y-%m-%d %H:%M")
+        else:
+            task.next_run = task.compute_next_run()
+        get_auto_task_manager().add_task(task)
+        sched_cn = {"once": "一次性", "daily": "每天", "weekly": "每周",
+                    "weekdays": "工作日", "monthly": "每月"}[repeat]
+        return (
+            f"已创建自动化任务：「{name}」（{sched_cn} {due_dt.strftime('%H:%M')}），"
+            "到点我会自动执行并汇报结果。"
+        )
+
+    return f"未知通道：{channel}（可选 auto/todo/reminder/auto_task）。"
+
+
 def _list_todos() -> str:
     """列出未完成的待办事项"""
     manager = _get_todo_manager()
@@ -5833,6 +5996,11 @@ TOOL_EXECUTORS = {
     "get_current_time": lambda inp: get_current_time(inp.get("format", "full")),
     "get_balance":    lambda inp: get_balance(),
     "add_todo":       lambda inp: _add_todo(inp.get("title", ""), inp.get("due_time"), inp.get("priority", "medium"), inp.get("description", "")),
+    "set_reminder":   lambda inp: _set_reminder(
+        inp.get("name", ""), inp.get("when", ""), inp.get("repeat", "once"),
+        inp.get("weekdays"), inp.get("action", ""), inp.get("channel", "auto"),
+        inp.get("priority", "medium"), inp.get("description", ""),
+    ),
     "list_todos":     lambda inp: _list_todos(),
     "complete_todo":  lambda inp: _complete_todo(inp.get("title_keyword", "")),
     "read_excel":      lambda inp: read_excel(inp["file_path"], inp.get("sheet_name"), inp.get("max_rows", 100)),
