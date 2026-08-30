@@ -19,12 +19,14 @@ class RequestMode(str, Enum):
 
 
 CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
-    "memory_read": {"search_graph_memory", "search_conversation_history", "search_cross_session"},
-    "memory_write": {"save_memory", "update_memory", "delete_memory", "review_memory_conflict"},
+    "memory_read": {"search_graph_memory", "search_conversation_history", "search_cross_session",
+                    "discover_connections", "explain_memory_quality"},
+    "memory_write": {"save_memory", "update_memory", "delete_memory", "review_memory_conflict",
+                     "update_current_state"},
     "contacts": {"query_recent_contacts", "query_qq_friend_list"},
     "time": {"get_current_time"},
     "web_search": {"web_search"},
-    "web_fetch": {"fetch_webpage"},
+    "web_fetch": {"fetch_webpage", "configure_network_tools"},
     "github": {
         "github_search_repositories", "github_get_readme",
         "github_get_file", "github_list_directory", "github_list_commits",
@@ -45,14 +47,18 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
         "browser_wait", "browser_tabs", "browser_screenshot",
         "browser_connect", "browser_disconnect",
     },
-    "file_read": {"read_file", "read_file_chunk", "read_file_lines", "search_files_everything"},
+    "file_read": {"read_file", "read_file_chunk", "read_file_lines", "search_files_everything",
+                  "list_directory", "get_file_info_everything", "glob_files", "grep_file",
+                  "diff_files"},
     "file_write": {"write_file", "edit_file"},
     "code": {"search_code", "code_structure", "code_goto_def", "code_find_refs", "code_diagnostics",
              "run_python_code", "run_command", "run_shell", "git_status"},
     "office": {"read_excel", "write_excel", "copy_excel_content", "write_docx", "format_document"},
     "image": {"ocr_image", "ocr_batch", "describe_image", "capture_from_camera", "capture_desktop",
-              "generate_image", "generate_video"},
-    "system": {"open_app", "get_clipboard", "send_file_to_qq", "plan_tasks", "delegate_task", "track_tasks"},
+              "generate_image", "generate_video", "look_at_camera"},
+    "system": {"open_app", "get_clipboard", "send_file_to_qq", "plan_tasks", "delegate_task",
+               "track_tasks", "toggle_proactive_chat", "get_balance", "list_skills",
+               "activate_skill", "deactivate_skill", "query_capabilities"},
     "todo": {"add_todo", "list_todos", "complete_todo"},
     "weather": {"get_weather", "set_user_city"},
     "bilibili": {"bilibili_search", "bilibili_add_tag", "bilibili_list_tags"},
@@ -66,6 +72,30 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
         "start_observation_mode", "stop_observation_mode",
     },
 }
+
+# 用户点名工具名 → 能力组。机制型工具（query_capabilities 等）不属于任何
+# 能力组，单独映射到 system，保证用户直接点名时路由层能接住。
+_ORPHAN_TOOL_CAPABILITIES: dict[str, str] = {
+    "get_balance": "system",
+    "list_skills": "system",
+    "activate_skill": "system",
+    "deactivate_skill": "system",
+    "query_capabilities": "system",
+}
+
+_TOOL_NAME_TO_CAPABILITY: dict[str, str] = {}
+for _capability, _tool_names in CAPABILITY_TO_TOOLS.items():
+    for _tool_name in _tool_names:
+        _TOOL_NAME_TO_CAPABILITY.setdefault(_tool_name, _capability)
+_TOOL_NAME_TO_CAPABILITY.update(_ORPHAN_TOOL_CAPABILITIES)
+
+_TOOL_NAME_PATTERN = re.compile(
+    r"\b("
+    + "|".join(re.escape(name) for name in sorted(_TOOL_NAME_TO_CAPABILITY, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
 
 CAPABILITY_DESCRIPTIONS = {
     "memory_read": "读取已确认的长期记忆或历史会话",
@@ -486,6 +516,54 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if re.search(r"(?:b站|哔哩哔哩|bilibili)", lowered):
         capabilities.add("bilibili")
         reasons.append("明确 B 站任务")
+    # 图像能力：截屏/看屏幕/摄像头画面/图像识别。此前没有任何正则触发
+    # image 组，导致"你可以截屏观察一下我的电脑吗"这类请求落入
+    # CHAT_LIGHT（模型手中无截屏工具，只能回答"没有能力"）。
+    if re.search(
+        r"(?:截屏|截图|屏幕截图|拍屏|截个图|"
+        r"(?:看看?|观察|识别|描述|读一下).{0,8}(?:我的)?(?:屏幕|显示器|桌面)|"
+        r"(?:屏幕|显示器|桌面).{0,6}(?:上|里|中).{0,4}(?:是什么|有什么|显示))",
+        text,
+    ):
+        capabilities.add("image")
+        reasons.append("要求截屏、观察屏幕或图像识别")
+    # 系统自动化：此前整组不可达（open_app 等工具从未被路由开放）。
+    if re.search(
+        r"(?:打开|启动|运行).{0,6}(?:应用|程序|软件)"
+        r"|(?:读取|查看|看看?).{0,4}剪贴板|剪贴板内容"
+        r"|(?:发送|发).{0,6}(?:到|给)\s*QQ|把.{0,10}文件.{0,6}发.{0,3}QQ"
+        r"|自动化任务|计划任务|任务分解|委派任务",
+        lowered,
+    ):
+        capabilities.add("system")
+        reasons.append("系统自动化操作（打开应用/剪贴板/QQ发文件/任务编排）")
+    # 办公文档：不再依赖消息中出现文件扩展名。
+    if re.search(
+        r"(?:PPT|幻灯片|excel|表格|word文档|docx|排版|周报)"
+        r"|(?:做|写|生成|整理|处理).{0,4}(?:表格|文档|PPT)"
+        r"|(?:写|撰写|生成).{0,4}(?:报告|周报)",
+        lowered,
+    ):
+        capabilities.add("office")
+        reasons.append("办公文档处理")
+    # 文件操作泛化：不再依赖消息中出现路径或扩展名。
+    if re.search(
+        r"(?:新建|创建).{0,4}(?:文件夹|文件)"
+        r"|(?:整理|分类|删除|删掉|移动|复制|重命名).{0,6}文件"
+        r"|(?:保存|写入|存).{0,8}(?:到|进).{0,4}(?:文件|文件夹)"
+        r"|(?:读取|读一下?|看看?|打开).{0,4}文件",
+        lowered,
+    ):
+        capabilities.add("file_read")
+        reasons.append("文件操作（泛化匹配）")
+        if re.search(r"(?:写入|保存|创建|新建|删除|删掉|移动|重命名|整理)", lowered):
+            capabilities.add("file_write")
+    # 用户直接点名工具名时按工具所属能力组路由（高精度，零泛化误判）。
+    for _mentioned in _TOOL_NAME_PATTERN.findall(text):
+        _mentioned_cap = _TOOL_NAME_TO_CAPABILITY.get(_mentioned.lower())
+        if _mentioned_cap:
+            capabilities.add(_mentioned_cap)
+            reasons.append(f"点名工具 {_mentioned}")
     if any(token in lowered for token in (
         "坦克", "贪吃蛇", "虚拟世界", "地图标记", "食物", "标记的位置", "标记点", "前往标记", "到达标记",
         "左转", "右转", "急停", "取消任务",

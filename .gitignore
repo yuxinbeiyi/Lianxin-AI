@@ -175,3 +175,4 @@ Lab/HandsDetector/手势识别.md
 /VisionLab/docs/
 /VisionLab/**/__pycache__/
 /VisionLab/**/*.pyc
+.tmp_*.py
