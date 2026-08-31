@@ -1612,13 +1612,22 @@ class MainWindow(QMainWindow):
         self._set_idle_state()
         if self._galgame_visible and self._galgame_dialog:
             self._galgame_dialog.set_status("执行失败")
+        # 视觉/手势事件的 LLM 请求失败：立即回退模板话术（不等满超时）
+        ctx = getattr(self, "_llm_reply_ctx", None)
+        if ctx:
+            # 事件型请求：终端输出调试信息并回退模板，不弹系统错误气泡
+            self._finish_llm_reply_fallback(
+                f"AgentWorker错误: {str(err)[:120]}",
+                fallback_pool=ctx.get("fallback_pool"),
+                label=ctx.get("label", "LLM回复"),
+            )
+            return
         self._chat_widget.add_system_tip(f"错误：{err}")
 
 
     def _on_ai_response(self, text: str):
-        # 手势响应：取消超时定时器（LLM已回复）
-        if hasattr(self, '_gesture_pending') and self._gesture_pending:
-            self._on_agent_response_start()
+        # 手势/视觉事件的 LLM 回复已到达：取消对应的超时兜底定时器
+        self._on_agent_response_start()
 
         self._watchdog_resolved = True  # 防止看门狗 cleanup 重复添加系统提示
         growth_event = getattr(self._agent, "_latest_growth_event", None)
@@ -1754,27 +1763,6 @@ class MainWindow(QMainWindow):
             return False
         structured_markers = ("\n1.", "\n- ", "\n|", "{", "def ", "Traceback")
         return not any(marker in value for marker in structured_markers)
-
-
-
-    def _on_error(self, error_msg: str):
-        # 手势请求失败时只给一次固定回复，避免再显示一条技术错误提示。
-        if getattr(self, "_gesture_pending", False):
-            self._finish_gesture_fallback(f"LLM错误: {error_msg}")
-            self._agent_watchdog.stop()
-            self._stop_watchdog_check_timer()
-            self._duty_scheduler.set_agent_busy(False)
-            self._input_panel.hide_interrupt_bar()
-            self._char_widget.stop_thinking()
-            self._input_panel.set_enabled(True)
-            self._input_panel.set_resend_visible(False)
-            return
-
-        self._pending_arms_cross = False   # 重置标志
-        self._chat_widget.add_ai_message(f"（出错了：{error_msg}）")
-        self._set_idle_state()
-        if hasattr(self, "_avatar_actions"):
-            self._avatar_actions.request("error", source="agent_error", force=True)
 
     # ── Galgame 模式 ──────────────────────────────────────────
 
@@ -3856,7 +3844,7 @@ class MainWindow(QMainWindow):
             self._vision_panel.activateWindow()
 
     def _on_vision_user_entered(self):
-        """视觉事件：用户进入"""
+        """视觉事件：用户进入（LLM优先，模板兜底）"""
         # 更新情感系统
         try:
             from brain.emotional import get_manager
@@ -3870,17 +3858,20 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 莲心主动问候
-        greetings = [
-            "回来啦！有没有想我？",
-            "欢迎回来～刚才去哪儿了？",
-            "你回来了！我在这里等你呢～",
-        ]
-        import random
-        self._trigger_proactive_speech(random.choice(greetings))
+        # 莲心主动问候：优先 LLM 链路，模板池作兜底
+        self._trigger_llm_reply_with_fallback(
+            event_text="[视觉感知：主人回到了电脑桌前]",
+            label="视觉陪伴",
+            fallback_pool=[
+                "回来啦！有没有想我？",
+                "欢迎回来～刚才去哪儿了？",
+                "你回来了！我在这里等你呢～",
+            ],
+            on_speaking="fallback",
+        )
 
     def _on_vision_user_returned(self, absence_seconds: float = 0.0):
-        """视觉事件：用户返回（离开后回来，按失陪时长分级反馈）"""
+        """视觉事件：用户返回（离开后回来，按失陪时长分级反馈；LLM优先）"""
         minutes = max(0.0, float(absence_seconds or 0.0)) / 60.0
         if minutes >= 60:
             duration_text = f"{minutes / 60:.0f}个小时" if minutes >= 110 else "一个多小时"
@@ -3900,39 +3891,47 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        import random
+        # 按失陪时长分级准备兜底模板池（LLM 优先，模板兜底）
         if minutes < 3:
             # 快去快回（如洗手间）：轻描淡写，不兴师动众
-            greetings = [
+            fallback_pool = [
                 "回来啦～才走开一小会儿，我位置都没挪。",
                 "欢迎回来，这次很快嘛。",
                 "嗯，你回来了。我一直在自习室这边陪着你。",
             ]
         elif minutes < 15:
             # 正常接水/上厕所/拿快递
-            greetings = [
+            fallback_pool = [
                 f"回来啦！离开了{duration_text}，是去接水了吗？记得多喝水哦。",
                 f"欢迎回来～这一趟{duration_text}，腿不会坐麻了吗？",
                 f"你回来了！离开了{duration_text}，我刚好把桌上的东西都看了一遍。",
             ]
         elif minutes < 60:
             # 比较长：明显表达在意
-            greetings = [
+            fallback_pool = [
                 f"你可算回来了！整整{duration_text}呢，我还以为你今天不要我了。",
                 f"欢迎回来！离开了{duration_text}，去做什么好事了？快跟我讲讲。",
                 f"回来了就好。{duration_text}没看到你，这边都安静得能听见风扇声了。",
             ]
         else:
             # 超过一小时：久别式欢迎
-            greetings = [
+            fallback_pool = [
                 f"{duration_text}不见！我都开始数天花板的格子了，你跑哪儿去了呀？",
                 f"欢迎回来！这一离开就是{duration_text}，我的陪伴时长统计都要长毛了。",
                 f"你终于回来了！{duration_text}呢，我可是把等你的姿势都摆好了。",
             ]
-        self._trigger_proactive_speech(random.choice(greetings))
+        self._trigger_llm_reply_with_fallback(
+            event_text=(
+                f"[视觉感知：主人离开了约{duration_text}，"
+                "现在回到了电脑桌前。请结合失陪时长给出贴切的问候]"
+            ),
+            label="视觉陪伴",
+            fallback_pool=fallback_pool,
+            on_speaking="fallback",
+        )
 
     def _on_vision_user_left(self):
-        """视觉事件：用户离开"""
+        """视觉事件：用户离开（LLM优先，模板兜底）"""
         try:
             from brain.emotional import get_manager
             manager = get_manager()
@@ -3944,16 +3943,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 轻声告别（不打扰）
-        farewells = [
-            "去忙啦？我在这里等你回来～",
-            "好的，我会在这里等你的～",
-        ]
-        import random
-        self._trigger_proactive_speech(random.choice(farewells))
+        # 轻声告别（不打扰）：优先 LLM 链路，模板池兜底
+        self._trigger_llm_reply_with_fallback(
+            event_text="[视觉感知：主人离开了工位，桌前现在没有人了]",
+            label="视觉陪伴",
+            fallback_pool=[
+                "去忙啦？我在这里等你回来～",
+                "好的，我会在这里等你的～",
+            ],
+            on_speaking="fallback",
+        )
 
     def _on_vision_long_work(self):
-        """视觉事件：长时间工作提醒"""
+        """视觉事件：长时间工作提醒（LLM优先，模板兜底）"""
         try:
             from brain.emotional import get_manager
             manager = get_manager()
@@ -3964,22 +3966,28 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        reminders = [
-            "工作辛苦啦～要不要起来走走，休息一下眼睛？",
-            "已经一个小时了哦，记得喝点水～我会一直陪着你的。",
-            "辛苦啦～要注意休息哦，劳逸结合才更高效呢！",
-        ]
-        import random
-        self._trigger_proactive_speech(random.choice(reminders))
+        self._trigger_llm_reply_with_fallback(
+            event_text="[视觉感知：主人已经在工位上连续工作超过 1 小时，请提醒TA休息]",
+            label="视觉陪伴",
+            fallback_pool=[
+                "工作辛苦啦～要不要起来走走，休息一下眼睛？",
+                "已经一个小时了哦，记得喝点水～我会一直陪着你的。",
+                "辛苦啦～要注意休息哦，劳逸结合才更高效呢！",
+            ],
+            on_speaking="fallback",
+        )
 
     def _on_vision_stranger(self):
-        """视觉事件：陌生人警报"""
-        alerts = [
-            "诶？好像有陌生人出现了…是你的朋友吗？",
-            "检测到陌生人呢，是来找你的吗？",
-        ]
-        import random
-        self._trigger_proactive_speech(random.choice(alerts))
+        """视觉事件：陌生人警报（LLM优先，模板兜底）"""
+        self._trigger_llm_reply_with_fallback(
+            event_text="[视觉感知：画面中出现了一位没有录入特征的人，并已持续停留一段时间]",
+            label="视觉陪伴",
+            fallback_pool=[
+                "诶？好像有陌生人出现了…是你的朋友吗？",
+                "检测到陌生人呢，是来找你的吗？",
+            ],
+            on_speaking="fallback",
+        )
 
     def _on_vision_gesture_ok(self):
         """视觉事件：OK手势"""
@@ -4091,111 +4099,124 @@ class MainWindow(QMainWindow):
                 print("[主动发言] _char_widget 没有 set_talking 方法")
 
     def _trigger_gesture_llm_response(self, gesture_emoji: str, gesture_name: str, fallback_responses: list):
-        """触发手势响应（LLM优先，固定回复兜底）
+        """手势事件入口（LLM优先，模板兜底）——通用管线的薄封装。"""
+        print(f"[手势响应] 触发 {gesture_emoji}{gesture_name}")
+        event_text = f"[我对你比了个{gesture_emoji}{gesture_name}]"
+        self._trigger_llm_reply_with_fallback(
+            event_text=event_text,
+            label="手势响应",
+            fallback_pool=fallback_responses,
+            timeout_ms=15_000,
+            on_speaking="skip",
+        )
+
+    def _trigger_llm_reply_with_fallback(self, *, event_text: str, label: str,
+                                         fallback_pool: list, timeout_ms: int = 15_000,
+                                         on_speaking: str = "fallback") -> None:
+        """视觉/手势事件统一管线：优先走 LLM 链路生成个性化回复，
+        失败/超时/忙碌时在终端抛出调试信息并回退模板话术（只发一次）。
 
         Args:
-            gesture_emoji: 手势emoji，如 "👌"
-            gesture_name: 手势名称，如 "OK手势"
-            fallback_responses: 兜底回复列表
+            event_text: 注入对话的事件消息（如 "[视觉感知：主人回到了桌前]"）
+            label: 终端调试标签（如 "视觉陪伴" / "手势响应"）
+            fallback_pool: 模板兜底池
+            timeout_ms: LLM 响应超时；worker 仍在运行时会以 5s 步长延长等待
+            on_speaking: "fallback"=说话中直接用模板；"skip"=说话中忽略本次事件
         """
-        print(f"[手势响应] 触发 {gesture_emoji}{gesture_name}")
-
-        # 检查是否正在说话（避免打断）
         if self._is_speaking():
-            print(f"[手势响应] 莲心正在说话，忽略手势")
+            print(f"[{label}] 莲心正在说话（TTS/动画中），按策略 {on_speaking} 处理")
+            if on_speaking == "fallback":
+                self._finish_llm_reply_fallback("莲心正在说话",
+                                                fallback_pool=fallback_pool, label=label)
             return
 
-        self._gesture_fallback_responses = fallback_responses
-        self._gesture_fallback_sent = False
+        if getattr(self, "_llm_reply_ctx", None) is not None:
+            print(f"[{label}] 已有 LLM 回复等待中，跳过本次事件")
+            return
 
-        # 只有已有请求仍在运行时才算忙。首次手势时 worker 通常还不存在，
-        # 这正是应该创建新 AgentWorker 并进入 LLM 链路的状态。
         worker = getattr(self, "_agent_worker", None)
         if worker is not None and worker.isRunning():
-            if getattr(self, "_gesture_pending", False):
-                print("[手势响应] 已有手势请求处理中，忽略重复手势")
-                return
-            print("[手势响应] AgentWorker正在处理其他请求，使用固定回复")
-            self._finish_gesture_fallback("AgentWorker繁忙")
+            print(f"[{label}] AgentWorker 正在处理其他请求，使用模板兜底")
+            self._finish_llm_reply_fallback("AgentWorker繁忙",
+                                            fallback_pool=fallback_pool, label=label)
             return
 
+        print(f"[{label}] 尝试 LLM 链路: {event_text}")
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._on_llm_reply_timeout(label=label))
+        timer.start(timeout_ms)
+        self._llm_reply_ctx = {
+            "label": label,
+            "fallback_pool": fallback_pool,
+            "fallback_sent": False,
+            "timer": timer,
+            "start_time": time.time(),
+        }
         try:
-            print("[手势响应] 尝试LLM链路")
-
-            # 标记手势响应进行中
-            self._gesture_pending = True
-            self._gesture_start_time = time.time()
-
-            # 构造手势输入消息
-            gesture_input = f"[我对你比了个{gesture_emoji}{gesture_name}]"
-
-            # API 响应通常需要数秒，不能用 3 秒定时器提前制造重复回复。
-            from PyQt5.QtCore import QTimer
-            self._gesture_timeout_timer = QTimer(self)
-            self._gesture_timeout_timer.setSingleShot(True)
-            self._gesture_timeout_timer.timeout.connect(self._on_gesture_timeout)
-            self._gesture_timeout_timer.start(15_000)
-
-            # _on_user_message 会负责创建、连接并启动新的 AgentWorker。
-            self._on_user_message(
-                gesture_input, images=None, show_user_message=False
-            )
-            print("[手势响应] LLM请求已发送，等待回复...")
-            return
+            # _on_user_message 负责创建、连接并启动新的 AgentWorker。
+            self._on_user_message(event_text, images=None, show_user_message=False)
+            print(f"[{label}] LLM 请求已发送，等待回复（超时 {timeout_ms / 1000:.0f}s）")
         except Exception as e:
-            print(f"[手势响应] LLM链路失败: {e}")
             import traceback
+            print(f"[{label}] LLM 链路异常: {e}")
             traceback.print_exc()
-            self._finish_gesture_fallback("LLM链路异常")
+            self._finish_llm_reply_fallback(f"LLM链路异常: {e}",
+                                            fallback_pool=fallback_pool, label=label)
 
-    def _finish_gesture_fallback(self, reason: str = ""):
-        """结束手势 LLM 等待并只发送一次固定回复。"""
+    def _on_llm_reply_timeout(self, label: str = "LLM回复"):
+        """LLM 响应超时：worker 仍在运行则延长等待，否则回退模板。"""
+        ctx = getattr(self, "_llm_reply_ctx", None)
+        if not ctx or ctx.get("label") != label:
+            return
+        elapsed = time.time() - ctx.get("start_time", time.time())
+        worker = getattr(self, "_agent_worker", None)
+        if worker is not None and worker.isRunning():
+            # 定时器到期不代表请求失败；worker 仍在跑时继续等待，避免
+            # 正常的慢响应同时触发 LLM 回复和模板兜底。
+            print(f"[{label}] LLM 仍在处理中({elapsed:.1f}s)，延长等待 5s")
+            ctx["timer"].start(5_000)
+            return
+        print(f"[{label}] LLM 超时({elapsed:.1f}s)，回退模板话术")
+        self._finish_llm_reply_fallback("LLM超时",
+                                        fallback_pool=ctx.get("fallback_pool"),
+                                        label=label)
+
+    def _finish_llm_reply_fallback(self, reason: str = "", *,
+                                   fallback_pool: list | None = None,
+                                   label: str = "LLM回复") -> None:
+        """结束 LLM 等待并只发送一次模板兜底回复。"""
+        ctx = getattr(self, "_llm_reply_ctx", None)
+        pool = fallback_pool if fallback_pool is not None else (ctx or {}).get("fallback_pool")
         if reason:
-            print(f"[手势响应] 使用固定回复: {reason}")
-        if getattr(self, "_gesture_fallback_sent", False):
+            print(f"[{label}] 使用模板兜底: {reason}")
+        if ctx and ctx.get("fallback_sent"):
             return
 
-        timer = getattr(self, "_gesture_timeout_timer", None)
+        timer = (ctx or {}).get("timer")
         if timer is not None:
             timer.stop()
             timer.deleteLater()
-            self._gesture_timeout_timer = None
+        self._llm_reply_ctx = None
 
-        fallback_responses = getattr(self, "_gesture_fallback_responses", None)
-        self._gesture_pending = False
-        self._gesture_fallback_sent = True
-        if not fallback_responses:
+        if not pool:
             return
-
         import random
-        self._trigger_proactive_speech(random.choice(fallback_responses))
-
-    def _on_gesture_timeout(self):
-        """手势响应超时处理"""
-        if hasattr(self, '_gesture_pending') and self._gesture_pending:
-            elapsed = time.time() - self._gesture_start_time
-            worker = getattr(self, "_agent_worker", None)
-            if worker is not None and worker.isRunning():
-                # 定时器到期不代表请求失败；worker 仍在跑时继续等待，避免
-                # 正常的慢响应同时触发 LLM 回复和固定回复。
-                print(f"[手势响应] LLM仍在处理中({elapsed:.1f}秒)，延长等待")
-                self._gesture_timeout_timer.start(5_000)
-                return
-
-            print(f"[手势响应] LLM超时({elapsed:.1f}秒)，使用固定回复")
-            self._finish_gesture_fallback("LLM超时")
+        self._trigger_proactive_speech(random.choice(pool))
 
     def _on_agent_response_start(self):
-        """Agent开始回复（取消手势超时）"""
-        # 如果是手势触发的响应，取消超时定时器
-        if hasattr(self, '_gesture_pending') and self._gesture_pending:
-            if hasattr(self, '_gesture_timeout_timer') and self._gesture_timeout_timer:
-                self._gesture_timeout_timer.stop()
-                self._gesture_timeout_timer.deleteLater()
-                self._gesture_timeout_timer = None
-            self._gesture_pending = False
-            elapsed = time.time() - self._gesture_start_time
-            print(f"[手势响应] LLM回复成功({elapsed:.1f}秒)")
+        """Agent 开始回复（取消等待中的超时定时器，LLM 链路成功）。"""
+        ctx = getattr(self, "_llm_reply_ctx", None)
+        if ctx:
+            timer = ctx.get("timer")
+            if timer is not None:
+                timer.stop()
+                timer.deleteLater()
+            elapsed = time.time() - ctx.get("start_time", time.time())
+            print(f"[{ctx['label']}] LLM 回复成功({elapsed:.1f}s)")
+            self._llm_reply_ctx = None
+        # 兼容旧手势标志
+        self._gesture_pending = False
 
 
     def _on_camera_capture(self):
