@@ -2166,7 +2166,7 @@ TOOL_DEFINITIONS = [
                     "quality": {
                         "type": "string",
                         "enum": ["standard", "hd"],
-                        "description": "图片质量，默认使用配置中的默认值"
+                        "description": "图片质量。仅当后端支持时生效；多数 Agnes 后端不支持该字段，会默认使用标准质量"
                     }
                 },
                 "required": ["prompt"]
@@ -2651,17 +2651,16 @@ def save_memory(fact: str, category: str | None = None) -> str:
     result = f"好的，我记住了（分类：{category}）：{fact}"
     if fact_id:
         try:
-            from brain.memory_conflicts import (
-                format_candidate_list, list_conflict_candidates,
-            )
+            from brain.memory_conflicts import list_conflict_candidates
             candidates = list_conflict_candidates(
-                status="pending", fact_id=fact_id, limit=3
+                status="pending", fact_id=fact_id, limit=10
             )
             if candidates:
+                # 不要求本回合强制裁决，避免简单保存被多轮工具调用拖成失败；
+                # 相似旧记忆保留为待复核，用户要求整理记忆时再 review_memory_conflict。
                 result += (
-                    "\n\n检测到可能相关的旧记忆。相似度不是裁决；"
-                    "请继续调用 review_memory_conflict 做语义判断。\n"
-                    + format_candidate_list(candidates)
+                    f"\n\n（另检测到 {len(candidates)} 条可能相关的旧记忆，"
+                    "已留待复核，不影响本次保存。）"
                 )
         except Exception:
             pass
@@ -4671,7 +4670,17 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
 
     model = ig_cfg.get("model", "agnes-image-2.1-flash")
     final_size = size or ig_cfg.get("default_size", "1024x1024")
-    final_quality = quality or ig_cfg.get("default_quality", "standard")
+
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "size": final_size,
+        "n": 1,
+    }
+    # 多数 Agnes 后端（text image queue）不支持 quality 字段，默认不发送；
+    # 仅当配置显式开启 send_quality 时才携带该参数。
+    if ig_cfg.get("send_quality", False):
+        body["quality"] = quality or ig_cfg.get("default_quality", "standard")
 
     try:
         resp = requests.post(
@@ -4680,17 +4689,17 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": model,
-                "prompt": prompt,
-                "size": final_size,
-                "quality": final_quality,
-                "n": 1,
-            },
+            json=body,
             timeout=180,
         )
         if resp.status_code != 200:
-            return f"图片生成失败：HTTP {resp.status_code} — {resp.text[:200]}"
+            detail = resp.text[:200]
+            if "quality" in detail and "not supported" in detail:
+                return (
+                    f"图片生成失败：当前 Agnes 后端不支持 quality 参数（HTTP {resp.status_code} — {detail}）。"
+                    "请忽略该参数后重试，或确认后端是否支持质量选项。"
+                )
+            return f"图片生成失败：HTTP {resp.status_code} — {detail}"
 
         data = resp.json()
         img_data = data.get("data", [])

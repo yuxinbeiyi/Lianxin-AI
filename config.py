@@ -41,6 +41,7 @@ _IMAGE_GEN_DEFAULTS = {
     "model":          "agnes-image-2.1-flash",
     "default_size":   "1024x1024",
     "default_quality": "standard",
+    "send_quality":   False,   # 多数 Agnes 后端（text image queue）不支持 quality，默认不发送
     "save_dir":       "",
 }
 

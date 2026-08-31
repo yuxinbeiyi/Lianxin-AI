@@ -3025,8 +3025,8 @@ class AgentCore:
                     + _memory_write_guide +
                     "用户描述生病、情绪、所在地、短期项目或计划等会变化的信息时，"
                     "调用 update_current_state 保存为带有效期的当前状态，不要混入永久记忆。"
-                    "save_memory 返回冲突候选时，必须继续调用 review_memory_conflict；"
-                    "只能根据语义和时间关系裁决，不得用相似度替代判断。"
+                    "save_memory 返回相似旧记忆提示时，通常无需立即裁决，直接正常回复确认即可；"
+                    "相似旧记忆会保留在待复核队列，待用户要求整理记忆时再 review_memory_conflict。"
                 )
             })
 
@@ -3557,7 +3557,23 @@ class AgentCore:
                                 ),
                             })
                             continue
-                        return "这次没有成功执行所需工具，请稍后重试。"
+                        # 连续两次正文被丢弃：区分“工具已成功但回复异常”与“纯文本回复异常”，
+                        # 避免把已成功执行的操作误报为失败，并在终端抛调试信息。
+                        if _has_real_tool_result or any(event.get("name") for event in (request_audit or [])):
+                            print(
+                                "[协议防泄漏] 最终回复两次被丢弃，但本轮工具已产生真实结果，"
+                                "改用“已完成+请确认”模板兜底。",
+                                flush=True,
+                            )
+                            return (
+                                "（这轮操作的工具步骤已经完成，但我在组织最终回答时出现内部异常。"
+                                "你可以让我重新描述一下结果。）"
+                            )
+                        print(
+                            "[协议防泄漏] 最终回复两次被丢弃且本轮无工具结果，改用通用模板兜底。",
+                            flush=True,
+                        )
+                        return "（刚才的回复生成出现内部异常，请重新发送一次。）"
                 # 工具激活重试：只补充当前语义类别或模型明确点名的工具。
                 if (not self._use_local and not _full_tools_injected
                         and not any(t.get("function", {}).get("name") == "request_tools" for t in all_tools)

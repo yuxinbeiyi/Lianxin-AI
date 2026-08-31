@@ -17,6 +17,9 @@ logger = logging.getLogger("VoiceSpeaker")
 
 class VoiceSpeaker:
     _edge_tts_lock = threading.Lock()
+    # pygame.mixer（SDL）非线程安全：多 SpeakerWorker 并发播放/停止是
+    # Windows access violation / 0x8001010d 原生崩溃的高发源，统一串行化。
+    _pygame_lock = threading.RLock()
 
     def __init__(self, voice: str = "zh-CN-XiaoxiaoNeural"):
         self._voice = voice
@@ -26,11 +29,12 @@ class VoiceSpeaker:
 
     def init_player(self):
         """初始化 pygame 播放器"""
-        if not self._ready:
-            if not pygame.get_init():
-                pygame.init()
-            pygame.mixer.init()
-            self._ready = True
+        with VoiceSpeaker._pygame_lock:
+            if not self._ready:
+                if not pygame.get_init():
+                    pygame.init()
+                pygame.mixer.init()
+                self._ready = True
 
     # ── 文本清洗方法 ─────────────────────────────────
     def _clean_text_for_tts(self, text: str) -> str:
@@ -311,10 +315,18 @@ class VoiceSpeaker:
     def stop(self):
         """停止当前播放。"""
         self._stop_flag = True
-        if self._current_channel:
-            self._current_channel.stop()
-            self._current_channel = None
-        # 备用：停止所有通道？更简单：不处理其他通道
+        with VoiceSpeaker._pygame_lock:
+            if self._current_channel:
+                try:
+                    self._current_channel.stop()
+                except Exception:
+                    pass
+                self._current_channel = None
+            else:
+                try:
+                    pygame.mixer.stop()
+                except Exception:
+                    pass
 
     # ── 内部方法 ─────────────────────────────────────────────
 
@@ -421,34 +433,47 @@ class VoiceSpeaker:
 
     def _play(self, path: str):
         try:
-            if not pygame.get_init():
-                pygame.init()
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-            # 加载为 Sound 对象，避免使用 music 通道
-            sound = pygame.mixer.Sound(path)
-            from utils.settings import get_settings
-            volume = get_settings().tts_volume
-            sound.set_volume(volume)
-            # 查找空闲通道播放
-            channel = pygame.mixer.find_channel()
-            if channel is None:
-                # 如果没有空闲通道，直接播放（可能会抢占其他音效，但概率低）
-                sound.play()
-                self._current_channel = None
-            else:
-                channel.play(sound)
-                self._current_channel = channel
-            # 等待播放结束
-            while (self._current_channel and self._current_channel.get_busy()) or (not self._current_channel and pygame.mixer.get_busy()):
+            with VoiceSpeaker._pygame_lock:
+                if not pygame.get_init():
+                    pygame.init()
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                # 加载为 Sound 对象，避免使用 music 通道
+                sound = pygame.mixer.Sound(path)
+                from utils.settings import get_settings
+                volume = get_settings().tts_volume
+                sound.set_volume(volume)
+                # 查找空闲通道播放
+                channel = pygame.mixer.find_channel()
+                if channel is None:
+                    # 如果没有空闲通道，直接播放（可能会抢占其他音效，但概率低）
+                    sound.play()
+                    self._current_channel = None
+                else:
+                    channel.play(sound)
+                    self._current_channel = channel
+            # 等待播放结束（不持锁，避免阻塞其他线程的 stop()）
+            while True:
                 if self._stop_flag:
+                    with VoiceSpeaker._pygame_lock:
+                        if self._current_channel:
+                            try:
+                                self._current_channel.stop()
+                            except Exception:
+                                pass
+                        else:
+                            pygame.mixer.stop()
+                    break
+                with VoiceSpeaker._pygame_lock:
                     if self._current_channel:
-                        self._current_channel.stop()
+                        busy = self._current_channel.get_busy()
                     else:
-                        pygame.mixer.stop()
+                        busy = pygame.mixer.get_busy()
+                if not busy:
                     break
                 pygame.time.wait(50)
         except Exception as e:
             print(f"[TTS播放出错] {e}")
         finally:
-            self._current_channel = None
+            with VoiceSpeaker._pygame_lock:
+                self._current_channel = None
