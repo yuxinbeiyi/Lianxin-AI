@@ -626,7 +626,13 @@ class EmotionManager:
             states = [self._get_state(*self._active_key)]
         for state in states:
             self._dynamics.advance(state, bias=self._get_saga_bias(state.persona_id))
-            self._store.save_state(state)
+            try:
+                self._store.save_state(state)
+            except Exception:
+                # 单个状态写库失败（如数据库繁忙）不中断其余衰减，也不让
+                # 错误冒泡到 GUI/后台线程；下一轮衰减会再次尝试。
+                logger.warning("情感状态持久化失败，跳过该状态继续衰减", exc_info=True)
+                continue
             self._states[(state.persona_id, state.subject_id)] = state
 
     def reset_session(self) -> None:

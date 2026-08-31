@@ -152,7 +152,7 @@ _GITHUB_SEARCH_RE = re.compile(
 )
 _GITHUB_README_RE = re.compile(r"(?:readme|README|项目说明|说明文档)", re.I)
 _WINDOWS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\n\r\t]+")
-_FILE_EXT_RE = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|md|txt|csv|json|py|js|ts|html|log)\b", re.I)
+_FILE_EXT_RE = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|md|txt|csv|json|py|js|ts|html|log|db|sqlite)\b", re.I)
 _CONTINUATION_RE = re.compile(r"^(?:那就|就按|继续|接着|再试|换一个|第二个|用它|开始吧|执行吧|试试)")
 _NEGATED_SEARCH_RE = re.compile(r"(?:不想|不用|不要|别|停止|取消).{0,4}(?:搜|查|联网|上网)")
 _SOCIAL_RE = re.compile(
@@ -539,6 +539,17 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     ):
         capabilities.add("image")
         reasons.append("要求截屏、观察屏幕或图像识别")
+
+    # 图像生成：画图/自画像/生成图片（含用户点名 Agnes 图像 API）。
+    if re.search(
+        r"(?:帮我?画|画个|画一张|画一幅|画一下|画出来|画一个|画幅).{0,12}(?:图|画|自画像|像)"
+        r"|(?:生成|制作).{0,4}(?:图片|图像|图|画|自画像)"
+        r"|(?:图片|图像).{0,6}(?:生成|制作|生成器)"
+        r"|(?:自画像|画图|图像生成|文生图|Agnes)",
+        text,
+    ):
+        capabilities.add("image")
+        reasons.append("要求生成或绘制图像")
     # 系统自动化：此前整组不可达（open_app 等工具从未被路由开放）。
     if re.search(
         r"(?:打开|启动|运行).{0,6}(?:应用|程序|软件)"
@@ -570,6 +581,19 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         reasons.append("文件操作（泛化匹配）")
         if re.search(r"(?:写入|保存|创建|新建|删除|删掉|移动|重命名|整理)", lowered):
             capabilities.add("file_write")
+
+    # 本地文件/目录查找：找…文件/目录/在哪里/路径，或用系统命令/命令行搜索。
+    if re.search(
+        r"(?:找|查找|找找|找一下|搜一?下|搜索|查一下|帮我找).{0,24}(?:文件|目录|文件夹|在哪里|在哪儿|路径|位置)"
+        r"|(?:系统命令|命令行|终端|cmd|powershell).{0,12}(?:搜索|查找|搜|查)"
+        r"|(?:文件|目录|文件夹).{0,4}(?:在哪里|在哪儿|位置|路径)",
+        text,
+    ):
+        capabilities.add("file_read")
+        reasons.append("本地文件或目录查找")
+        if re.search(r"(?:系统命令|命令行|终端|cmd|powershell)", lowered):
+            capabilities.add("code")
+            reasons.append("用户要求使用系统命令")
     # 用户直接点名工具名时按工具所属能力组路由（高精度，零泛化误判）。
     for _mentioned in _TOOL_NAME_PATTERN.findall(text):
         _mentioned_cap = _TOOL_NAME_TO_CAPABILITY.get(_mentioned.lower())
@@ -581,6 +605,14 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if re.search(r"(?:记得|还记得|回忆|之前说过|以前聊过|记忆|昨天.{0,4}说|前天.{0,4}说)", text):
         capabilities.add("memory_read")
         reasons.append("消息附带回忆或记忆检索需求")
+
+    # 记忆写意图：删除/修改/保存/忘记 记忆 → memory_write（delete_memory/update_memory/save_memory）。
+    if re.search(
+        r"(?:删除|删掉|移除|去掉|修改|更新|改写|覆盖|保存|记住|写入|存|忘掉|忘记|遗忘).{0,10}(?:记忆|回忆|长期记忆|这条)",
+        text,
+    ):
+        capabilities.add("memory_write")
+        reasons.append("用户要求写入/修改/删除记忆")
     if any(token in lowered for token in (
         "坦克", "贪吃蛇", "虚拟世界", "地图标记", "食物", "标记的位置", "标记点", "前往标记", "到达标记",
         "左转", "右转", "急停", "取消任务",

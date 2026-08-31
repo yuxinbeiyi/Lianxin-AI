@@ -3034,7 +3034,16 @@ def search_files_everything(keyword: str, ext: str = "",
     """
     es = _find_everything_es()
     if not es:
-        return "⚠️ 未检测到 Everything。请从 https://www.voidtools.com 下载安装，可获得毫秒级全盘文件搜索。"
+        # 未检测到 Everything：降级为 Python 有界直接搜索（限定在指定目录/项目根目录，
+        # 带扫描上限与超时），并明确标注降级来源，避免模型把结果误当作全盘真实搜索。
+        print("[search_files_everything] 未检测到 Everything，改用 Python 直接搜索", flush=True)
+        roots = [folder] if folder else [str(Path(__file__).resolve().parent.parent)]
+        for root in roots:
+            fallback = _fallback_search_folder(root, keyword, ext, recent_days, max_results)
+            if fallback:
+                return f"⚠️ 未检测到 Everything，已用 Python 直接搜索（限定目录）：\n{fallback}"
+        return ("⚠️ 未检测到 Everything，Python 直接搜索未找到匹配（仅扫描了限定目录，非全盘）。"
+                "可安装 Everything 获得全盘搜索，或指定 folder 限定更具体目录。")
 
     # 构建 Everything 搜索语法（路径过滤放在搜索串中，不用无效的 CLI -path 参数）
     query_parts = [keyword]
@@ -3055,7 +3064,18 @@ def search_files_everything(keyword: str, ext: str = "",
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         lines = [l.strip() for l in r.stdout.strip().split("\n") if l.strip()]
         if not lines:
-            # ── 自动降级：Everything 未索引此目录 → Python 直接搜索 ──
+            # ── 自动降级：Everything 未连接/未索引 → Python 直接搜索 ──
+            if r.returncode != 0:
+                # es.exe 非零退出（常见 8=未连接 Everything 服务）：视为搜索服务不可用，
+                # 降级为 Python 有界直接搜索，并明确标注来源，避免模型当作真实全盘结果。
+                print(f"[search_files_everything] Everything es.exe 返回码 {r.returncode}（可能未启动），改用 Python 直接搜索", flush=True)
+                roots = [folder] if folder else [str(Path(__file__).resolve().parent.parent)]
+                for root in roots:
+                    fallback = _fallback_search_folder(root, keyword, ext, recent_days, max_results)
+                    if fallback:
+                        return f"⚠️ Everything 搜索服务不可用（未启动？），已用 Python 直接搜索（限定目录）：\n{fallback}"
+                return (f"⚠️ Everything 搜索服务不可用（es.exe 返回码 {r.returncode}），"
+                        "Python 直接搜索也未在限定目录找到匹配。请启动 Everything，或指定 folder 限定更具体目录。")
             if folder:
                 fallback = _fallback_search_folder(folder, keyword, ext, recent_days, max_results)
                 if fallback:
@@ -5284,18 +5304,33 @@ def _discover_connections(entity_name: str, depth: int = 2) -> str:
 
 
 def _search_graph_memory(keywords, entity_type: str = None) -> str:
-    """在图记忆中搜索实体关联，同时搜索图边和分类事实。"""
-    if isinstance(keywords, list):
-        keyword = keywords[0] if keywords else ""
-    elif isinstance(keywords, str):
-        keyword = keywords
-    else:
-        keyword = ""
-    if not keyword:
+    """在图记忆中搜索实体关联，同时搜索图边和分类事实。
+
+    支持多个关键词：逐个搜索后按事实 id / 图边去重合并，
+    避免模型传多关键词时只命中第一个而漏掉真实记忆。
+    """
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    keyword_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    if not keyword_list:
         return "请提供搜索关键词。"
 
     from brain.graph_memory import unified_search
-    data = unified_search(keyword, entity_type)
+    data = {"facts": [], "graph_edges": []}
+    seen_facts = set()
+    seen_edges = set()
+    for keyword in keyword_list:
+        part = unified_search(keyword, entity_type)
+        for fact in part.get("facts", []):
+            fid = fact.get("id")
+            if fid not in seen_facts:
+                seen_facts.add(fid)
+                data["facts"].append(fact)
+        for edge in part.get("graph_edges", []):
+            ekey = (edge.get("head"), edge.get("relation"), edge.get("tail"))
+            if ekey not in seen_edges:
+                seen_edges.add(ekey)
+                data["graph_edges"].append(edge)
     if entity_type:
         data["graph_edges"] = [
             r for r in data.get("graph_edges", [])

@@ -3012,12 +3012,28 @@ class MainWindow(QMainWindow):
     # ── 心跳自检 ─────────────────────────────────────────────
 
     def _on_emotion_decay_tick(self):
-        """情感衰减计时器触发，更新孤独漂移等时间衰减。"""
-        try:
-            from brain.emotional import get_manager as _get_emotion_mgr
-            _get_emotion_mgr().update_decay_only()
-        except Exception:
-            pass
+        """情感衰减计时器触发，更新孤独漂移等时间衰减。
+
+        SQLite 写库放到后台线程执行：GUI 线程只负责派发，避免被数据库
+        写锁/慢提交长时间阻塞（此前观察到主线程被 commit 卡住数十分钟，
+        导致整个界面冻结）。用运行标志防止衰减任务重叠堆积。
+        """
+        if getattr(self, "_emotion_decay_running", False):
+            return
+        self._emotion_decay_running = True
+
+        def _run_decay():
+            try:
+                from brain.emotional import get_manager as _get_emotion_mgr
+                _get_emotion_mgr().update_decay_only()
+            except Exception:
+                pass
+            finally:
+                self._emotion_decay_running = False
+
+        threading.Thread(
+            target=_run_decay, daemon=True, name="emotion-decay"
+        ).start()
 
     def _on_agent_watchdog_timeout(self):
         """AgentWorker 看门狗超时：优雅取消 → 等待完工 → 兜底强杀 + 清理残留。"""
@@ -3771,7 +3787,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_auto_task_scheduler'):
             self._auto_task_scheduler.stop()
         self._countdown_timer.stop()
-        self._todo_reminder_timer.stop()
         self._stop_autostart_net_poll()
         self._save_music_state()
         if self._study_room_window:
