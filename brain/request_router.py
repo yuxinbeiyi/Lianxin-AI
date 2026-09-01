@@ -286,6 +286,10 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
     available = set(available_tool_names)
     request_text = parse_request_context(request_text).routing_text
 
+    if "memory_read" in route.capabilities and is_verifiable_recall_request(request_text):
+        if "search_conversation_history" in available:
+            return "search_conversation_history"
+
     if "github" in route.capabilities:
         github_tool = _github_primary_tool(request_text)
         if github_tool in available:
@@ -381,6 +385,33 @@ _STRONG_TASK_HINT_RE = re.compile(
     r"|PPT|excel|表格|查一?下|帮我查|找一下)"
 )
 
+# 这类问题要求从持久化记录中确认事实，不能只依赖当前上下文或模型补全。
+_RECALL_HISTORY_RE = re.compile(
+    r"(?:聊天记录|历史记录|原聊天|原记录|对话记录|日志时间|时间戳|原话|"
+    r"当时|那次|那件事|那一回|那段对话|具体(?:的)?时间|准确时间|"
+    r"哪天|几号|几点|什么时候|说了什么|发生(?:在|的)?时间|"
+    r"不是今天|不是昨天)",
+    re.IGNORECASE,
+)
+
+
+def is_verifiable_recall_request(text: str) -> bool:
+    """判断是否必须用真实聊天记录核验历史事件。"""
+    value = str(text or "").strip()
+    if not value or not _RECALL_HISTORY_RE.search(value):
+        return False
+    # “现在几点”“今天是几号”属于实时钟表查询；只有带明确历史语境时
+    # 才走聊天记录，避免“几号/时间”这个词把实时问题升级成历史检索。
+    if re.search(
+        r"(?:现在|当前|此刻|今天|明天|后天|昨天).{0,8}(?:几点|时间|日期|几号|星期)",
+        value,
+    ) and not re.search(
+        r"(?:聊天记录|历史记录|当时|那次|那件事|原话|说了什么|不是今天|不是昨天)",
+        value,
+    ):
+        return False
+    return True
+
 
 def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                      forced_tool: str | None = None,
@@ -402,6 +433,13 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             RequestMode.TASK_CONTINUATION,
             frozenset(session_state.capabilities),
             "承接上一轮尚未结束的工具任务",
+        )
+
+    if is_verifiable_recall_request(text):
+        return RequestRoute(
+            RequestMode.TASK_DIRECT,
+            frozenset({"memory_read"}),
+            "要求核验历史聊天记录中的具体事件、时间或原话",
         )
 
     if any(token in lowered for token in ("时间胶囊", "日记", "共同书页")) and any(

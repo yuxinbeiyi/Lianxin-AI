@@ -30,7 +30,8 @@ from brain.tool_router import (
 )
 from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
-    classify_request, format_capability_result, is_contacts_inquiry, normalize_capabilities, required_execution_tool,
+    classify_request, format_capability_result, is_contacts_inquiry, is_verifiable_recall_request,
+    normalize_capabilities, required_execution_tool,
 )
 from brain.request_context import (
     format_quote_for_prompt,
@@ -3162,6 +3163,24 @@ class AgentCore:
         required_tool = required_execution_tool(
             route, available_tool_names, self._current_request_text
         )
+        if is_verifiable_recall_request(_msg_for_match):
+            if required_tool == "search_conversation_history":
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "【历史核验契约】用户要求确认历史事件、聊天记录、具体时间或原话。"
+                        "必须先调用 search_conversation_history 获取真实记录，才能回答。"
+                        "查具体事件时使用 mode=keyword，并从用户问题和近期上下文提取事件关键词；"
+                        "查最近对话时才使用 mode=recent。工具没有返回匹配记录时，明确说未找到可验证记录，"
+                        "不得根据当前时间、模糊记忆或上下文猜测日期和原话。"
+                    ),
+                    "_module": "recall_contract",
+                })
+            else:
+                return (
+                    "我目前无法核对这段历史聊天记录，因为聊天记录检索工具没有可用。"
+                    "因此我不会给你一个未经验证的具体时间或原话。"
+                )
         if required_tool == "navigate_to_marker" and not any(
             token in _msg_for_match.lower() for token in ("标记", "前往", "到达", "去")
         ):

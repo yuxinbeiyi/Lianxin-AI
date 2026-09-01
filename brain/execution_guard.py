@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from brain.request_router import is_verifiable_recall_request
+
 
 def _succeeded(audit: Iterable[dict], names: set[str]) -> bool:
     return any(
@@ -87,5 +89,25 @@ def validate_execution_claims(content: str, request_text: str, audit: Iterable[d
         search_claim = re.search(r"(?:我|已经|刚刚|这次).{0,12}(?:搜了一圈|搜索了|检索到|查到)", text)
         if search_claim and not _succeeded(events, {"web_search", "fetch_webpage"}):
             return "本轮没有成功完成联网检索，不能把内容说成是刚刚搜索到的结果。"
+
+    # 历史核验必须有聊天记录工具的真实审计结果。这里同时拦截“正在查”
+    # 这类过程性承诺，避免模型在无工具或工具失败时制造虚假的进度感。
+    if is_verifiable_recall_request(request):
+        history_ok = _succeeded(events, {"search_conversation_history"})
+        history_claim = re.search(
+            r"(?:我(?:正在|马上|已经|刚刚)?(?:查|核对|检索|查看)|"
+            r"正在查|马上核对|刚调用|调用了|已经核对|根据(?:聊天记录|日志)|"
+            r"查到了|找到.{0,12}(?:聊天记录|历史记录|原话)|"
+            r"结果(?:马上|应该马上)出来)",
+            text,
+            re.IGNORECASE,
+        )
+        honest_no_result = re.search(r"(?:没有|未|没能|无法).{0,8}(?:找到|取得).{0,12}(?:聊天记录|历史记录|原话|结果)", text)
+        if history_claim and not honest_no_result and not history_ok:
+            return (
+                "我这次还没有取得可验证的聊天记录结果，"
+                "所以不能声称已经查到、正在查或已经核对出具体时间。"
+                "你可以稍后让我重新检索，我会只依据真实记录回答。"
+            )
 
     return text
