@@ -2147,9 +2147,10 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "generate_image",
             "description": (
-                "根据文字描述生成图片。使用 Agnes Image API，支持多种尺寸和质量。"
+                "根据文字描述生成图片。使用当前在“创作生图”中选择的提供商（Agnes 或 SiliconFlow/Kolors）。"
+                "支持多种尺寸；生成后会自动保存到本地。"
                 "当用户要求画图、生成图片、创作图像、制作插图时调用此工具。"
-                "生成后图片会自动保存，用户可以查看和下载。"
+                "如果用户要求生图，直接调用工具，不要声称已经生成但不调用。"
             ),
             "parameters": {
                 "type": "object",
@@ -4655,36 +4656,50 @@ def describe_image(image_path: str, prompt: str = "") -> str:
 
 
 def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
-    """使用 Agnes Image API 生成图片。返回本地保存路径或错误信息。"""
+    """按当前配置生成图片，并将远程结果下载到本地。"""
     import requests
-    from config import get_agnes_config, get_image_gen_config
-
-    agnes_cfg = get_agnes_config()
-    api_key = agnes_cfg.get("api_key", "").strip()
-    if not api_key:
-        return "图片生成失败：未配置 Agnes AI API Key。请在设置中切换到 Agnes AI 并填写 API Key。"
+    from config import get_agnes_config, get_image_gen_config, get_siliconflow_config
 
     ig_cfg = get_image_gen_config()
     if not ig_cfg.get("enabled", True):
         return "图片生成功能已在设置中关闭。请在「创作生图」选项卡中启用。"
 
-    model = ig_cfg.get("model", "agnes-image-2.1-flash")
+    provider = str(ig_cfg.get("provider", "agnes")).strip().lower()
     final_size = size or ig_cfg.get("default_size", "1024x1024")
 
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "size": final_size,
-        "n": 1,
-    }
-    # 多数 Agnes 后端（text image queue）不支持 quality 字段，默认不发送；
-    # 仅当配置显式开启 send_quality 时才携带该参数。
-    if ig_cfg.get("send_quality", False):
-        body["quality"] = quality or ig_cfg.get("default_quality", "standard")
-
     try:
+        if provider == "siliconflow":
+            sf_cfg = get_siliconflow_config()
+            api_key = sf_cfg.get("api_key", "").strip()
+            if not api_key:
+                return "图片生成失败：未配置 SiliconFlow API Key。请在“视觉理解”选项卡中填写。"
+            base_url = sf_cfg.get("base_url", "https://api.siliconflow.cn/v1").rstrip("/")
+            model = ig_cfg.get("siliconflow_model", "Kwai-Kolors/Kolors")
+            # Kolors 当前接口使用 image_size；将旧 Agnes 尺寸选项映射到常用尺寸。
+            size_map = {"1792x1024": "1024x768", "1024x1792": "768x1024", "4k": "1024x1024"}
+            body = {
+                "model": model,
+                "prompt": prompt,
+                "image_size": size_map.get(final_size, final_size),
+                "batch_size": 1,
+                "num_inference_steps": int(ig_cfg.get("num_inference_steps", 20)),
+                "guidance_scale": float(ig_cfg.get("guidance_scale", 7.5)),
+            }
+            endpoint = f"{base_url}/images/generations"
+        else:
+            agnes_cfg = get_agnes_config()
+            api_key = agnes_cfg.get("api_key", "").strip()
+            if not api_key:
+                return "图片生成失败：未配置 Agnes AI API Key。请在设置中切换到 Agnes AI 并填写 API Key。"
+            model = ig_cfg.get("model", "agnes-image-2.1-flash")
+            body = {"model": model, "prompt": prompt, "size": final_size, "n": 1}
+            # 多数 Agnes 后端不支持 quality，只有显式配置时才发送。
+            if ig_cfg.get("send_quality", False):
+                body["quality"] = quality or ig_cfg.get("default_quality", "standard")
+            endpoint = "https://apihub.agnes-ai.com/v1/images/generations"
+
         resp = requests.post(
-            "https://apihub.agnes-ai.com/v1/images/generations",
+            endpoint,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -4694,7 +4709,7 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
         )
         if resp.status_code != 200:
             detail = resp.text[:200]
-            if "quality" in detail and "not supported" in detail:
+            if provider != "siliconflow" and "quality" in detail and "not supported" in detail:
                 return (
                     f"图片生成失败：当前 Agnes 后端不支持 quality 参数（HTTP {resp.status_code} — {detail}）。"
                     "请忽略该参数后重试，或确认后端是否支持质量选项。"
@@ -4702,15 +4717,29 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
             return f"图片生成失败：HTTP {resp.status_code} — {detail}"
 
         data = resp.json()
+        if provider == "siliconflow" and data.get("code") not in (None, 20000, 0):
+            message = data.get("message") or data.get("msg") or "SiliconFlow 返回业务错误"
+            return f"图片生成失败：{message}"
         img_data = data.get("data", [])
+        if not img_data and data.get("images"):
+            img_data = data["images"]
         if not img_data:
             return "图片生成失败：API 返回数据为空"
+        if isinstance(img_data, str):
+            img_url = img_data.strip()
+        else:
+            if isinstance(img_data, dict):
+                img_data = [img_data]
+            first_image = img_data[0] if isinstance(img_data, list) and img_data else {}
+            img_url = (
+                first_image.get("url") or first_image.get("b64_json")
+                if isinstance(first_image, dict) else str(first_image or "")
+            )
 
-        img_url = img_data[0].get("url") or img_data[0].get("b64_json")
         if not img_url:
             return "图片生成失败：返回数据中未找到图片 URL"
 
-        save_dir = os.path.join(os.path.expanduser("~"), ".lianxin", "generated_images")
+        save_dir = ig_cfg.get("save_dir") or os.path.join(os.path.expanduser("~"), ".lianxin", "generated_images")
         os.makedirs(save_dir, exist_ok=True)
         timestamp = int(__import__('time').time())
         safe_name = re.sub(r'[^\w一-鿿]', '_', prompt[:20]).strip('_')
@@ -4718,6 +4747,7 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
 
         if img_url.startswith("http"):
             img_resp = requests.get(img_url, timeout=60)
+            img_resp.raise_for_status()
             with open(save_path, "wb") as f:
                 f.write(img_resp.content)
         else:

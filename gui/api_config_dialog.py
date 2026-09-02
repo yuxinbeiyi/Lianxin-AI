@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QSpinBox, QFrame, QMessageBox, QTabWidget,
     QWidget, QFormLayout, QCheckBox, QComboBox, QApplication,
+    QDoubleSpinBox,
     QRadioButton, QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -76,6 +77,62 @@ class _BalanceWorker(QThread):
             self.failed.emit(error)
         else:
             self.success.emit(result)
+
+
+class _ImageGenTestWorker(QThread):
+    """在工作线程中执行生图和下载，结果通过 Qt 信号回到界面线程。"""
+    success = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, endpoint: str, api_key: str, body: dict, siliconflow: bool = False, parent=None):
+        super().__init__(parent)
+        self._endpoint = endpoint
+        self._api_key = api_key
+        self._body = body
+        self._siliconflow = siliconflow
+
+    def run(self):
+        try:
+            import base64
+            import os
+            import time
+            import requests
+
+            resp = requests.post(
+                self._endpoint,
+                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+                json=self._body,
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+            if self._siliconflow and data.get("code") not in (None, 20000, 0):
+                raise RuntimeError(str(data.get("message") or data.get("msg") or "SiliconFlow 返回业务错误"))
+            images = data.get("data", []) or data.get("images", [])
+            if isinstance(images, str):
+                image_value = images.strip()
+            else:
+                if isinstance(images, dict):
+                    images = [images]
+                image_value = (images[0].get("url") or images[0].get("b64_json")) if images else ""
+            if not image_value:
+                raise RuntimeError("返回数据中未找到图片 URL")
+
+            save_dir = os.path.join(os.path.expanduser("~"), ".lianxin", "generated_images")
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, f"test_{int(time.time())}.png")
+            if image_value.startswith("http"):
+                image_resp = requests.get(image_value, timeout=60)
+                image_resp.raise_for_status()
+                content = image_resp.content
+            else:
+                content = base64.b64decode(image_value)
+            with open(save_path, "wb") as image_file:
+                image_file.write(content)
+            self.success.emit(save_path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 # ── 对话框主体 ────────────────────────────────────────────────
@@ -669,14 +726,14 @@ class ApiConfigDialog(QDialog):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
-        title = QLabel("🎨 创作生图 — Agnes Image API")
+        title = QLabel("🎨 创作生图")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
         title.setStyleSheet("color: #3A3A5C;")
         layout.addWidget(title)
 
         desc = QLabel(
-            "使用 Agnes Image API 根据文字描述生成图片。\n"
-            "与 Agnes 聊天模型共用同一 API Key，无需额外申请。"
+            "在 Agnes Image API 与 SiliconFlow 的 Kwai-Kolors/Kolors 之间切换。\n"
+            "SiliconFlow 生图复用“视觉理解”选项卡中的 API Key 和 Base URL。"
         )
         desc.setFont(QFont("Microsoft YaHei UI", 9))
         desc.setStyleSheet("color: #888888;")
@@ -694,12 +751,45 @@ class ApiConfigDialog(QDialog):
         self._ig_enabled_cb.setStyleSheet("color: #3A3A5C;")
         form.addRow("", self._ig_enabled_cb)
 
+        self._ig_provider_combo = QComboBox()
+        self._ig_provider_combo.addItems([
+            "Agnes Image API",
+            "SiliconFlow · Kwai-Kolors/Kolors",
+        ])
+        self._ig_provider_combo.setStyleSheet(self._ig_size_combo_style())
+        form.addRow("生图提供商:", self._ig_provider_combo)
+
         # 模型名称
         self._ig_model_edit = QLineEdit()
         self._ig_model_edit.setPlaceholderText("agnes-image-2.1-flash")
         self._ig_model_edit.setFont(QFont("Consolas", 10))
         self._apply_field_style(self._ig_model_edit)
-        form.addRow("图片模型:", self._ig_model_edit)
+        self._ig_model_label = QLabel("图片模型:")
+        form.addRow(self._ig_model_label, self._ig_model_edit)
+
+        self._ig_sf_model_edit = QLineEdit()
+        self._ig_sf_model_edit.setPlaceholderText("Kwai-Kolors/Kolors")
+        self._ig_sf_model_edit.setFont(QFont("Consolas", 10))
+        self._apply_field_style(self._ig_sf_model_edit)
+        self._ig_sf_model_label = QLabel("Kolors 模型:")
+        form.addRow(self._ig_sf_model_label, self._ig_sf_model_edit)
+
+        self._ig_steps_spin = QSpinBox()
+        self._ig_steps_spin.setRange(1, 100)
+        self._ig_steps_spin.setValue(20)
+        self._ig_steps_spin.setSuffix(" steps")
+        self._ig_steps_spin.setStyleSheet(self._ig_size_combo_style())
+        self._ig_steps_label = QLabel("采样步数:")
+        form.addRow(self._ig_steps_label, self._ig_steps_spin)
+
+        self._ig_guidance_spin = QDoubleSpinBox()
+        self._ig_guidance_spin.setRange(0.0, 30.0)
+        self._ig_guidance_spin.setSingleStep(0.5)
+        self._ig_guidance_spin.setDecimals(1)
+        self._ig_guidance_spin.setValue(7.5)
+        self._ig_guidance_spin.setStyleSheet(self._ig_size_combo_style())
+        self._ig_guidance_label = QLabel("引导系数:")
+        form.addRow(self._ig_guidance_label, self._ig_guidance_spin)
 
         # 默认尺寸
         self._ig_size_combo = QComboBox()
@@ -731,6 +821,8 @@ class ApiConfigDialog(QDialog):
         self._ig_quality_combo.setStyleSheet(self._ig_size_combo.styleSheet())
         form.addRow("默认质量:", self._ig_quality_combo)
 
+        self._ig_provider_combo.currentIndexChanged.connect(self._on_image_provider_changed)
+
         layout.addLayout(form)
 
         # 测试按钮
@@ -759,6 +851,30 @@ class ApiConfigDialog(QDialog):
         layout.addLayout(test_row)
 
         layout.addStretch()
+
+    def _ig_size_combo_style(self):
+        return """
+            QComboBox, QSpinBox, QDoubleSpinBox {
+                border: 1px solid #D8D8EE;
+                border-radius: 8px;
+                padding: 4px 10px;
+                background-color: #FFFFFF;
+                color: #3A3A5C;
+            }
+        """
+
+    def _on_image_provider_changed(self, index: int):
+        is_sf = index == 1
+        self._ig_model_edit.setVisible(not is_sf)
+        self._ig_model_label.setVisible(not is_sf)
+        self._ig_sf_model_edit.setVisible(is_sf)
+        self._ig_sf_model_label.setVisible(is_sf)
+        self._ig_steps_spin.setVisible(is_sf)
+        self._ig_steps_label.setVisible(is_sf)
+        self._ig_guidance_spin.setVisible(is_sf)
+        self._ig_guidance_label.setVisible(is_sf)
+        self._ig_quality_combo.setVisible(not is_sf)
+        # Kolors 接口不接受 Agnes 的 4k 尺寸，显示时仍保留原组合框但运行时会映射。
 
     # ── 创作视频选项卡（Agnes Video API） ──────────────────
 
@@ -1262,6 +1378,10 @@ class ApiConfigDialog(QDialog):
         ig_cfg = get_image_gen_config()
         self._ig_enabled_cb.setChecked(ig_cfg.get("enabled", True))
         self._ig_model_edit.setText(ig_cfg.get("model", "agnes-image-2.1-flash"))
+        self._ig_sf_model_edit.setText(ig_cfg.get("siliconflow_model", "Kwai-Kolors/Kolors"))
+        self._ig_steps_spin.setValue(int(ig_cfg.get("num_inference_steps", 20)))
+        self._ig_guidance_spin.setValue(float(ig_cfg.get("guidance_scale", 7.5)))
+        self._ig_provider_combo.setCurrentIndex(1 if ig_cfg.get("provider", "agnes") == "siliconflow" else 0)
         self._ig_quality_combo.setCurrentIndex(0 if ig_cfg.get("default_quality") != "hd" else 1)
         size_map = {"1024x1024": 0, "1792x1024": 1, "1024x1792": 2, "4k": 3}
         self._ig_size_combo.setCurrentIndex(size_map.get(ig_cfg.get("default_size", "1024x1024"), 0))
@@ -1319,10 +1439,14 @@ class ApiConfigDialog(QDialog):
         size_map = ["1024x1024", "1792x1024", "1024x1792", "4k"]
         quality_map = ["standard", "hd"]
         return {
+            "provider":         "siliconflow" if self._ig_provider_combo.currentIndex() == 1 else "agnes",
             "enabled":         self._ig_enabled_cb.isChecked(),
             "model":           self._ig_model_edit.text().strip() or "agnes-image-2.1-flash",
             "default_size":    size_map[self._ig_size_combo.currentIndex()],
             "default_quality": quality_map[self._ig_quality_combo.currentIndex()],
+            "siliconflow_model": self._ig_sf_model_edit.text().strip() or "Kwai-Kolors/Kolors",
+            "num_inference_steps": self._ig_steps_spin.value(),
+            "guidance_scale": self._ig_guidance_spin.value(),
             "save_dir":        "",
         }
 
@@ -1412,70 +1536,55 @@ class ApiConfigDialog(QDialog):
 
     def _on_image_gen_test(self):
         """测试图片生成。"""
-        from config import get_agnes_config
-        agnes_cfg = get_agnes_config()
-        api_key = agnes_cfg.get("api_key", "").strip()
+        from config import get_agnes_config, get_siliconflow_config
+        is_sf = self._ig_provider_combo.currentIndex() == 1
+        active_cfg = get_siliconflow_config() if is_sf else get_agnes_config()
+        api_key = active_cfg.get("api_key", "").strip()
         if not api_key:
-            QMessageBox.warning(self, "提示", "请先在 DeepSeek API 选项卡中选择 Agnes AI 并填写 API Key！")
+            location = "视觉理解" if is_sf else "DeepSeek API"
+            provider_name = "SiliconFlow" if is_sf else "Agnes AI"
+            QMessageBox.warning(self, "提示", f"请先在“{location}”选项卡中填写 {provider_name} API Key！")
             return
 
+        size_map = ["1024x1024", "1792x1024", "1024x1792", "4k"]
+        quality_map = ["standard", "hd"]
+        size = size_map[self._ig_size_combo.currentIndex()]
+        quality = quality_map[self._ig_quality_combo.currentIndex()]
+        model = (
+            self._ig_sf_model_edit.text().strip() or "Kwai-Kolors/Kolors"
+            if is_sf else self._ig_model_edit.text().strip() or "agnes-image-2.1-flash"
+        )
+        sf_size_map = {"1792x1024": "1024x768", "1024x1792": "768x1024", "4k": "1024x1024"}
+        request_body = (
+            {"model": model, "prompt": "一只可爱的卡通小猫，坐在窗台上看月亮",
+             "image_size": sf_size_map.get(size, size), "batch_size": 1,
+             "num_inference_steps": self._ig_steps_spin.value(),
+             "guidance_scale": self._ig_guidance_spin.value()}
+            if is_sf else
+            {"model": model, "prompt": "一只可爱的卡通小猫，坐在窗台上看月亮",
+             "size": size, "quality": quality, "n": 1}
+        )
+        endpoint = (
+            f"{active_cfg.get('base_url', 'https://api.siliconflow.cn/v1').rstrip('/')}/images/generations"
+            if is_sf else "https://apihub.agnes-ai.com/v1/images/generations"
+        )
         self._ig_test_btn.setEnabled(False)
         self._ig_test_btn.setText("生成中…")
+        self._ig_test_worker = _ImageGenTestWorker(endpoint, api_key, request_body, is_sf, self)
+        self._ig_test_worker.success.connect(self._on_image_gen_test_success)
+        self._ig_test_worker.failed.connect(self._on_image_gen_test_failed)
+        self._ig_test_worker.finished.connect(self._ig_test_worker.deleteLater)
+        self._ig_test_worker.start()
 
-        def _test():
-            import requests, tempfile, os
-            size_map = ["1024x1024", "1792x1024", "1024x1792", "4k"]
-            quality_map = ["standard", "hd"]
-            size = size_map[self._ig_size_combo.currentIndex()]
-            quality = quality_map[self._ig_quality_combo.currentIndex()]
-            model = self._ig_model_edit.text().strip() or "agnes-image-2.1-flash"
+    def _on_image_gen_test_success(self, save_path: str):
+        self._ig_test_btn.setText("🖼 测试生成一张图片")
+        self._ig_test_btn.setEnabled(True)
+        QMessageBox.information(self, "生成成功", f"图片已保存到：\n{save_path}")
 
-            try:
-                resp = requests.post(
-                    "https://apihub.agnes-ai.com/v1/images/generations",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={"model": model, "prompt": "一只可爱的卡通小猫，坐在窗台上看月亮", "size": size, "quality": quality, "n": 1},
-                    timeout=120,
-                )
-                if resp.status_code != 200:
-                    self._ig_test_btn.setText("🖼 测试生成")
-                    self._ig_test_btn.setEnabled(True)
-                    QMessageBox.warning(self, "生成失败", f"HTTP {resp.status_code}: {resp.text[:300]}")
-                    return
-
-                data = resp.json()
-                img_url = data["data"][0].get("url") or data["data"][0].get("b64_json")
-                if not img_url:
-                    self._ig_test_btn.setText("🖼 测试生成")
-                    self._ig_test_btn.setEnabled(True)
-                    QMessageBox.warning(self, "生成失败", "返回数据中未找到图片 URL")
-                    return
-
-                if img_url.startswith("http"):
-                    img_resp = requests.get(img_url, timeout=60)
-                    save_dir = os.path.join(os.path.expanduser("~"), ".lianxin", "generated_images")
-                    os.makedirs(save_dir, exist_ok=True)
-                    save_path = os.path.join(save_dir, f"test_{int(__import__('time').time())}.png")
-                    with open(save_path, "wb") as f:
-                        f.write(img_resp.content)
-                else:
-                    import base64
-                    save_dir = os.path.join(os.path.expanduser("~"), ".lianxin", "generated_images")
-                    os.makedirs(save_dir, exist_ok=True)
-                    save_path = os.path.join(save_dir, f"test_{int(__import__('time').time())}.png")
-                    with open(save_path, "wb") as f:
-                        f.write(base64.b64decode(img_url))
-
-                self._ig_test_btn.setText("🖼 测试生成")
-                self._ig_test_btn.setEnabled(True)
-                QMessageBox.information(self, "生成成功", f"图片已保存到：\n{save_path}")
-            except Exception as e:
-                self._ig_test_btn.setText("🖼 测试生成")
-                self._ig_test_btn.setEnabled(True)
-                QMessageBox.warning(self, "生成失败", str(e))
-
-        import threading
-        threading.Thread(target=_test, daemon=True).start()
+    def _on_image_gen_test_failed(self, message: str):
+        self._ig_test_btn.setText("🖼 测试生成一张图片")
+        self._ig_test_btn.setEnabled(True)
+        QMessageBox.warning(self, "生成失败", message)
 
     def _on_video_gen_test(self):
         """测试视频生成（文生视频，异步轮询）。"""

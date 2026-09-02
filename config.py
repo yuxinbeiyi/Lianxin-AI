@@ -35,14 +35,18 @@ _GITHUB_DEFAULTS = {
     "content_preview_chars": 4000,
 }
 
-# ── Agnes 图片生成默认值 ───────────────────────────────────
+# ── 图片生成默认值 ─────────────────────────────────────────
 _IMAGE_GEN_DEFAULTS = {
+    "provider":       "agnes",  # "agnes" | "siliconflow"
     "enabled":        True,
     "model":          "agnes-image-2.1-flash",
     "default_size":   "1024x1024",
     "default_quality": "standard",
     "send_quality":   False,   # 多数 Agnes 后端（text image queue）不支持 quality，默认不发送
     "save_dir":       "",
+    "siliconflow_model": "Kwai-Kolors/Kolors",
+    "num_inference_steps": 20,
+    "guidance_scale": 7.5,
 }
 
 # ── SiliconFlow 视觉 API 默认值 ────────────────────────────
@@ -210,14 +214,14 @@ def save_github_config(config: dict):
 
 
 def get_image_gen_config() -> dict:
-    """读取 Agnes 图片生成配置，缺失字段用默认值补全。"""
+    """读取图片生成配置，旧配置默认使用 Agnes。"""
     full = _load_full_config()
     ig = full.get("image_gen", {})
     return {k: ig.get(k, v) for k, v in _IMAGE_GEN_DEFAULTS.items()}
 
 
 def save_image_gen_config(config: dict):
-    """保存 Agnes 图片生成配置（仅更新 image_gen 部分）。"""
+    """保存图片生成配置（仅更新 image_gen 部分）。"""
     full = _load_full_config()
     full["image_gen"] = config
     _save_full_config(full)
