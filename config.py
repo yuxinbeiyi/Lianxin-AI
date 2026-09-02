@@ -39,10 +39,11 @@ _GITHUB_DEFAULTS = {
 _IMAGE_GEN_DEFAULTS = {
     "provider":       "agnes",  # "agnes" | "siliconflow"
     "enabled":        True,
-    "model":          "agnes-image-2.1-flash",
+    "model":          "agnes-image-2.5-flash",
+    "agnes_api_key":  "",  # 生图专用 Key；为空时兼容回退到 Agnes 聊天 Key
     "default_size":   "1024x1024",
     "default_quality": "standard",
-    "send_quality":   False,   # 多数 Agnes 后端（text image queue）不支持 quality，默认不发送
+    "send_quality":   False,   # 保留旧配置字段，但 Agnes 生图不会发送 quality
     "save_dir":       "",
     "siliconflow_model": "Kwai-Kolors/Kolors",
     "num_inference_steps": 20,

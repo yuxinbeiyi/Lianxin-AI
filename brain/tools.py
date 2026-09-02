@@ -2161,14 +2161,9 @@ TOOL_DEFINITIONS = [
                     },
                     "size": {
                         "type": "string",
-                        "enum": ["1024x1024", "1792x1024", "1024x1792", "4k"],
+                        "enum": ["1024x1024", "1024x768", "1024x1792", "1K", "2K", "3K", "4K"],
                         "description": "图片尺寸，默认使用配置中的默认值"
                     },
-                    "quality": {
-                        "type": "string",
-                        "enum": ["standard", "hd"],
-                        "description": "图片质量。仅当后端支持时生效；多数 Agnes 后端不支持该字段，会默认使用标准质量"
-                    }
                 },
                 "required": ["prompt"]
             }
@@ -4688,14 +4683,13 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
             endpoint = f"{base_url}/images/generations"
         else:
             agnes_cfg = get_agnes_config()
-            api_key = agnes_cfg.get("api_key", "").strip()
+            api_key = (ig_cfg.get("agnes_api_key") or agnes_cfg.get("api_key", "")).strip()
             if not api_key:
-                return "图片生成失败：未配置 Agnes AI API Key。请在设置中切换到 Agnes AI 并填写 API Key。"
-            model = ig_cfg.get("model", "agnes-image-2.1-flash")
-            body = {"model": model, "prompt": prompt, "size": final_size, "n": 1}
-            # 多数 Agnes 后端不支持 quality，只有显式配置时才发送。
-            if ig_cfg.get("send_quality", False):
-                body["quality"] = quality or ig_cfg.get("default_quality", "standard")
+                return "图片生成失败：未配置 Agnes 生图 API Key。请在“创作生图”中填写，或在 AI 提供商设置中填写 Agnes Key。"
+            model = ig_cfg.get("model", "agnes-image-2.5-flash")
+            # Agnes Image 2.5 文生图接口要求 model/prompt/size；不发送
+            # 旧版 OpenAI 图片接口中的 quality 或 n，避免 text image queue 拒绝请求。
+            body = {"model": model, "prompt": prompt, "size": final_size}
             endpoint = "https://apihub.agnes-ai.com/v1/images/generations"
 
         resp = requests.post(
@@ -4709,11 +4703,6 @@ def generate_image(prompt: str, size: str = None, quality: str = None) -> str:
         )
         if resp.status_code != 200:
             detail = resp.text[:200]
-            if provider != "siliconflow" and "quality" in detail and "not supported" in detail:
-                return (
-                    f"图片生成失败：当前 Agnes 后端不支持 quality 参数（HTTP {resp.status_code} — {detail}）。"
-                    "请忽略该参数后重试，或确认后端是否支持质量选项。"
-                )
             return f"图片生成失败：HTTP {resp.status_code} — {detail}"
 
         data = resp.json()

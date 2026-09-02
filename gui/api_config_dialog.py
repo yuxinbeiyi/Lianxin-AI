@@ -759,9 +759,17 @@ class ApiConfigDialog(QDialog):
         self._ig_provider_combo.setStyleSheet(self._ig_size_combo_style())
         form.addRow("生图提供商:", self._ig_provider_combo)
 
+        self._ig_agnes_key_edit = QLineEdit()
+        self._ig_agnes_key_edit.setPlaceholderText("留空则使用 AI 提供商设置中的 Agnes Key")
+        self._ig_agnes_key_edit.setEchoMode(QLineEdit.Password)
+        self._ig_agnes_key_edit.setFont(QFont("Consolas", 10))
+        self._apply_field_style(self._ig_agnes_key_edit)
+        self._ig_agnes_key_label = QLabel("Agnes 生图 API Key:")
+        form.addRow(self._ig_agnes_key_label, self._ig_agnes_key_edit)
+
         # 模型名称
         self._ig_model_edit = QLineEdit()
-        self._ig_model_edit.setPlaceholderText("agnes-image-2.1-flash")
+        self._ig_model_edit.setPlaceholderText("agnes-image-2.5-flash")
         self._ig_model_edit.setFont(QFont("Consolas", 10))
         self._apply_field_style(self._ig_model_edit)
         self._ig_model_label = QLabel("图片模型:")
@@ -865,6 +873,8 @@ class ApiConfigDialog(QDialog):
 
     def _on_image_provider_changed(self, index: int):
         is_sf = index == 1
+        self._ig_agnes_key_edit.setVisible(not is_sf)
+        self._ig_agnes_key_label.setVisible(not is_sf)
         self._ig_model_edit.setVisible(not is_sf)
         self._ig_model_label.setVisible(not is_sf)
         self._ig_sf_model_edit.setVisible(is_sf)
@@ -873,7 +883,7 @@ class ApiConfigDialog(QDialog):
         self._ig_steps_label.setVisible(is_sf)
         self._ig_guidance_spin.setVisible(is_sf)
         self._ig_guidance_label.setVisible(is_sf)
-        self._ig_quality_combo.setVisible(not is_sf)
+        self._ig_quality_combo.setVisible(False)
         # Kolors 接口不接受 Agnes 的 4k 尺寸，显示时仍保留原组合框但运行时会映射。
 
     # ── 创作视频选项卡（Agnes Video API） ──────────────────
@@ -1377,7 +1387,8 @@ class ApiConfigDialog(QDialog):
         from config import get_image_gen_config
         ig_cfg = get_image_gen_config()
         self._ig_enabled_cb.setChecked(ig_cfg.get("enabled", True))
-        self._ig_model_edit.setText(ig_cfg.get("model", "agnes-image-2.1-flash"))
+        self._ig_agnes_key_edit.setText(ig_cfg.get("agnes_api_key", ""))
+        self._ig_model_edit.setText(ig_cfg.get("model", "agnes-image-2.5-flash"))
         self._ig_sf_model_edit.setText(ig_cfg.get("siliconflow_model", "Kwai-Kolors/Kolors"))
         self._ig_steps_spin.setValue(int(ig_cfg.get("num_inference_steps", 20)))
         self._ig_guidance_spin.setValue(float(ig_cfg.get("guidance_scale", 7.5)))
@@ -1441,7 +1452,8 @@ class ApiConfigDialog(QDialog):
         return {
             "provider":         "siliconflow" if self._ig_provider_combo.currentIndex() == 1 else "agnes",
             "enabled":         self._ig_enabled_cb.isChecked(),
-            "model":           self._ig_model_edit.text().strip() or "agnes-image-2.1-flash",
+            "model":           self._ig_model_edit.text().strip() or "agnes-image-2.5-flash",
+            "agnes_api_key":   self._ig_agnes_key_edit.text().strip(),
             "default_size":    size_map[self._ig_size_combo.currentIndex()],
             "default_quality": quality_map[self._ig_quality_combo.currentIndex()],
             "siliconflow_model": self._ig_sf_model_edit.text().strip() or "Kwai-Kolors/Kolors",
@@ -1539,9 +1551,10 @@ class ApiConfigDialog(QDialog):
         from config import get_agnes_config, get_siliconflow_config
         is_sf = self._ig_provider_combo.currentIndex() == 1
         active_cfg = get_siliconflow_config() if is_sf else get_agnes_config()
-        api_key = active_cfg.get("api_key", "").strip()
+        api_key = (active_cfg.get("api_key", "") if is_sf else
+                   (self._ig_agnes_key_edit.text().strip() or active_cfg.get("api_key", ""))).strip()
         if not api_key:
-            location = "视觉理解" if is_sf else "DeepSeek API"
+            location = "视觉理解" if is_sf else "创作生图"
             provider_name = "SiliconFlow" if is_sf else "Agnes AI"
             QMessageBox.warning(self, "提示", f"请先在“{location}”选项卡中填写 {provider_name} API Key！")
             return
@@ -1552,7 +1565,7 @@ class ApiConfigDialog(QDialog):
         quality = quality_map[self._ig_quality_combo.currentIndex()]
         model = (
             self._ig_sf_model_edit.text().strip() or "Kwai-Kolors/Kolors"
-            if is_sf else self._ig_model_edit.text().strip() or "agnes-image-2.1-flash"
+            if is_sf else self._ig_model_edit.text().strip() or "agnes-image-2.5-flash"
         )
         sf_size_map = {"1792x1024": "1024x768", "1024x1792": "768x1024", "4k": "1024x1024"}
         request_body = (
@@ -1562,7 +1575,7 @@ class ApiConfigDialog(QDialog):
              "guidance_scale": self._ig_guidance_spin.value()}
             if is_sf else
             {"model": model, "prompt": "一只可爱的卡通小猫，坐在窗台上看月亮",
-             "size": size, "quality": quality, "n": 1}
+             "size": size, "n": 1}
         )
         endpoint = (
             f"{active_cfg.get('base_url', 'https://api.siliconflow.cn/v1').rstrip('/')}/images/generations"
