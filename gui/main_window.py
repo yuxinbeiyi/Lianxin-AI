@@ -2975,7 +2975,9 @@ class MainWindow(QMainWindow):
 
     def _on_checklist_proposed(self, items: list):
         """莲心从对话中提取到待办，弹窗确认。"""
-        from config import get_todo_auto_confirm, save_todo_auto_confirm
+        from config import get_todo_auto_confirm, save_todo_auto_confirm, get_todo_auto_suggest
+        if not get_todo_auto_suggest():
+            return
         if not get_todo_auto_confirm():
             # 自动模式：直接添加
             for item in items:

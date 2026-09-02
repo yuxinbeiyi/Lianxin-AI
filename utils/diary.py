@@ -197,10 +197,20 @@ def generate_diary_content(messages: List[Dict]) -> Optional[Dict]:
     prompt = _build_diary_prompt(messages, persona_snapshot)
     try:
         response = agent._call_api_with_retry([{"role": "user", "content": prompt}])
-        response_text = response.choices[0].message.content
+        message = response.choices[0].message
+        response_text = message.content
+        # Some OpenAI-compatible providers return content blocks instead of a string.
+        if isinstance(response_text, list):
+            response_text = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in response_text
+            )
+        response_text = str(response_text or "").strip()
+        if not response_text:
+            raise RuntimeError("empty_model_response")
         result = _parse_diary_json(response_text)
         if not result:
-            return None
+            raise RuntimeError("diary_json_parse_failed")
         allowed_ids = {
             int(message["source_event_id"])
             for message in messages
@@ -223,7 +233,8 @@ def generate_diary_content(messages: List[Dict]) -> Optional[Dict]:
         result["content"] = str(result.get("content", "")).strip()[:max_chars]
         return result if result["content"] else None
     except Exception as e:
-        print(f"[日记] 生成失败: {e}")
+        provider = get_api_config().get("provider", "unknown")
+        print(f"[日记] 生成失败 provider={provider}, reason={e}", flush=True)
         return None
 
 def _build_diary_prompt(messages: List[Dict], persona_snapshot=None) -> str:
@@ -282,15 +293,45 @@ def _build_diary_prompt(messages: List[Dict], persona_snapshot=None) -> str:
 def _parse_diary_json(response_text: str) -> Optional[Dict]:
     """解析 AI 返回的 JSON，失败返回 None。"""
     import re
+    text = str(response_text or "").strip()
+    # Agnes may wrap the requested JSON in a Markdown code fence or a short
+    # natural-language preamble. Remove only the fence markers, then extract
+    # the first balanced JSON object instead of using a greedy regex.
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text).strip()
     try:
-        return json.loads(response_text)
-    except Exception:
-        match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except Exception:
-                pass
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    start = text.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        value = json.loads(text[start:index + 1])
+                        return value if isinstance(value, dict) else None
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        break
     return None
 
 

@@ -778,6 +778,15 @@ class AlarmDialog(QDialog):
         )
         layout.addWidget(self._todo_confirm_check)
 
+        # 控制对话结束后的自动待办提议；不影响用户主动设置待办或提醒。
+        from config import get_todo_auto_suggest, save_todo_auto_suggest
+        self._todo_suggest_check = QCheckBox("允许莲心根据聊天内容自动提议待办/提醒")
+        self._todo_suggest_check.setChecked(get_todo_auto_suggest())
+        self._todo_suggest_check.setToolTip("关闭后不再弹出“莲心想要为你添加以下待办/提醒”窗口")
+        self._todo_suggest_check.setStyleSheet("font-size: 12px; color: #8FA0C0; background: transparent;")
+        self._todo_suggest_check.toggled.connect(save_todo_auto_suggest)
+        layout.addWidget(self._todo_suggest_check)
+
         if self._todo_manager is None:
             empty_label = QLabel("待办功能不可用")
             empty_label.setAlignment(Qt.AlignCenter)

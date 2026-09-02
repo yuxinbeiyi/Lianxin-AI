@@ -1431,6 +1431,19 @@ def save_todo_auto_confirm(auto_confirm: bool):
     _save_full_config(full)
 
 
+def get_todo_auto_suggest() -> bool:
+    """是否允许对话结束后自动提议将内容加入待办。"""
+    full = _load_full_config()
+    return bool(full.get("todo_auto_suggest", True))
+
+
+def save_todo_auto_suggest(enabled: bool):
+    """保存对话自动待办提议开关。"""
+    full = _load_full_config()
+    full["todo_auto_suggest"] = bool(enabled)
+    _save_full_config(full)
+
+
 # ── GPU/CPU 设备偏好配置 ───────────────────────────────────
 # 每个功能可独立选择："auto"（默认）、"cpu"、"cuda"
 
