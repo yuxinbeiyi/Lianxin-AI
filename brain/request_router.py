@@ -19,6 +19,7 @@ class RequestMode(str, Enum):
 
 
 CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
+    "self_knowledge": {"query_self_knowledge", "query_self_status", "inspect_self_capability"},
     "memory_read": {"search_graph_memory", "search_conversation_history", "search_cross_session",
                     "discover_connections", "explain_memory_quality"},
     "memory_write": {"save_memory", "update_memory", "delete_memory", "review_memory_conflict",
@@ -286,6 +287,10 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
     available = set(available_tool_names)
     request_text = parse_request_context(request_text).routing_text
 
+    if "self_knowledge" in route.capabilities and is_self_knowledge_request(request_text):
+        if "inspect_self_capability" in available:
+            return "inspect_self_capability"
+
     if "memory_read" in route.capabilities and is_verifiable_recall_request(request_text):
         if "search_conversation_history" in available:
             return "search_conversation_history"
@@ -385,6 +390,26 @@ _STRONG_TASK_HINT_RE = re.compile(
     r"|PPT|excel|表格|查一?下|帮我查|找一下)"
 )
 
+_SELF_KNOWLEDGE_RE = re.compile(
+    r"(?:你有(?:什么|哪些)(?:功能|能力|工具|技能)|你会什么|介绍一下你自己|"
+    r"你能做什么|莲心(?:的)?(?:功能|能力|系统|架构|状态)|"
+    r"(?:涟漪情感|棱镜记忆|音乐空间|主动聊天|能力中枢|人格枢控|星图|"
+    r"时间胶囊|日记|树洞|纸条|备忘本|自习室|视觉理解|语音转录|语音合成|"
+    r"视频语音通话|上网冲浪|QQ聊天|肩载设备|人脸追踪|具身智能).{0,24}"
+    r"(?:做什么|是什么|怎么工作|如何工作|怎么用|如何用|架构|状态|启用|激活|正常|最近|最后一次|能不能|是否))",
+    re.IGNORECASE,
+)
+
+
+def is_self_knowledge_request(text: str) -> bool:
+    """判断用户是否在询问莲心自身能力、架构或运行状态。"""
+    value = str(text or "").strip()
+    if not value:
+        return False
+    return bool(_SELF_KNOWLEDGE_RE.search(value)) or bool(
+        re.search(r"(?:我的|你最近).{0,8}(?:自习|保存记忆|活动|日记|备忘).{0,8}(?:多久|什么时候|什么|哪条|哪篇)", value)
+    )
+
 # 这类问题要求从持久化记录中确认事实，不能只依赖当前上下文或模型补全。
 _RECALL_HISTORY_RE = re.compile(
     r"(?:聊天记录|历史记录|原聊天|原记录|对话记录|日志时间|时间戳|原话|"
@@ -440,6 +465,13 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             RequestMode.TASK_DIRECT,
             frozenset({"memory_read"}),
             "要求核验历史聊天记录中的具体事件、时间或原话",
+        )
+
+    if is_self_knowledge_request(text):
+        return RequestRoute(
+            RequestMode.TASK_DIRECT,
+            frozenset({"self_knowledge"}),
+            "用户询问莲心自身的功能、架构或运行状态",
         )
 
     if any(token in lowered for token in ("时间胶囊", "日记", "共同书页")) and any(

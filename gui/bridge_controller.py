@@ -139,6 +139,12 @@ class BridgeController:
             worker.wait(3000)
         self.qq_bridge = None
         self._qq_connected = False
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=False, connected=False, health="未连接",
+                          last_activity_summary="QQ 桥接已停止")
+        except Exception:
+            pass
         self._register_qq_bridge_func(None)
         self._stop_qq_log_thread()
         if notify:
@@ -212,11 +218,23 @@ class BridgeController:
 
     def _on_qq_connected(self):
         self._qq_connected = True
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=True, connected=True, url=self._qq_config_func().get("ws_url", ""),
+                          last_activity_summary="QQ 桥接已连接")
+        except Exception:
+            pass
         self._chat_widget.add_system_tip("✅ QQ 桥接已连接，可通过 QQ 与莲心聊天")
         self.update_qq_button()
 
     def _on_qq_disconnected(self, reason: str):
         self._qq_connected = False
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=self.is_qq_running(), connected=False,
+                          last_activity_summary=f"QQ 桥接已断开：{reason}")
+        except Exception:
+            pass
         if self._stopping_qq:
             return
         self._chat_widget.add_system_tip(f"QQ 桥接已断开：{reason}")
@@ -224,6 +242,12 @@ class BridgeController:
 
     def _on_qq_error(self, err: str):
         self._qq_connected = False
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=self.is_qq_running(), connected=False, health="错误",
+                          last_activity_summary=f"QQ 桥接错误：{err}")
+        except Exception:
+            pass
         self._chat_widget.add_system_tip(f"⚠️ QQ 桥接错误：{err}")
         self.update_qq_button()
 

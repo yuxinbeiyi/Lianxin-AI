@@ -31,7 +31,7 @@ from brain.tool_router import (
 from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
     classify_request, format_capability_result, is_contacts_inquiry, is_verifiable_recall_request,
-    normalize_capabilities, required_execution_tool,
+    is_self_knowledge_request, normalize_capabilities, required_execution_tool,
 )
 from brain.request_context import (
     format_quote_for_prompt,
@@ -2456,6 +2456,17 @@ class AgentCore:
                 frozenset(),
                 "Ollama 本地模型仅使用纯聊天链路",
             )
+        if is_self_knowledge_request(self._current_request_text):
+            try:
+                from brain.skill_manager import is_skill_active
+                if not is_skill_active("自我认知功能"):
+                    return (
+                        "我知道这些能力已经登记，但“自我认知功能”当前未激活，"
+                        "所以不能访问详细的功能、架构和实时状态说明。"
+                        "请到“能力中枢”手动启用“自我认知功能”，启用后我再依据真实资料为你介绍。"
+                    )
+            except Exception:
+                return "自我认知功能当前不可用，暂时不能读取详细的能力说明。"
         self._tool_session_state.begin(route, self._current_request_text)
         self._request_route = route
         from brain.browser_task import BrowserTaskState
@@ -2735,6 +2746,24 @@ class AgentCore:
                     record_memory_event(self._active_memory_trace_id, "rag_no_match",
                                         reason="没有记忆达到 0.5 检索阈值",
                                         payload={"query": (last_user_msg if last_user_msg else user_message)[:500], "threshold": 0.5})
+            except Exception:
+                pass
+
+        # 自我认知 Skill 的详细正文和工具只在用户启用后提供；核心 Agent
+        # 仍然保留未激活提示，避免把“已登记”误说成“已加载”。
+        if is_self_knowledge_request(self._current_request_text):
+            try:
+                from brain.skill_manager import is_skill_active
+                if not is_skill_active("自我认知功能"):
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "用户正在询问莲心自身功能或状态。自我认知功能 Skill 当前未激活，"
+                            "只能说明该能力已登记，不能假装读取详细专题文档或实时状态。"
+                            "请明确提醒用户到能力中枢手动启用“自我认知功能”，启用后再详细介绍。"
+                        ),
+                        "_module": "self_knowledge_disabled",
+                    })
             except Exception:
                 pass
 

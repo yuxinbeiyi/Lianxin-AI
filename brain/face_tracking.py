@@ -245,6 +245,9 @@ class FaceTrackingWorker(QThread):
                 return
 
             provider = getattr(face, "provider", "CPU") or "CPU"
+            from brain.runtime_status import set_status
+            set_status("face_tracking", running=True, health="正常", provider=provider,
+                       status="追踪中", last_activity_summary="人脸追踪已启动")
             self.status_ready.emit(
                 ("本机模拟追踪已启动" if self.simulated else "追踪已启动")
                 + f"（{provider}），等待本人出现"
@@ -265,6 +268,12 @@ class FaceTrackingWorker(QThread):
         except Exception as exc:
             self.failed.emit(f"人脸追踪异常：{exc}")
         finally:
+            try:
+                from brain.runtime_status import update_status
+                update_status("face_tracking", running=False, health="正常", status="已停止",
+                              last_activity_summary="人脸追踪已停止")
+            except Exception:
+                pass
             if self._capture is not None:
                 self._capture.stop()
                 self._capture.wait(4000)

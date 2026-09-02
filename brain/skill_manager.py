@@ -63,6 +63,11 @@ def save_skill_config():
 def get_disabled_skills() -> set[str]:
     return _disabled_skills.copy()
 
+
+def is_skill_active(name: str) -> bool:
+    """Return whether a discovered Skill is currently active."""
+    return str(name or "") in _active_skills
+
 # ── 技能注册表 ─────────────────────────────────────────
 # _skill_registry[name] = {
 #     "name": str,
@@ -370,6 +375,10 @@ def _parse_skill(skill_dir: Path) -> Optional[dict]:
         description = knowledge[:150].replace("\n", " ").strip()
 
     has_tools = (skill_dir / "tools.py").exists()
+    # 自我认知是按需、由用户手动启用的知识库；不能因为启动时扫描
+    # Skill 就把它的详细说明和工具自动注入每轮上下文。
+    if name == "自我认知功能":
+        auto_activate = False
 
     return {
         "name": name,

@@ -73,11 +73,15 @@ class HardwareBridge:
             if isinstance(welcome, bytes):
                 welcome = welcome.decode()
             self._connected = True
+            self._publish_runtime(connected=True, running=True, mode="relay",
+                                  last_activity_summary="肩载设备云中继已连接")
             print(f"[bridge] relay connected: {welcome}")
             return True
         except Exception as e:
             print(f"[bridge] connect failed: {e}")
             self._connected = False
+            self._publish_runtime(connected=False, running=False, mode="relay",
+                                  last_activity_summary="肩载设备云中继连接失败")
             return False
 
     async def _connect_direct(self):
@@ -91,12 +95,24 @@ class HardwareBridge:
             if isinstance(hello, bytes):
                 hello = hello.decode()
             self._connected = True
+            self._publish_runtime(connected=True, running=True, mode="direct",
+                                  last_activity_summary="肩载设备局域网已连接")
             print(f"[bridge] 局域网直连成功: {uri} ({hello})")
             return True
         except Exception as e:
             print(f"[bridge] 局域网直连失败: {uri} -> {e}")
             self._connected = False
+            self._publish_runtime(connected=False, running=False, mode="direct",
+                                  last_activity_summary="肩载设备局域网连接失败")
             return False
+
+    @staticmethod
+    def _publish_runtime(**fields):
+        try:
+            from brain.runtime_status import update_status
+            update_status("shoulder", **fields)
+        except Exception:
+            pass
 
     async def _drain_pending(self, timeout=0.3):
         """读取并丢弃残留的 WebSocket 数据，恢复同步。
@@ -145,7 +161,12 @@ class HardwareBridge:
         resp = await self._send_cmd("status")
         if resp:
             try:
-                return json.loads(resp)
+                result = json.loads(resp)
+                if isinstance(result, dict):
+                    self._publish_runtime(connected=True, running=True, **{
+                        key: result[key] for key in ("pan", "tilt", "wifi_rssi") if key in result
+                    }, last_activity_summary="已收到肩载设备状态")
+                return result
             except json.JSONDecodeError:
                 pass
         return None
@@ -164,7 +185,11 @@ class HardwareBridge:
         resp = await self._send_cmd(f"servo {pan} {tilt}")
         if resp:
             try:
-                return json.loads(resp)
+                result = json.loads(resp)
+                if isinstance(result, dict):
+                    self._publish_runtime(connected=True, running=True, pan=result.get("pan", pan),
+                                          tilt=result.get("tilt", tilt), last_activity_summary="云台指令已确认")
+                return result
             except json.JSONDecodeError:
                 pass
         return None
@@ -304,6 +329,7 @@ class HardwareBridge:
         if self.ws:
             await self.ws.close()
             self._connected = False
+            self._publish_runtime(connected=False, running=False, last_activity_summary="肩载设备连接已关闭")
 
     # ── 长连接模式下的命令发送（带自动重连） ────────────────
 

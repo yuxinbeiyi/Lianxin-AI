@@ -383,6 +383,9 @@ class VisionPanel(QDialog):
             "companion": self.check_companion.isChecked(),
         }
         self._worker.set_gesture_cooldown(self.cooldown_spinbox.value())
+        from brain.runtime_status import set_status
+        set_status("vision", running=True, health="启动中", camera="", fps=0.0,
+                   features=dict(self._worker.enabled), provider=device)
 
         self._worker.moveToThread(self._thread)
 
@@ -624,6 +627,18 @@ class VisionPanel(QDialog):
     @pyqtSlot(dict)
     def _on_status_ready(self, status):
         """更新状态显示"""
+        from brain.runtime_status import update_status
+        fields = {
+            "running": True, "health": "正常", "camera": status.get("camera", ""),
+            "fps": status.get("fps", 0.0), "face": status.get("face", ""),
+            "gesture": status.get("gesture", ""),
+            "last_activity_summary": status.get("face", "视觉帧处理中"),
+        }
+        # VisionWorker does not emit the provider on every frame. Do not
+        # overwrite the startup provider with an empty value.
+        if status.get("provider"):
+            fields["provider"] = status["provider"]
+        update_status("vision", **fields)
         # 摄像头
         if "camera" in status:
             self.status_labels["camera"].setText(status["camera"])
@@ -689,9 +704,12 @@ class VisionPanel(QDialog):
     @pyqtSlot(bool, str)
     def _on_started(self, success, message):
         """启动结果"""
+        from brain.runtime_status import update_status
         if success:
+            update_status("vision", running=True, health="正常", last_activity_summary="视觉模块已启动")
             self._append_log("✅ 视觉感知已启动")
         else:
+            update_status("vision", running=False, health="错误", last_activity_summary=message)
             self._append_log(f"❌ 启动失败：{message}")
             QMessageBox.warning(self, "启动失败", message)
             self._stop_vision()
@@ -699,6 +717,8 @@ class VisionPanel(QDialog):
     @pyqtSlot()
     def _on_stopped(self):
         """停止完成"""
+        from brain.runtime_status import update_status
+        update_status("vision", running=False, health="正常", last_activity_summary="视觉模块已停止")
         self._append_log("⏸️ 视觉感知已停止")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)

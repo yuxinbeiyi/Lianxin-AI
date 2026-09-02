@@ -3302,6 +3302,9 @@ class MainWindow(QMainWindow):
                 self._chat_widget.add_system_tip(
                     "🎧 检测到耳机 — 莲心说话时你可以直接开口打断~")
             if not self._voice_duplex.start():
+                from brain.runtime_status import update_status
+                update_status("voice", running=False, health="错误", mode="full_duplex",
+                              last_activity_summary="全双工语音启动失败")
                 self._voice_duplex = None
                 self._standby_state = "IDLE"
                 self._char_widget.exit_standby()
@@ -3311,6 +3314,9 @@ class MainWindow(QMainWindow):
                     "请查看终端中的具体依赖错误。"
                 )
                 return
+            from brain.runtime_status import set_status
+            set_status("voice", running=True, health="正常", mode="full_duplex", state="LISTENING",
+                       stt_engine="local", last_activity_summary="全双工语音已启动")
             self._video_call_adapter.open()
             self._update_standby_button()
             self._chat_widget.add_system_tip(
@@ -3328,6 +3334,9 @@ class MainWindow(QMainWindow):
                 ["python", "aliyun_stt.py"],
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
             )
+            from brain.runtime_status import set_status
+            set_status("voice", running=True, health="正常", mode="legacy", stt_engine="aliyun",
+                       last_activity_summary="云端语音转录已启动")
 
             self._note_poll_timer = QTimer(self)
             self._note_poll_timer.timeout.connect(self._check_note_file)
@@ -3348,6 +3357,11 @@ class MainWindow(QMainWindow):
     def _exit_standby(self):
         """关闭待机模式"""
         self._standby_state = "IDLE"
+        try:
+            from brain.runtime_status import update_status
+            update_status("voice", running=False, state="STOPPED", last_activity_summary="语音待机已关闭")
+        except Exception:
+            pass
         self._video_call_adapter.close()
         self._video_call_speaker_enabled = True
         self._char_widget.exit_standby()
@@ -3488,6 +3502,12 @@ class MainWindow(QMainWindow):
         from brain.voice_duplex import STATE_LABELS
         label = STATE_LABELS.get(state, state)
         print(f"[全双工] {label}")
+        try:
+            from brain.runtime_status import update_status
+            update_status("voice", running=state != "STOPPED", state=state,
+                          last_activity_summary=f"语音状态：{label}")
+        except Exception:
+            pass
         self._duplex_state_signal.emit(state)
 
     def _on_duplex_stt_ready(self, ready: bool):
