@@ -55,9 +55,25 @@ from brain.context_compressor import (
 )
 from pathlib import Path
 from brain.mcp import get_all_mcp_tool_definitions
+from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
 
 
 logger = logging.getLogger("Agent")
+
+
+def _safe_tool_args_for_log(name: str, args: dict) -> dict:
+    """Return bounded, non-secret tool arguments for diagnostic logging."""
+    value = dict(args or {})
+    if str(name or "").startswith("browser_"):
+        try:
+            from brain.browser_security import redact_browser_args
+            value = redact_browser_args(name, value)
+        except Exception:
+            value = {"redacted": True}
+    for key in ("api_key", "authorization", "token", "password", "secret"):
+        if key in value:
+            value[key] = "<redacted>"
+    return {str(k): str(v)[:500] for k, v in value.items()}
 
 _RESPONSE_FORMAT_POLICY = """【重要 — 回复格式要求】
 在每次回复的末尾，必须单独一行用【表情：XXX】输出当前情绪。这是硬性要求。
@@ -309,6 +325,7 @@ class AgentCore:
         
         self._cancel_event = threading.Event()
         self._active_workflow_run_id = 0
+        self._task_run = None
         self._workflow_retry_of_run_id = 0
         self._prepared_document_context = ""
         self._request_tool_audit: list[dict] = []
@@ -551,6 +568,7 @@ class AgentCore:
             on_interrupt=None,
             on_progress=None,
             on_activity=None,
+            on_reasoning=None,
             response_guard=None,
             on_tool_enable_request=None,
             on_browser_confirmation=None) -> str:
@@ -749,9 +767,14 @@ class AgentCore:
                                                           persona_snapshot=persona_snapshot,
                                                           persona_transition=persona_transition,
                                                           on_activity=on_activity,
+                                                          on_reasoning=on_reasoning,
                                                           on_tool_enable_request=on_tool_enable_request,
                                                           on_browser_confirmation=on_browser_confirmation)
+            if self._task_run is not None:
+                self._task_run.mark_finished(success=bool(str(response_text or '').strip()))
         except Exception as exc:
+            if self._task_run is not None:
+                self._task_run.mark_finished(success=False)
             if workflow_store and workflow_run_id:
                 workflow_store.finish_run(workflow_run_id, status="failed", error=str(exc))
             if trace_id:
@@ -1520,6 +1543,9 @@ class AgentCore:
         - 无锁工具 → ThreadPoolExecutor 并发执行
         - 同组工具 → 组内串行（持锁排队），不同组间并行
         """
+        if getattr(self, "_task_run", None) is not None:
+            for _ in tool_calls:
+                self._task_run.record_tool_call()
         from brain.tools import execute_tool as _exec, set_cross_session_context as _set_ctx
 
         # ── 第一遍：解析参数，检查重复 ──────────────────────
@@ -1675,6 +1701,12 @@ class AgentCore:
                     on_tool_result(name, denial, True, 0.0)
                 continue
 
+            resource_id = ""
+            resource_seen = False
+            if getattr(self, "_task_run", None) is not None:
+                resource_id = resource_fingerprint(name, args)
+                resource_seen = self._task_run.has_resource(name, args)
+
             # 复合网页任务的顺序边界：搜索尚未完成时禁止跳过搜索，
             # 搜索完成后禁止绕过交接工具。
             web_research_task = getattr(self, "_web_research_task_state", None)
@@ -1714,6 +1746,13 @@ class AgentCore:
                         self._search_budget_exhausted = True
 
             call_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+            if resource_seen and resource_id:
+                print(f"  [资源去重] 跳过本请求内已读取资源: {name}", flush=True)
+                messages.append({
+                    "role": "tool", "tool_call_id": tc.id,
+                    "content": "该资源本轮已经读取过，已复用已有结果；请直接基于已有工具结果继续。",
+                })
+                continue
             last_key = getattr(self, "_last_tool_call_key", None)
             if call_key == last_key:
                 logger.warning(f"[ToolLoop] 重复工具调用: {name}，终止循环")
@@ -1851,6 +1890,11 @@ class AgentCore:
                 lock_free.append(item)
             else:
                 groups.setdefault(group, []).append(item)
+        logger.debug(
+            "[tool-dispatch] request=%s parsed=%s groups=%s lock_free=%s",
+            getattr(self, "_active_workflow_run_id", 0), len(parsed),
+            {key: len(value) for key, value in groups.items()}, len(lock_free),
+        )
 
         # 结果收集（保持原始顺序）
         n = len(parsed)
@@ -1858,7 +1902,7 @@ class AgentCore:
         parsed_order = {id(item["tc"]): i for i, item in enumerate(parsed)}
 
         import time as _perf_time
-        def _run_one(item: dict):
+        def _run_one_impl(item: dict):
             """执行单个工具调用（在 worker 线程内）。"""
             _set_ctx(self._session_id, self._history_mgr, self._model)
             name, args = item["name"], item["args"]
@@ -1902,6 +1946,10 @@ class AgentCore:
                 is_error = True
                 print(f"  [工具错误] {name} → {e}\n", flush=True)
             elapsed_ms = (_perf_time.perf_counter() - t0) * 1000
+            if getattr(self, "_task_run", None) is not None:
+                self._task_run.record_result(result, is_error=is_error)
+            if getattr(self, "_task_run", None) is not None and not is_error:
+                resource_id = self._task_run.record_resource(name, args)
             web_research_task = getattr(self, "_web_research_task_state", None)
             if web_research_task:
                 web_research_task.record(name, result, is_error=is_error)
@@ -1925,7 +1973,16 @@ class AgentCore:
                 else str(result)
             )
             if on_tool_result:
-                on_tool_result(name, ui_result, is_error, elapsed_ms)
+                try:
+                    on_tool_result(name, ui_result, is_error, elapsed_ms)
+                except Exception:
+                    # UI progress callbacks must not turn a successful tool call
+                    # into a failed tool result or abort the agent loop.
+                    logger.exception(
+                        "[tool-callback-error] request=%s tool=%s call_id=%s",
+                        getattr(self, "_active_workflow_run_id", 0), name,
+                        getattr(item["tc"], "id", ""),
+                    )
             event = {"name": name, "args": dict(args), "result": str(result),
                      "is_error": is_error, "authorized": True}
             if browser_task and browser_task.is_browser_tool(name):
@@ -1945,11 +2002,46 @@ class AgentCore:
             idx = parsed_order[id(item["tc"])]
             results[idx] = result
 
+        def _run_one(item: dict):
+            """Protect the whole tool lifecycle, including callbacks and audit writes."""
+            name = str(item.get("name", "unknown"))
+            args = item.get("args") or {}
+            call_id = str(getattr(item.get("tc"), "id", "") or "")
+            idx = parsed_order.get(id(item.get("tc")))
+            request_id = getattr(self, "_active_workflow_run_id", 0)
+            try:
+                _run_one_impl(item)
+            except Exception as exc:
+                logger.exception(
+                    "[tool-lifecycle-error] request=%s session=%s group=%s tool=%s call_id=%s args=%s",
+                    request_id, self._session_id, _RESOURCE_GROUPS.get(name, "lock_free"),
+                    name, call_id, _safe_tool_args_for_log(name, args),
+                )
+                error_result = (
+                    f"Tool execution failed ({name}): {type(exc).__name__}: {exc}. "
+                    "Do not assume this tool succeeded; adjust the next step."
+                )
+                if idx is not None:
+                    results[idx] = error_result
+                try:
+                    if on_tool_result:
+                        on_tool_result(name, error_result, True, 0.0)
+                except Exception:
+                    logger.exception(
+                        "[tool-callback-error] request=%s tool=%s call_id=%s",
+                        request_id, name, call_id,
+                    )
+
         def _run_group(group: str, items: list[dict]):
             """串行执行同一资源组的工具。"""
             lock = _get_group_lock(group)
             with lock:
                 for item in items:
+                    logger.debug(
+                        "[tool-group-start] request=%s group=%s tool=%s call_id=%s",
+                        getattr(self, "_active_workflow_run_id", 0), group,
+                        item.get("name"), getattr(item.get("tc"), "id", ""),
+                    )
                     _run_one(item)
 
         # ── 第三遍：并行调度 ────────────────────────────────
@@ -1976,7 +2068,11 @@ class AgentCore:
                 try:
                     f.result(timeout=TOOL_TIMEOUT)
                 except Exception as e:
-                    print(f"[工具超时] {e}", flush=True)
+                    logger.exception(
+                        "[tool-future-error] request=%s future=%r",
+                        getattr(self, "_active_workflow_run_id", 0), f,
+                    )
+                    print(f"[Tool execution exception] {type(e).__name__}: {e}", flush=True)
         finally:
             pool.shutdown(wait=False)
         # 线程亲和组 → 调用线程上逐组串行（池已关闭，调用线程空闲）
@@ -1988,6 +2084,11 @@ class AgentCore:
         # ── 第四遍：结果注入 messages（保持原始顺序）────────
         for i, item in enumerate(parsed):
             result = results[i]
+            logger.debug(
+                "[tool-result-collect] request=%s index=%s tool=%s result=%s",
+                getattr(self, "_active_workflow_run_id", 0), i,
+                item.get("name"), result is not None,
+            )
             if result is not None:
                 cfg = get_memory_config()
                 messages.append({
@@ -2004,7 +2105,7 @@ class AgentCore:
             except Exception as exc:
                 logger.debug("涟漪工具活动完成记录失败: %s", exc)
 
-    def _collect_stream(self, response, on_chunk=None, max_retries=2):
+    def _collect_stream(self, response, on_chunk=None, on_reasoning=None, max_retries=2):
         """收集 litellm 流式响应，拼接成完整 message 对象。
 
         参数:
@@ -2044,6 +2145,8 @@ class AgentCore:
                     rc = getattr(delta, "reasoning_content", None)
                     if rc is not None:
                         full_reasoning += rc
+                        if on_reasoning:
+                            on_reasoning(full_reasoning)
 
                     # 2) 文本增量
                     if delta.content is not None:
@@ -2391,6 +2494,7 @@ class AgentCore:
                                on_round_start=None, persona_snapshot=None,
                                persona_transition: str = "",
                                on_activity=None,
+                               on_reasoning=None,
                                on_tool_enable_request=None,
                                on_browser_confirmation=None) -> str:
 
@@ -3113,7 +3217,9 @@ class AgentCore:
                         stream_options={"include_usage": True},
                         timeout=120,
                     )
-                    content, reasoning, _, finish = self._collect_stream(stream)
+                    content, reasoning, _, finish = self._collect_stream(
+                        stream, on_reasoning=on_reasoning
+                    )
                     _update_prompt_usage_debug(getattr(self, "_last_input_tokens", 0))
                     if _plain_model_step:
                         get_workflow_store().finish_step(
@@ -3256,9 +3362,23 @@ class AgentCore:
 
         # ── 复杂度判断：用户消息超过80字视为复杂任务 ──
         is_complex = len(self.history[-1]["content"]) > 80 if self.history else False
+        # Request-level control plane; legacy loop limits remain the final safety net.
+        task_run = TaskRun.create(
+            self._current_request_text,
+            route_mode=getattr(route.mode, "value", str(route.mode)),
+            source_channel=getattr(self, "_source_channel", "desktop"),
+        )
+        task_run.bind_workflow(getattr(self, "_active_workflow_run_id", 0))
+        self._task_run = task_run
+        MAX_ITERATIONS = max(MAX_ITERATIONS, task_run.budget.hard_rounds)
+        SOFT_LIMIT = task_run.budget.soft_rounds
 
         while iteration < MAX_ITERATIONS:
             iteration += 1
+            task_run.begin_round()
+            if task_run.should_force_final() and task_run.phase != TaskPhase.FORCE_FINAL:
+                task_run.mark_force_final()
+                _force_text_response = True
             _prompt_build_started = _t0 if iteration == 1 else time.time()
 
             # 复合任务每一阶段只强制当前应执行的工具；搜索完成后自动
@@ -3410,7 +3530,7 @@ class AgentCore:
                 content, reasoning, stream_tool_calls, finish = self._collect_stream(
                     # 主回复的流式 token 只用于最终气泡合并，不应复用插话进度信号；
                     # 否则每个累计片段都会被界面当成一条新的“插话回复”。
-                    stream, on_chunk=None
+                    stream, on_chunk=None, on_reasoning=on_reasoning
                 )
                 _update_prompt_usage_debug(getattr(self, "_last_input_tokens", 0))
                 _api_elapsed = time.time() - _api_start

@@ -165,4 +165,9 @@ class AgentWorker(QThread):
             )
             self.response_ready.emit(response)
         except Exception as e:
+            import logging
+            logging.getLogger("AgentWorker").exception(
+                "AgentWorker failed: message=%r forced_tool=%s preferred_tool=%s",
+                self.message[:300], self.forced_tool, self.preferred_tool,
+            )
             self.error_occurred.emit(str(e))
