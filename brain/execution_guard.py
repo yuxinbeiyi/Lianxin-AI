@@ -5,14 +5,30 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from brain.request_router import is_verifiable_recall_request
+from brain.request_router import (
+    is_explicit_web_reread_request,
+    is_verifiable_recall_request,
+)
+
+
+_WEB_READ_TOOLS = {
+    "web_search", "fetch_webpage", "fetch_webpage_via_api",
+    "fetch_webpage_stealth", "fetch_webpage_browser",
+}
 
 
 def _succeeded(audit: Iterable[dict], names: set[str]) -> bool:
-    return any(
-        item.get("name") in names and not item.get("is_error", False)
-        for item in audit
-    )
+    for item in audit:
+        if item.get("name") not in names:
+            continue
+        if item.get("is_error", False) or item.get("authorized") is False:
+            continue
+        if item.get("name") in _WEB_READ_TOOLS:
+            from brain.tool_usage import classify_tool_result
+            if classify_tool_result(item.get("result", "")) not in {"success", "cached"}:
+                continue
+        return True
+    return False
 
 
 def _successful_memory_save(audit: Iterable[dict]) -> bool:
@@ -60,8 +76,25 @@ def validate_execution_claims(content: str, request_text: str, audit: Iterable[d
 
     if re.search(r"(?:搜索|联网|查最新|查一下|资料|新闻)", request):
         claims = re.search(r"(?:我|已经|刚刚).{0,10}(?:搜索|查到|检索|浏览)", text)
-        if claims and not _succeeded(events, {"web_search", "fetch_webpage"}):
+        if claims and not _succeeded(events, _WEB_READ_TOOLS):
             return "我这次没有成功取得联网检索结果，所以不能把内容说成已经查到。"
+
+    # “重新阅读/重新核对”是一次新的外部读取动作，不能被缓存命中或
+    # 模型的执行性措辞替代。工具循环通常会在此之前强制调用；这里是
+    # 最终收口，覆盖工具缺失、工具返回错误文本和模型伪造调用三种情况。
+    if is_explicit_web_reread_request(request):
+        reread_claim = re.search(
+            r"(?:我(?:正在|已经|已|刚刚|重新|再次)?|正在|已经|已|刚刚|重新|再次)"
+            r".{0,18}(?:读取|阅读|查看|抓取|核对|核实|打开)|"
+            r"(?:读取|阅读|查看|抓取|核对|核实).{0,18}(?:完成|成功|结果|原文)",
+            text,
+            re.IGNORECASE,
+        )
+        if reread_claim and not _succeeded(events, _WEB_READ_TOOLS - {"web_search"}):
+            return (
+                "这次没有成功重新取得网页原文，因此我不能声称已经重新阅读或核对。"
+                "如果你希望继续，请提供原始链接或稍后重试。"
+            )
 
     if re.search(r"(?:读取|打开|查看|分析).{0,16}(?:文件|文档|pdf|docx|路径)", request, re.I):
         claims = re.search(r"(?:已经|我已|刚刚).{0,12}(?:读取|打开|查看|分析)", text)
@@ -87,7 +120,7 @@ def validate_execution_claims(content: str, request_text: str, audit: Iterable[d
 
     if mode == "TASK_DISCOVERY" or "web_search" in capability_set:
         search_claim = re.search(r"(?:我|已经|刚刚|这次).{0,12}(?:搜了一圈|搜索了|检索到|查到)", text)
-        if search_claim and not _succeeded(events, {"web_search", "fetch_webpage"}):
+        if search_claim and not _succeeded(events, _WEB_READ_TOOLS):
             return "本轮没有成功完成联网检索，不能把内容说成是刚刚搜索到的结果。"
 
     # 历史核验必须有聊天记录工具的真实审计结果。这里同时拦截“正在查”

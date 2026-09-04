@@ -876,6 +876,16 @@ _MEMORY_DEFAULTS = {
     "embedding_indexing_mode": "idle",       # "idle" | "manual" | "off"
     "embedding_idle_seconds": 180,
     "embedding_idle_batch_size": 20,
+    # 网页研究短期证据：独立于长期记忆，供后续追问恢复原文细节。
+    "web_evidence_cache_enabled": True,
+    "web_evidence_cache_ttl_hours": 24,
+    "web_evidence_cache_max_bytes": 128 * 1024 * 1024,
+    "web_evidence_max_pages_per_task": 8,
+    "web_evidence_max_content_chars": 200_000,
+    "web_evidence_retrieval_max_chars": 12_000,
+    "web_evidence_retrieval_max_chunks": 6,
+    "web_evidence_force_reread_on_explicit_request": True,
+    "web_evidence_numeric_grounding": True,
 }
 
 # 日记生成设置与旧配置并存，缺失字段自动使用这些默认值。

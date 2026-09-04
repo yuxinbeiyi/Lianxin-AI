@@ -181,6 +181,16 @@ _DIRECT_WEB_FETCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WEB_REREAD_RE = re.compile(
+    r"(?:(?:重新(?:读取|阅读|查看|抓取|核对|核实)|再次(?:读取|阅读|查看|抓取|核对|核实)|"
+    r"再(?:读|看|抓取|核对)一?(?:遍|次)?|重读|重看).{0,36}"
+    r"(?:网页|页面|原文|文章|报道|新闻|链接|网址|刚才|之前|上次)|"
+    r"(?:网页|页面|原文|文章|报道|新闻|链接|网址|刚才|之前|上次).{0,20}"
+    r"(?:重新(?:读取|阅读|查看|抓取|核对|核实)|再次(?:读取|阅读|查看|抓取|核对|核实)|"
+    r"再(?:读|看|抓取|核对)一?(?:遍|次)?|重读|重看))",
+    re.IGNORECASE,
+)
+
 # 明确要求浏览器交互时，必须让浏览器技能在首轮进入工具定义。
 # 纯“搜索/读取网页”仍走 web_search / fetch_webpage，不强行启动可见浏览器。
 _BROWSER_INTERACTION_RE = re.compile(
@@ -438,6 +448,12 @@ def is_verifiable_recall_request(text: str) -> bool:
     return True
 
 
+def is_explicit_web_reread_request(text: str) -> bool:
+    """判断用户是否明确要求重新取得网页原文。"""
+    value = parse_request_context(text).routing_text
+    return bool(_WEB_REREAD_RE.search(value))
+
+
 def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                      forced_tool: str | None = None,
                      session_state: ToolSessionState | None = None) -> RequestRoute:
@@ -465,6 +481,13 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             RequestMode.TASK_DIRECT,
             frozenset({"memory_read"}),
             "要求核验历史聊天记录中的具体事件、时间或原话",
+        )
+
+    if is_explicit_web_reread_request(text):
+        return RequestRoute(
+            RequestMode.TASK_DIRECT,
+            frozenset({"web_fetch"}),
+            "用户明确要求重新读取或核对网页原文",
         )
 
     if is_self_knowledge_request(text):
@@ -624,7 +647,7 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if re.search(
         r"(?:打开|启动|运行).{0,6}(?:应用|程序|软件)"
         r"|(?:读取|查看|看看?).{0,4}剪贴板|剪贴板内容"
-        r"|(?:发送|发).{0,6}(?:到|给)\s*QQ|把.{0,10}文件.{0,6}发.{0,3}QQ"
+        r"|(?:发送|发).{0,6}(?:到|给)\s*qq|把.{0,10}文件.{0,6}发.{0,3}qq"
         r"|自动化任务|计划任务|任务分解|委派任务",
         lowered,
     ):
@@ -632,8 +655,8 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         reasons.append("系统自动化操作（打开应用/剪贴板/QQ发文件/任务编排）")
     # 办公文档：不再依赖消息中出现文件扩展名。
     if re.search(
-        r"(?:PPT|幻灯片|excel|表格|word文档|docx|排版|周报)"
-        r"|(?:做|写|生成|整理|处理).{0,4}(?:表格|文档|PPT)"
+        r"(?:ppt|幻灯片|excel|表格|word文档|docx|排版|周报)"
+        r"|(?:做|写|生成|整理|处理).{0,4}(?:表格|文档|ppt)"
         r"|(?:写|撰写|生成).{0,4}(?:报告|周报)",
         lowered,
     ):

@@ -31,7 +31,8 @@ from brain.tool_router import (
 from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
     classify_request, format_capability_result, is_contacts_inquiry, is_verifiable_recall_request,
-    is_self_knowledge_request, normalize_capabilities, required_execution_tool,
+    is_self_knowledge_request, is_explicit_web_reread_request,
+    normalize_capabilities, required_execution_tool,
 )
 from brain.request_context import (
     format_quote_for_prompt,
@@ -56,6 +57,11 @@ from brain.context_compressor import (
 from pathlib import Path
 from brain.mcp import get_all_mcp_tool_definitions
 from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
+from brain.web_evidence_cache import (
+    WebEvidenceCache,
+    is_successful_web_result,
+    is_web_followup_request,
+)
 
 
 logger = logging.getLogger("Agent")
@@ -332,6 +338,8 @@ class AgentCore:
         self._recent_tool_audit: list[dict] = []
         self._tool_audit_lock = threading.Lock()
         self._tool_session_state = ToolSessionState()
+        self._web_evidence_cache = None
+        self._web_evidence_cache_lock = threading.Lock()
 
         # 每次实例化都从文件读取最新配置，支持热重载
         cfg = get_api_config()
@@ -1906,6 +1914,37 @@ class AgentCore:
             """执行单个工具调用（在 worker 线程内）。"""
             _set_ctx(self._session_id, self._history_mgr, self._model)
             name, args = item["name"], item["args"]
+            reread_targets = tuple(getattr(self, "_web_reread_target_urls", ()) or ())
+            if name.startswith("fetch_webpage") and reread_targets:
+                requested_url = str(args.get("url", "") or "").strip()
+                with getattr(self, "_web_evidence_cache_lock", threading.Lock()):
+                    completed_urls = set(getattr(self, "_web_reread_completed_urls", set()))
+                    available_targets = [
+                        url for url in reread_targets if url not in completed_urls
+                    ]
+                    target_url = (
+                        requested_url
+                        if requested_url in available_targets
+                        else (available_targets[0] if available_targets else "")
+                    )
+                if not target_url:
+                    raise ValueError("重新读取请求的所有目标 URL 均已完成或不可用")
+                if requested_url != target_url:
+                    # 重新读取只能针对系统已经解析出的 URL；缺参或模型
+                    # 生成了无关 URL 时，使用最近的可信目标，避免误抓取。
+                    args["url"] = target_url
+                    logger.debug(
+                        "[WebEvidence] reread target normalized tool=%s requested=%s target=%s",
+                        name,
+                        requested_url[:160],
+                        target_url[:160],
+                    )
+            if (
+                name.startswith("fetch_webpage")
+                and getattr(self, "_web_reread_request", False)
+                and not reread_targets
+            ):
+                raise ValueError("重新读取请求没有可验证的原始 URL")
             if name in _OWNER_MEMORY_TOOLS and self._active_memory_trace_id:
                 try:
                     from brain.memory_diagnostics import record_memory_event
@@ -1941,6 +1980,14 @@ class AgentCore:
                     from brain.browser_security import redact_browser_text
                     preview = redact_browser_text(preview, max_chars=240)
                 print(f"  [工具结果] {name} → {preview}\n", flush=True)
+                if (
+                    name.startswith("fetch_webpage")
+                    and getattr(self, "_web_reread_request", False)
+                    and reread_targets
+                    and is_successful_web_result(result, is_error=is_error)
+                ):
+                    with getattr(self, "_web_evidence_cache_lock", threading.Lock()):
+                        self._web_reread_completed_urls.add(str(args.get("url", "")))
             except Exception as e:
                 result = f"工具执行错误: {e}"
                 is_error = True
@@ -1953,6 +2000,48 @@ class AgentCore:
             web_research_task = getattr(self, "_web_research_task_state", None)
             if web_research_task:
                 web_research_task.record(name, result, is_error=is_error)
+            evidence = None
+            if name.startswith("fetch_webpage") and is_successful_web_result(
+                result, is_error=is_error
+            ):
+                try:
+                    _web_cfg = get_memory_config()
+                    if not bool(_web_cfg.get("web_evidence_cache_enabled", True)):
+                        raise RuntimeError("网页证据缓存已由配置关闭")
+                    if self._web_evidence_cache is None:
+                        with self._web_evidence_cache_lock:
+                            if self._web_evidence_cache is None:
+                                self._web_evidence_cache = WebEvidenceCache(
+                                    max_bytes=_web_cfg.get("web_evidence_cache_max_bytes", 128 * 1024 * 1024),
+                                    max_age_hours=_web_cfg.get("web_evidence_cache_ttl_hours", 24),
+                                    max_content_chars=_web_cfg.get("web_evidence_max_content_chars", 200_000),
+                                )
+                    task_id = (
+                        web_research_task.task_id
+                        if web_research_task is not None
+                        else f"research_{getattr(self._task_run, 'request_id', '')}"
+                    )
+                    evidence = self._web_evidence_cache.store(
+                        task_id,
+                        str(args.get("url", "")),
+                        str(result),
+                        title=str(args.get("title", "") or ""),
+                        source_tool=name,
+                    )
+                    logger.debug(
+                        "[WebEvidence] linked request=%s task=%s evidence=%s tool=%s",
+                        getattr(self, "_active_workflow_run_id", 0),
+                        task_id,
+                        evidence.evidence_id,
+                        name,
+                    )
+                except Exception as exc:
+                    # Evidence persistence is auxiliary. A cache failure must
+                    # never turn a successful network tool call into an error.
+                    logger.warning(
+                        "[WebEvidence] store failed request=%s tool=%s: %s",
+                        getattr(self, "_active_workflow_run_id", 0), name, exc,
+                    )
             browser_task = getattr(self, "_browser_task_state", None)
             browser_step = None
             if browser_task and browser_task.is_browser_tool(name):
@@ -1985,6 +2074,14 @@ class AgentCore:
                     )
             event = {"name": name, "args": dict(args), "result": str(result),
                      "is_error": is_error, "authorized": True}
+            if evidence is not None:
+                event.update({
+                    "web_evidence_id": evidence.evidence_id,
+                    "web_evidence_digest": evidence.content_digest,
+                    # 同一正文可能被多个研究任务复用；这里必须记录本次
+                    # 工具调用所属的 task_id，而不是正文首次写入时的任务。
+                    "web_research_task_id": task_id,
+                })
             if browser_task and browser_task.is_browser_tool(name):
                 event.update({
                     "browser_task_id": browser_task.task_id,
@@ -2588,6 +2685,99 @@ class AgentCore:
             self._request_tool_audit = []
         self._request_enabled_tool_names: set[str] = set()
         messages = self._build_request_system_messages(persona_snapshot)
+        self._web_reread_target_urls = ()
+        self._web_reread_completed_urls: set[str] = set()
+        self._web_reread_request = False
+        self._web_evidence_retrieval = None
+        # 网页后续追问优先从真实读取结果的短期证据缓存中恢复。该上下文
+        # 放在历史消息之前，命中时不需要重新把整篇网页塞回对话历史；
+        # 未命中时明确标记证据边界，避免模型把上一轮摘要当成原文。
+        is_web_followup = is_web_followup_request(self._current_request_text)
+        is_web_reread = is_explicit_web_reread_request(self._current_request_text)
+        self._web_reread_request = is_web_reread
+        if not request_context.is_quote_ack and (is_web_followup or is_web_reread):
+            try:
+                _web_cfg = get_memory_config()
+                if not bool(_web_cfg.get("web_evidence_cache_enabled", True)):
+                    raise RuntimeError("网页证据缓存已由配置关闭")
+                if self._web_evidence_cache is None:
+                    with self._web_evidence_cache_lock:
+                        if self._web_evidence_cache is None:
+                            self._web_evidence_cache = WebEvidenceCache(
+                                max_bytes=_web_cfg.get("web_evidence_cache_max_bytes", 128 * 1024 * 1024),
+                                max_age_hours=_web_cfg.get("web_evidence_cache_ttl_hours", 24),
+                                max_content_chars=_web_cfg.get("web_evidence_max_content_chars", 200_000),
+                            )
+                with self._tool_audit_lock:
+                    preferred_task_ids = [
+                        str(event.get("web_research_task_id", ""))
+                        for event in self._recent_tool_audit
+                        if event.get("web_evidence_id")
+                        and not event.get("is_error")
+                    ]
+                if is_web_followup:
+                    retrieval = self._web_evidence_cache.retrieve_recent(
+                        self._current_request_text,
+                        preferred_task_ids=preferred_task_ids,
+                        max_chunks=_web_cfg.get("web_evidence_retrieval_max_chunks", 6),
+                        max_chars=_web_cfg.get("web_evidence_retrieval_max_chars", 12_000),
+                    )
+                    self._web_evidence_retrieval = retrieval
+                    messages.append({
+                        "role": "system",
+                        "content": WebEvidenceCache.format_followup_context(retrieval),
+                        "_module": "web_evidence_cache",
+                    })
+                    logger.debug(
+                        "[WebEvidence] followup state=%s task=%s hits=%d evidence_ids=%s",
+                        retrieval.status,
+                        retrieval.task_id,
+                        len(retrieval.hits),
+                        ",".join(retrieval.evidence_ids),
+                    )
+                if is_web_reread:
+                    from brain.request_tool_policy import extract_urls
+                    target_urls = extract_urls(self._current_request_text)
+                    if not target_urls:
+                        candidate_task_ids = list(dict.fromkeys(
+                            preferred_task_ids
+                            + list(self._web_evidence_cache.recent_task_ids(limit=8))
+                        ))
+                        for task_id in candidate_task_ids:
+                            target_urls.extend(
+                                evidence.url
+                                for evidence in self._web_evidence_cache.list_task(task_id)
+                            )
+                    self._web_reread_target_urls = tuple(dict.fromkeys(target_urls))[:8]
+                    if self._web_reread_target_urls:
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "【网页重新读取契约】用户明确要求重新取得网页原文。"
+                                "本轮必须调用真实 fetch_webpage，并使用下面的原始 URL；"
+                                "多条 URL 需要逐一读取，工具失败时必须如实说明，不能用缓存或上一轮摘要冒充重新读取。\n"
+                                + "\n".join(f"- {url}" for url in self._web_reread_target_urls)
+                            ),
+                            "_module": "web_reread_contract",
+                        })
+                    else:
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "【网页重新读取契约】用户要求重新读取网页，但当前没有找到可用原始 URL。"
+                                "不要编造 URL 或声称已经重新读取；请向用户索要原始链接。"
+                            ),
+                            "_module": "web_reread_contract",
+                        })
+            except Exception as exc:
+                # 短期证据是增强上下文，缓存故障不能阻断普通对话或实时工具。
+                logger.warning("[WebEvidence] followup retrieval failed: %s", exc)
+        if is_web_reread and not self._web_reread_target_urls:
+            logger.debug("[WebEvidence] reread blocked: no verifiable source URL")
+            return (
+                "我可以重新读取并核对，但当前没有找到可验证的原始网页链接。"
+                "请把网页 URL 发给我，我再实际读取一次。"
+            )
         if route.uses_memory_context and not self._use_local:
             messages.append({"role": "system", "content": _COMPACT_MEMORY_POLICY,
                              "_module": "memory_policy"})
@@ -2647,6 +2837,7 @@ class AgentCore:
             })
         _text_protocol_retry_count = 0
         _web_verification_retry_count = 0
+        _web_reread_retry_count = 0
         _execution_contract_retry_count = 0
         _quote_duplicate_retry_count = 0
 
@@ -3631,6 +3822,32 @@ class AgentCore:
                 if web_research_task and web_research_task.phase == "browser":
                     web_research_task.phase = "completed"
 
+                if self._web_reread_request and self._web_reread_target_urls:
+                    completed_urls = set(self._web_reread_completed_urls)
+                    remaining_urls = [
+                        url for url in self._web_reread_target_urls
+                        if url not in completed_urls
+                    ]
+                    if remaining_urls and _web_reread_retry_count < (
+                        len(self._web_reread_target_urls) + 1
+                    ):
+                        _web_reread_retry_count += 1
+                        forced_tool = "fetch_webpage"
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "网页重新读取尚未完成。请继续调用 fetch_webpage 读取下一个未完成的原始 URL，"
+                                "不要用缓存或计划性文字替代真实工具调用。\n"
+                                f"目标 URL：{remaining_urls[0]}"
+                            ),
+                        })
+                        logger.debug(
+                            "[WebEvidence] reread incomplete remaining=%d retry=%d",
+                            len(remaining_urls),
+                            _web_reread_retry_count,
+                        )
+                        continue
+
                 if (required_tool
                         and not has_successful_tool_call(request_audit, {required_tool})
                         and _execution_contract_retry_count < 1):
@@ -3840,6 +4057,40 @@ class AgentCore:
                     final_content, _msg_for_match, request_audit,
                     capabilities=route.capabilities, mode=route.mode.value,
                 )
+                # 网页工具结果或短期证据缓存只能支持原文中确实出现的数字、
+                # 时间和比例。把这一层放在执行真实性守卫之后，避免模型先
+                # 通过“已搜索/已读取”校验，再把无依据的具体数字交付给用户。
+                try:
+                    if not bool(get_memory_config().get("web_evidence_numeric_grounding", True)):
+                        logger.debug("[WebEvidence] final_guard disabled by config")
+                    else:
+                        from brain.web_evidence_guard import validate_web_evidence_claims
+                        _retrieval = getattr(self, "_web_evidence_retrieval", None)
+                        _evidence_context = (
+                            getattr(_retrieval, "text", "")
+                            if getattr(_retrieval, "status", "") == "CACHE_HIT_GROUNDED"
+                            else ""
+                        )
+                        _web_validation = validate_web_evidence_claims(
+                            final_content,
+                            _msg_for_match,
+                            request_audit,
+                            capabilities=route.capabilities,
+                            evidence_text=_evidence_context,
+                        )
+                        if _web_validation.checked and not _web_validation.grounded:
+                            logger.warning(
+                                "[WebEvidence] final answer adjusted grounded=%s unsupported=%d conflicts=%d evidence=%d",
+                                _web_validation.grounded,
+                                len(_web_validation.unsupported),
+                                len(_web_validation.conflicts),
+                                _web_validation.evidence_count,
+                            )
+                            final_content = _web_validation.content
+                except Exception as exc:
+                    # 最终证据校验是增强性防线；校验器故障不应让已经取得
+                    # 的网页结果变成 API 失败，但要留下可定位的调试记录。
+                    logger.exception("[WebEvidence] final guard failed: %s", exc)
                 # ── 括号卫生：显示前剥除全角括号旁白（兜底防线） ──
                 try:
                     from brain.text_hygiene import strip_parenthetical_asides
