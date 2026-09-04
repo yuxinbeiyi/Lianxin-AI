@@ -385,19 +385,30 @@ def main():
     else:
         window.show()
 
-    # ── Torch 预热：把懒加载的首卡顿挪到启动窗口期 ───────────────
-    # Windows 上 torch 必须在主线程导入（utils/torch_runtime 的约束），
-    # 与其让语音/记忆检索首次触发时冻结对话 7 秒，不如在窗口显示后
-    # 立刻预热一次；此后 sys.modules 已缓存，本轮不会再卡。
+    # ── Torch 预热：后台等待，绝不阻塞 Qt 事件循环 ───────────────
+    # ensure_ready() may wait for the Qt-owned initializer. Calling it from
+    # this timer callback would freeze repaint and mouse events while waiting.
+    # The worker waits instead; Qt remains responsive and processes the queued
+    # main-thread initialization callback normally.
     def _preload_torch_runtime():
-        try:
-            from utils.torch_runtime import ensure_ready
-            import time as _time
-            _started = _time.monotonic()
-            ensure_ready(timeout=120.0)
-            print(f"[预载] Torch 运行时就绪（{_time.monotonic() - _started:.1f}s）", flush=True)
-        except Exception as exc:
-            print(f"[预载] Torch 预热失败，将在首次使用时重试: {exc}", flush=True)
+        def _preload_worker():
+            try:
+                from utils.torch_runtime import ensure_ready
+                import time as _time
+                _started = _time.monotonic()
+                ensure_ready(timeout=120.0)
+                print(
+                    f"[预载] Torch 运行时就绪（{_time.monotonic() - _started:.1f}s）",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[预载] Torch 预热失败，将在首次使用时重试: {exc}", flush=True)
+
+        preload_thread = threading.Thread(
+            target=_preload_worker, name="torch-preload", daemon=True
+        )
+        preload_thread.start()
+        print("[预载] Torch 预热已转入后台，主界面保持可用", flush=True)
 
     QTimer.singleShot(600, _preload_torch_runtime)
 
