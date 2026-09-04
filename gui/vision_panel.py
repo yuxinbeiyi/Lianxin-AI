@@ -703,6 +703,12 @@ class VisionPanel(QDialog):
 
     @pyqtSlot(bool, str)
     def _on_started(self, success, message):
+        if success:
+            try:
+                from utils.accompany_stats import AccompanyStats
+                AccompanyStats().start_video_session()
+            except Exception as exc:
+                self._append_log(f"[Stats] video start failed: {exc}")
         """启动结果"""
         from brain.runtime_status import update_status
         if success:
@@ -716,6 +722,11 @@ class VisionPanel(QDialog):
 
     @pyqtSlot()
     def _on_stopped(self):
+        try:
+            from utils.accompany_stats import AccompanyStats
+            AccompanyStats().end_video_session()
+        except Exception as exc:
+            self._append_log(f"[Stats] video stop failed: {exc}")
         """停止完成"""
         from brain.runtime_status import update_status
         update_status("vision", running=False, health="正常", last_activity_summary="视觉模块已停止")

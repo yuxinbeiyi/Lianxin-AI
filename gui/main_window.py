@@ -3280,6 +3280,10 @@ class MainWindow(QMainWindow):
             self._exit_standby()
 
     def _enter_standby(self):
+        try:
+            self._accompany_stats.start_voice_call_session()
+        except Exception as exc:
+            print(f"[Stats] voice start failed: {exc}")
         """开启待机模式。
         full_duplex: 全双工语音（Silero VAD + 本地 Whisper，随时插话，无需结束词）
         legacy: 旧模式（阿里云 + 文件轮询，需要结束词）
@@ -3357,6 +3361,10 @@ class MainWindow(QMainWindow):
 
 
     def _exit_standby(self):
+        try:
+            self._accompany_stats.end_voice_call_session()
+        except Exception as exc:
+            print(f"[Stats] voice stop failed: {exc}")
         """关闭待机模式"""
         self._standby_state = "IDLE"
         try:
@@ -4136,6 +4144,7 @@ class MainWindow(QMainWindow):
                 print("[主动发言] _char_widget 没有 set_talking 方法")
 
     def _trigger_gesture_llm_response(self, gesture_emoji: str, gesture_name: str, fallback_responses: list):
+        self._pending_gesture_kind = {"👋": "wave", "👍": "thumbs_up", "👌": "ok"}.get(gesture_emoji)
         """手势事件入口（LLM优先，模板兜底）——通用管线的薄封装。"""
         print(f"[手势响应] 触发 {gesture_emoji}{gesture_name}")
         event_text = f"[我对你比了个{gesture_emoji}{gesture_name}]"
@@ -4189,7 +4198,9 @@ class MainWindow(QMainWindow):
             "fallback_sent": False,
             "timer": timer,
             "start_time": time.time(),
+            "gesture_kind": getattr(self, "_pending_gesture_kind", None),
         }
+        self._pending_gesture_kind = None
         try:
             # _on_user_message 负责创建、连接并启动新的 AgentWorker。
             self._on_user_message(event_text, images=None, show_user_message=False)
@@ -4242,6 +4253,12 @@ class MainWindow(QMainWindow):
         self._trigger_proactive_speech(random.choice(pool))
 
     def _on_agent_response_start(self):
+        ctx = getattr(self, "_llm_reply_ctx", None)
+        if ctx and ctx.get("gesture_kind"):
+            try:
+                self._accompany_stats.record_gesture_interaction(ctx["gesture_kind"], "llm")
+            except Exception as exc:
+                print(f"[Stats] gesture record failed: {exc}")
         """Agent 开始回复（取消等待中的超时定时器，LLM 链路成功）。"""
         ctx = getattr(self, "_llm_reply_ctx", None)
         if ctx:

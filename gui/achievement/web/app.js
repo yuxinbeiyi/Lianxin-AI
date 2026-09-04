@@ -139,6 +139,14 @@ function mountAvatarEcho() {
   node.className = 'card avatar-echo-card';
   node.innerHTML = `<div class="section-heading"><div><h2 class="section-title">互动回声</h2><p class="label">每一次靠近，都留下了一点回应。</p></div><span class="label">累计互动</span></div><div class="avatar-echo-grid">${items.map(([key, label]) => `<div class="avatar-echo-item"><span>${label}</span><b>${Number(source[key] || 0)}</b></div>`).join('')}</div>`;
   weekly.parentNode.insertBefore(node, weekly);
+  const visual = state.visual_stats || {};
+  const counts = visual.gesture_counts || {};
+  const formatDuration = seconds => { const value = Math.max(0, Math.floor(Number(seconds || 0))); return `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分钟`; };
+  const visualNode = document.createElement('section');
+  visualNode.className = 'card visual-stats-card';
+  visualNode.innerHTML = `<div class="section-heading"><div><h2 class="section-title">一屏之隔</h2><p class="label">屏幕之外，也留下了陪伴的时间。</p></div></div><div class="avatar-echo-grid"><div class="avatar-echo-item"><span>视频陪伴</span><b>${formatDuration(visual.video_seconds)}</b></div><div class="avatar-echo-item"><span>语音通话</span><b>${formatDuration(visual.voice_call_seconds)}</b></div><div class="avatar-echo-item"><span>视觉互动</span><b>${Number(visual.gesture_interaction_count || 0)} 次</b></div></div><p class="label">挥手 ${Number(counts.wave || 0)} · 大拇指 ${Number(counts.thumbs_up || 0)} · OK ${Number(counts.ok || 0)}</p>`;
+  visualNode.style.marginTop = '16px';
+  node.parentNode.insertBefore(visualNode, node.nextSibling);
 }
 function bindCoast() { document.querySelectorAll('[data-journal-event]').forEach(card => { card.onclick = () => showJourneyEvent(card); }); document.querySelectorAll('[data-export]').forEach(button => { button.onclick = () => bridge.export_metrics(button.dataset.export, raw => { const result = JSON.parse(raw); toast(result.ok ? `统计文件已导出：${result.path}` : `导出失败：${result.error || '未知错误'}`); }); }); mountAvatarEcho(); drawWeeklyChart(); }
 function bindShells() { const search = document.querySelector('#shell-search'); if (!search) return; search.onchange = () => { shellQuery = search.value.trim(); render(); }; document.querySelector('#shell-status').value = shellStatus; document.querySelector('#shell-status').onchange = event => { shellStatus = event.target.value; render(); }; document.querySelector('#shell-sort').value = shellSort; document.querySelector('#shell-sort').onchange = event => { shellSort = event.target.value; render(); }; document.querySelectorAll('[data-layout]').forEach(button => { button.onclick = () => { shellLayout = button.dataset.layout; render(); }; }); }

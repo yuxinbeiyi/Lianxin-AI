@@ -500,7 +500,9 @@ class AchievementService:
             entries = [dict(row) for row in conn.execute("SELECT * FROM journey_entries ORDER BY occurred_at DESC LIMIT 80")]
             journey_total = int(conn.execute("SELECT COUNT(*) FROM journey_entries").fetchone()[0])
         today_row = by_day.get(today, {})
+        visual_stats = stats.get_visual_stats()
         return {"user_name": "", "first_meet_date": first, "metrics": metrics,
+                "visual_stats": visual_stats,
                 "avatar_summary": avatar_detail,
                 "today": {"chats": today_row.get("chat_turns", 0), "focus": today_row.get("focus_completed", 0), "capsules": today_row.get("capsules", 0), "notes": today_row.get("notes", 0), "tools": today_row.get("tools", 0)},
                 "active_days_30": sum(1 for day_key, row in by_day.items() if day_key >= (date.today() - timedelta(days=29)).isoformat() and row["active_events"] > 0),

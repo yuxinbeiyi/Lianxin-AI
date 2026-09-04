@@ -83,12 +83,17 @@ class AccompanyDialog(QDialog):
         self._avatar_interaction_label.setFont(QFont("Microsoft YaHei UI", 10))
         self._avatar_interaction_label.setWordWrap(True)
         self._avatar_interaction_label.setStyleSheet("color: #A98BFF;")
+        self._visual_stats_label = QLabel()
+        self._visual_stats_label.setFont(QFont("Microsoft YaHei UI", 10))
+        self._visual_stats_label.setWordWrap(True)
+        self._visual_stats_label.setStyleSheet("color: #5FB3B3;")
 
         right_layout.addWidget(self._duration_label)
         right_layout.addWidget(self._session_label)
         right_layout.addWidget(self._first_meet_label)
         right_layout.addWidget(self._music_label)
         right_layout.addWidget(self._avatar_interaction_label)
+        right_layout.addWidget(self._visual_stats_label)
         right_layout.addStretch()
 
         content_layout.addLayout(right_layout)
@@ -183,6 +188,17 @@ class AccompanyDialog(QDialog):
         else:
             music_text = "🎵 音乐统计功能未启用。"
         self._music_label.setText(music_text)
+        visual = self._stats.get_visual_stats()
+        def fmt(seconds):
+            seconds = int(seconds or 0)
+            return f"{seconds // 3600}小时{(seconds % 3600) // 60}分钟"
+        counts = visual.get("gesture_counts", {})
+        self._visual_stats_label.setText(
+            f"一屏之隔\n视频陪伴：{fmt(visual.get('video_seconds'))}\n"
+            f"语音通话：{fmt(visual.get('voice_call_seconds'))}\n"
+            f"视觉互动：{visual.get('gesture_interaction_count', 0)} 次 "
+            f"（挥手 {counts.get('wave', 0)} / 大拇指 {counts.get('thumbs_up', 0)} / OK {counts.get('ok', 0)}）"
+        )
         avatar_stats = self._stats.get_avatar_interactions()
         summary = self._stats.get_avatar_interaction_summary()
         self._avatar_interaction_label.setText(
@@ -203,6 +219,7 @@ class AccompanyDialog(QDialog):
         )
         if answer == QMessageBox.Yes:
             self._stats.clear_avatar_events()
+            self._stats.reset_visual_stats()
             self._update_content()
 
     def _on_close(self):
