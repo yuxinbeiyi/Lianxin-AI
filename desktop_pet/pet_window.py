@@ -47,7 +47,8 @@ class DesktopPetWindow(QWidget):
             menu.addAction("停止移动", self.movement.stop)
             menu.addSeparator()
             for state, label in ((PetState.IDLE, "待机"), (PetState.SIT, "坐下"),
-                                 (PetState.SLEEP, "睡眠")):
+                                 (PetState.SLEEP, "睡眠"), (PetState.HAPPY, "开心"),
+                                 (PetState.STUDY, "学习"), (PetState.THINK, "思考")):
                 menu.addAction(label, lambda checked=False, s=state: self.set_state(s))
             menu.addAction("退出桌宠", self.close)
             menu.exec_(event.globalPos())

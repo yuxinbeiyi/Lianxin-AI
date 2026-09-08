@@ -23,6 +23,9 @@ class PetAnimation(QObject):
             PetState.IDLE: 220,
             PetState.SIT: 300,
             PetState.SLEEP: 420,
+            PetState.HAPPY: 180,
+            PetState.STUDY: 260,
+            PetState.THINK: 260,
             PetState.WALK_LEFT: 120,
             PetState.WALK_RIGHT: 120,
         }[self.state]
