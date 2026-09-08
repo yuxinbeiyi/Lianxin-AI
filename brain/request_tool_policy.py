@@ -154,6 +154,9 @@ def is_external_lookup_request(text: str) -> bool:
     return bool(extract_urls(value)) or any(token in value for token in (
         "联网", "上网", "网页", "搜索一下", "查一下最新", "最新消息",
         "最新新闻", "实时", "官网", "web search", "search online",
+        "\u539f\u6587", "\u51c6\u786e\u5417", "\u771f\u7684\u5417", "\u5c5e\u5b9e\u5417",
+        "\u80e1\u7f16", "\u80e1\u731c", "\u4e0d\u4e86\u89e3", "\u4e0d\u786e\u5b9a",
+        "\u91cd\u65b0\u6838\u5bf9", "\u91cd\u65b0\u6838\u5b9e",
     ))
 
 

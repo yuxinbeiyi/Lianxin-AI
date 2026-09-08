@@ -181,6 +181,15 @@ _DIRECT_WEB_FETCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 事实核验型问题即使没有出现“搜索”二字，也需要真实网络证据。
+# 采用保守触发：限定为原文/数字/准确性/未知事实等明显核验语义，
+# 不把普通知识问答全部升级为联网请求。
+_FACT_CHECK_RE = re.compile(
+    r"(?:\u539f\u6587|\u6587\u7ae0|\u7f51\u9875|\u8d44\u6599).{0,24}(?:\u51c6\u786e|\u58f0\u79f0|\u63d0\u5230|\u662f\u5426\u771f\u5b9e|\u662f\u5426\u5c5e\u5b9e)|"
+    r"(?:\u5177\u4f53|\u5230\u5e95|\u7a76\u7adf).{0,16}(?:\u591a\u5c11|\u51e0\u6761|\u54ea\u4e00\u5929|\u4ec0\u4e48\u65f6\u5019|\u54ea\u4e2a\u7248\u672c)|"
+    r"(?:\u51c6\u786e\u5417|\u771f\u7684\u5417|\u5c5e\u5b9e\u5417|\u80e1\u7f16|\u80e1\u731c|\u4e0d\u4e86\u89e3|\u4e0d\u786e\u5b9a|\u91cd\u65b0\u6838\u5bf9|\u91cd\u65b0\u6838\u5b9e|\u6838\u5bf9\u4e00\u4e0b|\u6838\u5b9e\u4e00\u4e0b)",
+)
+
 _WEB_REREAD_RE = re.compile(
     r"(?:(?:重新(?:读取|阅读|查看|抓取|核对|核实)|再次(?:读取|阅读|查看|抓取|核对|核实)|"
     r"再(?:读|看|抓取|核对)一?(?:遍|次)?|重读|重看).{0,36}"
@@ -554,6 +563,9 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     if _DIRECT_WEB_FETCH_RE.search(text):
         capabilities.add("web_fetch")
         reasons.append("用户明确点名网页读取工具")
+    if not _NEGATED_SEARCH_RE.search(text) and _FACT_CHECK_RE.search(text):
+        capabilities.add("web_search")
+        reasons.append("事实核验请求，需要真实网络证据")
     if _BROWSER_INTERACTION_RE.search(text):
         capabilities.add("browser")
         reasons.append("用户明确要求浏览器交互")

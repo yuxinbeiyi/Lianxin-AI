@@ -24,6 +24,7 @@ from config import (
     get_firecrawl_config, save_firecrawl_config,
 
 )
+from gui.model_fetcher import run_model_fetch, show_model_picker
 
 # ── 测试 DeepSeek 连接的后台线程 ──────────────────────────────
 
@@ -400,7 +401,13 @@ class ApiConfigDialog(QDialog):
         self._model_edit.setPlaceholderText("deepseek-v4-flash")
         self._model_edit.setFont(QFont("Consolas", 10))
         self._apply_field_style(self._model_edit)
-        ds_form.addRow("模型名称:", self._model_edit)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self._model_edit, 1)
+        self._fetch_models_btn = QPushButton("获取模型")
+        self._fetch_models_btn.setFixedWidth(92)
+        self._fetch_models_btn.clicked.connect(self._fetch_chat_models)
+        model_row.addWidget(self._fetch_models_btn)
+        ds_form.addRow("模型名称:", model_row)
 
         self._api_format_combo = QComboBox()
         self._api_format_combo.addItems(["openai", "anthropic"])
@@ -1321,6 +1328,33 @@ class ApiConfigDialog(QDialog):
         self._show_sf_btn.setText("隐藏" if checked else "显示")
 
     # ── 数据加载 ─────────────────────────────────────────────
+
+    def _fetch_chat_models(self):
+        base = self._url_edit.text().strip()
+        if not base:
+            QMessageBox.warning(self, "获取模型", "请先填写 Base URL")
+            return
+        self._fetch_models_btn.setEnabled(False)
+        self._fetch_models_btn.setText("获取中...")
+        self._model_fetcher = run_model_fetch(
+            base,
+            self._key_edit.text().strip(),
+            self._on_chat_models_fetched,
+            self._on_chat_models_failed,
+            self._restore_model_fetch_button,
+        )
+
+    def _on_chat_models_fetched(self, models):
+        picked = show_model_picker(self._fetch_models_btn, models)
+        if picked:
+            self._model_edit.setText(picked)
+
+    def _on_chat_models_failed(self, error):
+        QMessageBox.warning(self, "获取模型失败", f"无法获取模型列表：\n{error}\n\n仍可手动填写模型名称。")
+
+    def _restore_model_fetch_button(self):
+        self._fetch_models_btn.setEnabled(True)
+        self._fetch_models_btn.setText("获取模型")
 
     def _load(self):
         # DeepSeek 配置

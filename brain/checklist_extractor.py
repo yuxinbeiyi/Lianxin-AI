@@ -10,6 +10,20 @@ from typing import Optional
 
 logger = logging.getLogger("ChecklistExtractor")
 
+# 待办只能来自用户明确的安排意图；纠错建议、莲心自我承诺和行为规则
+# 不属于 Todo，避免后台摘要模型把“以后先搜索”误转成提醒。
+_TODO_INTENT_RE = re.compile(
+    "\\u63d0\\u9192\\u6211|\\u6dfb\\u52a0\\u5f85\\u529e|\\u52a0\\u5165\\u5f85\\u529e|\\u8bb0\\u4e00\\u4e0b|\\u8bb0\\u4e0b\\u6765|\\u522b\\u5fd8\\u4e86|\\u5230\\u65f6\\u5019\\u63d0\\u9192|\\u8bbe\\u4e2a\\u63d0\\u9192|\\u8bbe\\u7f6e\\u63d0\\u9192|\\u5e2e\\u6211\\u5b89\\u6392"
+)
+
+
+def has_explicit_todo_intent(conversation_text: str) -> bool:
+    """Return whether the user explicitly asked to create or remember a todo."""
+    for line in str(conversation_text or "").splitlines():
+        if line.startswith("[\u7528\u6237]") and _TODO_INTENT_RE.search(line):
+            return True
+    return False
+
 _EXTRACT_SYSTEM = """你是莲心AI的对话回顾助手。一段对话刚刚结束，请回顾内容，提取用户提到的事项。
 
 你的任务：
@@ -141,6 +155,11 @@ def run_checklist_async(
             result = extract_checklist(conversation_text, api_key, api_base, model)
             if not result:
                 return
+            if result.get("add") and not has_explicit_todo_intent(conversation_text):
+                logger.info("[Checklist] 丢弃 %d 条候选：未发现用户明确待办意图", len(result["add"]))
+                result = {"add": [], "done": result.get("done", [])}
+                if not result["done"]:
+                    return
             if callback:
                 callback(result)
             else:

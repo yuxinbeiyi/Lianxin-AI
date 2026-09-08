@@ -15,9 +15,9 @@ from pathlib import Path
 from utils.paths import get_user_data_dir
 
 
-LOW_RISK_KINDS = {"interaction_style", "topic_interest", "proactive_preference"}
+LOW_RISK_KINDS = {"interaction_style", "topic_interest", "proactive_preference", "knowledge_hygiene"}
 VALID_STATUSES = {"pending", "applied", "reverted", "dismissed", "expired"}
-ALLOWED_FIELDS = {"response_length", "response_structure", "interaction_tone", "topic_interest", "proactive_preference"}
+ALLOWED_FIELDS = {"response_length", "response_structure", "interaction_tone", "topic_interest", "proactive_preference", "fact_verification"}
 
 
 def _now() -> str:
@@ -354,8 +354,27 @@ class PersonaGrowthService:
         text = str(user_message or "").strip()
         if not text or len(text) > 500:
             return None
-        positive = ("以后你可以", "希望你", "你可以多", "更喜欢你", "请你以后")
-        if not any(token in text for token in positive):
+        # Fact-verification feedback is kept as code points to avoid source
+        # encoding issues in older Windows checkouts.
+        fact_feedback = tuple("".join(map(chr, codes)) for codes in (
+            (19981, 35201, 32993, 32534), (19981, 35201, 32534, 36896),
+            (20808, 25628, 32034), (20808, 26597, 35777), (20808, 26680, 23454),
+            (19981, 20102, 35299, 23601, 26597), (19981, 30830, 23450, 26102, 26597),
+        ))
+        normalized_text = text.replace(" ", "")
+        if any(token in normalized_text for token in fact_feedback):
+            return self.propose(persona_id=persona_id, kind="knowledge_hygiene",
+                                title="\u56de\u7b54\u672a\u77e5\u4e8b\u5b9e\u524d\u5148\u6838\u9a8c",
+                                detail="\u9047\u5230\u65e0\u6cd5\u786e\u8ba4\u7684\u4e8b\u5b9e\u3001\u4f5c\u54c1\u3001\u4eba\u7269\u3001\u6570\u5b57\u3001\u65e5\u671f\u6216\u5b9e\u65f6\u4fe1\u606f\u65f6\uff0c\u5148\u641c\u7d22\u5e76\u6838\u5bf9\u53ef\u9760\u6765\u6e90\uff1b\u65e0\u6cd5\u786e\u8ba4\u65f6\u660e\u786e\u8bf4\u660e\u4e0d\u786e\u5b9a\uff0c\u4e0d\u80fd\u51ed\u7a7a\u8865\u5168\u7b54\u6848\u3002",
+                                evidence="\u7528\u6237\u660e\u786e\u8981\u6c42\u4e8b\u5b9e\u6838\u9a8c",
+                                confidence=0.9, field="fact_verification",
+                                old_value="\u672a\u542f\u7528", proposed_value="search_before_answer", risk="low",
+                                evidence_ref="chat_feedback")
+        positive = ("以后你可以", "希望你", "你可以多", "更喜欢你", "请你以后",
+                    "不要胡编", "不要编造", "先搜索", "先查证", "先核实",
+                    "核对来源", "不了解就查", "不确定时查询", "不要凭空猜",
+                    "回答前确认事实")
+        if not any(token in text.replace(" ", "") for token in positive):
             return None
         proposal = self._interpret_feedback(text)
         if proposal is None:
@@ -388,7 +407,13 @@ class PersonaGrowthService:
                     "field": "response_length", "old_value": "standard", "proposed_value": "detailed", "risk": "low"}
         if any(word in normalized for word in ("少用表情", "不要太多表情", "少发表情")):
             return {"kind": "interaction_style", "title": "减少表情使用", "detail": "表达时少用表情符号，保持自然克制。",
-                    "field": "interaction_tone", "old_value": "standard", "proposed_value": "fewer_emojis", "risk": "low"}
+                     "field": "interaction_tone", "old_value": "standard", "proposed_value": "fewer_emojis", "risk": "low"}
+        if any(word in normalized for word in ("不要胡编", "不要编造", "先搜索", "先查证", "先核实",
+                                               "核对来源", "不了解就查", "不确定时查询", "不要凭空猜",
+                                               "回答前确认事实")):
+            return {"kind": "knowledge_hygiene", "title": "回答未知事实前先核验",
+                    "detail": "遇到无法确认的事实、作品、人物、数字、日期或实时信息时，先搜索并核对可靠来源；无法确认时明确说明不确定，不能凭空补全答案。",
+                    "field": "fact_verification", "old_value": "未启用", "proposed_value": "search_before_answer", "risk": "low"}
         return None
 
     def dynamic_context(self, persona_id: str) -> str:
