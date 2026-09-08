@@ -198,6 +198,7 @@ import qdarkstyle
 
 from gui.main_window import MainWindow
 from utils.torch_runtime import TorchInitRequest, register_main_thread_initializer
+from gui.startup_splash import StartupSplash
 
 
 def _apply_saved_provider_on_startup() -> None:
@@ -312,6 +313,10 @@ def main():
     app.setApplicationName("莲心AI")
     app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
+    splash = StartupSplash()
+    splash.show()
+    splash.update_status("⟳ 读取配置", "正在加载莲心运行配置", 8)
+
     # ── 全局异常处理：确保 Qt 事件循环中的异常也被捕获 ──
     def _qt_exception_handler(exc_type, exc_value, tb_obj):
         _global_exception_handler(exc_type, exc_value, tb_obj)
@@ -319,6 +324,7 @@ def main():
     sys.excepthook = _qt_exception_handler
 
     _apply_saved_provider_on_startup()
+    splash.update_status("✓ 读取配置", "正在初始化基础界面", 20)
 
     # 全局字体
     font = QFont("Microsoft YaHei UI", 10)
@@ -348,11 +354,14 @@ def main():
         except Exception as e:
             print(f"[启动体检] 检测过程异常: {e}", flush=True)
 
+    splash.update_status("⟳ 初始化基础服务", "正在创建主窗口与本地服务", 38)
     window = MainWindow(autostart_mode=autostart_mode)
+    splash.update_status("✓ 初始化基础服务", "正在激活能力与工具", 55)
 
     # ── 自动激活标记为 auto_activate 的技能 ────────────────────
     from brain.skill_manager import activate_all_skills
     activate_all_skills()
+    splash.update_status("✓ 注册工具与技能", "正在启动本地服务", 70)
 
     # 虚拟世界网页服务和技能工具必须处于同一进程，才能共享权威 WorldState。
     try:
@@ -375,6 +384,7 @@ def main():
         atexit.register(_mcp_mgr.shutdown)
     except Exception as e:
         print(f"[MCP] 初始化失败，MCP 功能已禁用: {e}")
+    splash.update_status("✓ 注册工具与技能", "语音与视觉模型将在首次使用时加载", 92)
 
 
     # ── QQ 桥接（由 MainWindow 管理，详见 main_window.py）─────
@@ -384,8 +394,10 @@ def main():
         window.showMinimized()
     else:
         window.show()
+    splash.update_status("✓ 莲心已准备好", "可用能力已启动，模型按需加载", 100)
+    QTimer.singleShot(450, splash.close)
 
-    # ── Torch 预热：后台等待，绝不阻塞 Qt 事件循环 ───────────────
+    # ── Torch 按需加载：禁止启动阶段预热，避免原生 DLL 阻塞/崩溃 ───
     # ensure_ready() may wait for the Qt-owned initializer. Calling it from
     # this timer callback would freeze repaint and mouse events while waiting.
     # The worker waits instead; Qt remains responsive and processes the queued
@@ -410,7 +422,7 @@ def main():
         preload_thread.start()
         print("[预载] Torch 预热已转入后台，主界面保持可用", flush=True)
 
-    QTimer.singleShot(600, _preload_torch_runtime)
+    # Torch/FunASR/视觉模型在实际功能首次使用时加载。
 
     # ── 非模态体检报告（事件循环启动后出现，不阻塞窗口）────────
     if _check_report and not autostart_mode:
