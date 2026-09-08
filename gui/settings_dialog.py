@@ -169,6 +169,24 @@ class SettingsDialog(QDialog):
         check_layout.addWidget(self._startup_check_cb)
         scroll_layout.addWidget(check_frame)
 
+        startup_mode_frame = self._create_frame()
+        startup_mode_layout = QVBoxLayout(startup_mode_frame)
+        startup_mode_title = QLabel("启动加载方式")
+        startup_mode_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        startup_mode_layout.addWidget(startup_mode_title)
+        self._startup_mode_combo = QComboBox()
+        self._startup_mode_combo.addItem("快速启动（进入主界面后按需加载模型）", "fast")
+        self._startup_mode_combo.addItem("完整启动（等待语音与视觉模型准备完成）", "complete")
+        startup_mode_layout.addWidget(self._startup_mode_combo)
+        startup_mode_tip = QLabel(
+            "完整启动会延长启动时间；Torch、FunASR 等原生模型将在安全的独立加载流程中准备。"
+        )
+        startup_mode_tip.setFont(QFont("Microsoft YaHei UI", 8))
+        startup_mode_tip.setStyleSheet("color: #888888;")
+        startup_mode_tip.setWordWrap(True)
+        startup_mode_layout.addWidget(startup_mode_tip)
+        scroll_layout.addWidget(startup_mode_frame)
+
         # 窗口形态、托盘与动效
         window_frame = self._create_frame()
         window_layout = QVBoxLayout(window_frame)
@@ -889,6 +907,8 @@ class SettingsDialog(QDialog):
             self._chat_avatar_tab.load()
         self._exit_confirm_cb.setChecked(self._settings.show_exit_confirmation)
         self._startup_check_cb.setChecked(self._settings.startup_check_enabled)
+        mode_index = self._startup_mode_combo.findData(self._settings.startup_mode)
+        self._startup_mode_combo.setCurrentIndex(max(0, mode_index))
         self._tray_enabled_cb.setChecked(self._settings.tray_enabled)
         self._minimize_tray_cb.setChecked(self._settings.minimize_to_tray)
         self._restore_window_cb.setChecked(self._settings.restore_window_state)
@@ -953,6 +973,7 @@ class SettingsDialog(QDialog):
             self.avatars_changed.emit()
         self._settings.show_exit_confirmation = self._exit_confirm_cb.isChecked()
         self._settings.startup_check_enabled = self._startup_check_cb.isChecked()
+        self._settings.startup_mode = str(self._startup_mode_combo.currentData() or "fast")
         self._settings.tray_enabled = self._tray_enabled_cb.isChecked()
         self._settings.minimize_to_tray = self._minimize_tray_cb.isChecked()
         self._settings.restore_window_state = self._restore_window_cb.isChecked()

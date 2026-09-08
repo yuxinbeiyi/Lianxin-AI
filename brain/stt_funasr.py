@@ -8,6 +8,10 @@ import sys
 import logging
 import re
 import tempfile
+import json
+import socket
+import base64
+from pathlib import Path
 from typing import Optional, Tuple
 
 # ── 必须在 import funasr 之前设置 ──
@@ -23,6 +27,37 @@ for _name in ("modelscope", "modelscope_hub", "modelscope_hub.download",
 # 全局单例，首次调用时懒加载
 _model = None
 _load_attempted = False
+
+
+def _service_endpoint():
+    path = Path(__file__).resolve().parents[1] / "logs" / "funasr_service.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _transcribe_via_service(wav_bytes: bytes, language: str) -> Optional[str]:
+    endpoint = _service_endpoint()
+    if not endpoint:
+        return None
+    try:
+        request = {"wav": base64.b64encode(wav_bytes).decode("ascii"), "language": language}
+        with socket.create_connection((endpoint["host"], int(endpoint["port"])), timeout=30) as conn:
+            conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            data = b""
+            while not data.endswith(b"\n"):
+                block = conn.recv(65536)
+                if not block:
+                    break
+                data += block
+        response = json.loads(data.decode("utf-8"))
+        if response.get("ok"):
+            return response.get("text", "")
+        logger.warning("FunASR 服务返回失败: %s", response.get("error", "unknown"))
+    except Exception as exc:
+        logger.warning("FunASR 服务不可用，回退本地加载: %s", exc)
+    return None
 
 
 def _load_model():
@@ -146,6 +181,9 @@ def transcribe(wav_bytes: bytes, language: str = "zh") -> str:
     Returns:
         识别文本，失败返回空字符串
     """
+    service_text = _transcribe_via_service(wav_bytes, language)
+    if service_text is not None:
+        return service_text
     import time as _time
     _t0 = _time.time()
     model = _load_model()

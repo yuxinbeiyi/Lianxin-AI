@@ -32,6 +32,7 @@ _DEFAULT_SETTINGS = {
     "emotion_probability": 0.6,   # 发表情包概率    默认 60%
     "user_name": "雨心",           # 用户称呼（莲心对用户的称呼）
     "startup_check_enabled": True, # 启动时进行开机体检
+    "startup_mode": "fast",        # fast / complete
     "background_enabled": True,
     "background_source": _DEFAULT_BACKGROUND_IMAGE,
     "background_source_type": "single",
@@ -288,6 +289,17 @@ class SettingsManager:
     @startup_check_enabled.setter
     def startup_check_enabled(self, val: bool):
         self._settings["startup_check_enabled"] = val
+        self.save()
+
+    @property
+    def startup_mode(self) -> str:
+        value = self._settings.get("startup_mode", "fast")
+        return value if value in {"fast", "complete"} else "fast"
+
+    @startup_mode.setter
+    def startup_mode(self, val: str):
+        value = val if val in {"fast", "complete"} else "fast"
+        self._settings["startup_mode"] = value
         self.save()
 
     # ========== 主界面背景 ==========

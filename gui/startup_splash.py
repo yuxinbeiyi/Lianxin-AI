@@ -17,10 +17,12 @@ from PyQt5.QtWidgets import (
 class StartupSplash(QWidget):
     """Borderless startup screen that never owns model initialization."""
 
-    def __init__(self):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+    def __init__(self, startup_mode="fast"):
+        # 无边框但不强制置顶，避免启动期间遮挡用户正在使用的其他窗口。
+        super().__init__(None, Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(960, 576)
+        self._drag_offset = None
 
         root = QFrame(self)
         root.setObjectName("root")
@@ -63,7 +65,8 @@ class StartupSplash(QWidget):
         self._progress.setTextVisible(False)
         layout.addWidget(self._progress)
 
-        self._detail = QLabel("正在准备基础环境")
+        detail = "完整启动：正在准备基础模型" if startup_mode == "complete" else "正在准备基础环境"
+        self._detail = QLabel(detail)
         self._detail.setObjectName("detail")
         layout.addWidget(self._detail)
 
@@ -84,3 +87,23 @@ class StartupSplash(QWidget):
             self._progress.setValue(max(0, min(100, int(progress))))
         QApplication.processEvents()
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)

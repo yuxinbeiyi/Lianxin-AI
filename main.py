@@ -6,6 +6,10 @@
 import sys
 import os
 import threading
+import subprocess
+import time
+import queue
+import json
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ['TQDM_DISABLE'] = '1'          # 抑制 modelscope/funasr tqdm 进度条
 
@@ -272,6 +276,81 @@ def _show_check_dialog(parent, report: str):
     msg_box.show()
 
 
+def _preload_models_isolated(splash) -> tuple[bool, subprocess.Popen | None]:
+    """Run the complete-startup model preflight outside the Qt process."""
+    command = [sys.executable, "-m", "utils.model_preload_worker"]
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(os.path.dirname(os.path.abspath(__file__))),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except Exception as exc:
+        splash.update_status("! 模型加载进程启动失败", str(exc), 80)
+        return False, None
+
+    output_queue = queue.Queue()
+
+    def _read_output():
+        if not process.stdout:
+            return
+        for output_line in process.stdout:
+            output_queue.put(output_line.strip())
+
+    threading.Thread(target=_read_output, name="model-preload-output", daemon=True).start()
+    deadline = time.monotonic() + 180
+    service_port = None
+    while process.poll() is None and time.monotonic() < deadline:
+        try:
+            line = output_queue.get_nowait()
+        except queue.Empty:
+            line = ""
+        if line:
+            line = line.strip()
+            if line == "TORCH_START":
+                splash.update_status("⟳ 加载 Torch", "正在准备深度学习运行时", 72)
+            elif line == "TORCH_READY":
+                splash.update_status("✓ Torch 已就绪", "正在加载 FunASR 语音识别模型", 80)
+            elif line == "FUNASR_START":
+                splash.update_status("⟳ 加载 FunASR", "正在准备 SenseVoice 语音识别", 84)
+            elif line == "FUNASR_READY":
+                splash.update_status("✓ FunASR 已就绪", "语音识别模型预检完成", 94)
+            elif line.startswith("SERVICE_READY:"):
+                service_port = int(line.split(":", 1)[1])
+                splash.update_status("✓ 语音服务已启动", "FunASR 已可供语音通话使用", 98)
+                # FunASR 服务是常驻进程，正常情况下不会退出；收到
+                # SERVICE_READY 就代表启动阶段完成，不能继续等待 poll()。
+                break
+            elif line.startswith("MODEL_FAILED"):
+                splash.update_status("! 模型加载失败", line, 94)
+            continue
+        QApplication.processEvents()
+        time.sleep(0.05)
+
+    if service_port:
+        endpoint = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "funasr_service.json")
+        with open(endpoint, "w", encoding="utf-8") as handle:
+            json.dump({"host": "127.0.0.1", "port": service_port}, handle)
+        return True, process
+
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+        splash.update_status("! 模型加载超时", "可以跳过语音模型并继续启动", 94)
+        return False, process
+    if process.returncode != 0:
+        if process.stdout:
+            for line in process.stdout.read().splitlines()[-3:]:
+                print(f"[模型预载] {line}", flush=True)
+        return False, process
+    return False, process
+
+
 class _TorchRuntimeBridge(QObject):
     """Run deferred Torch initialization on the Qt main thread."""
 
@@ -313,7 +392,10 @@ def main():
     app.setApplicationName("莲心AI")
     app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
-    splash = StartupSplash()
+    from utils.settings import get_settings
+    startup_settings = get_settings()
+    startup_mode = startup_settings.startup_mode
+    splash = StartupSplash(startup_mode=startup_mode)
     splash.show()
     splash.update_status("⟳ 读取配置", "正在加载莲心运行配置", 8)
 
@@ -384,7 +466,23 @@ def main():
         atexit.register(_mcp_mgr.shutdown)
     except Exception as e:
         print(f"[MCP] 初始化失败，MCP 功能已禁用: {e}")
-    splash.update_status("✓ 注册工具与技能", "语音与视觉模型将在首次使用时加载", 92)
+    splash.update_status(
+        "✓ 注册工具与技能",
+        "完整启动模式：模型加载流程将在独立运行时接入" if startup_mode == "complete"
+        else "语音与视觉模型将在首次使用时加载",
+        92,
+    )
+    if startup_mode == "complete":
+        _funasr_ready, _funasr_process = _preload_models_isolated(splash)
+        if _funasr_process is not None:
+            def _stop_funasr_service():
+                if _funasr_process.poll() is None:
+                    _funasr_process.terminate()
+                    try:
+                        _funasr_process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        _funasr_process.kill()
+            app.aboutToQuit.connect(_stop_funasr_service)
 
 
     # ── QQ 桥接（由 MainWindow 管理，详见 main_window.py）─────
