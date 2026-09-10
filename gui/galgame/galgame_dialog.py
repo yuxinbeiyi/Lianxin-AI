@@ -6,7 +6,7 @@ GalgameDialog：莲心 Galgame 模式 — 对话窗口
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QTextEdit, QPushButton,
-    QSpinBox, QCheckBox, QDialog, QFormLayout, QDialogButtonBox
+    QCheckBox, QDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent, QRect
 from PyQt5.QtGui import (
@@ -22,6 +22,7 @@ class GalgameDialog(QWidget):
     message_submitted = pyqtSignal(str)
     voice_requested = pyqtSignal()
     mute_toggled = pyqtSignal(bool)        # ← 新增：静音状态变化信号
+    settings_changed = pyqtSignal()        # 设置面板保存后发射（主窗口用来应用角色缩放等）
     def __init__(self, parent=None):
         super().__init__(parent)
         self._name = "莲心"
@@ -29,10 +30,11 @@ class GalgameDialog(QWidget):
         self._current_index = 0
         self._is_typing = False
         self._status_text = "就绪"
+        self._typing_speed = 40
 
         self._init_window()
         self._init_ui()
-        self._apply_font_settings()
+        self._apply_settings()
         self._init_typing_timer()
 
 
@@ -134,7 +136,7 @@ class GalgameDialog(QWidget):
         self._settings_btn.setFont(QFont("Segoe UI Emoji", 12))
         self._settings_btn.setFixedSize(28, 28)
         self._settings_btn.setCursor(Qt.PointingHandCursor)
-        self._settings_btn.setToolTip("字体设置\n快捷键 Shift+Ctrl+X 启动")
+        self._settings_btn.setToolTip("Galgame 设置\n快捷键 Ctrl+Alt+X 切换模式")
         self._settings_btn.setStyleSheet("""
             QPushButton {
                 background: rgba(200,200,210,120);
@@ -145,7 +147,7 @@ class GalgameDialog(QWidget):
             QPushButton:hover  { background: rgba(180,180,200,160); }
         """)
 
-        self._settings_btn.clicked.connect(self._on_font_settings)
+        self._settings_btn.clicked.connect(self._on_settings)
         btn_layout.addWidget(self._settings_btn)
 
         # 静音按钮
@@ -240,7 +242,7 @@ class GalgameDialog(QWidget):
         # 滚动到底部
         scrollbar = self._reply_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-        self._typing_timer.start(40)
+        self._typing_timer.start(self._typing_speed)
 
     def clear_reply(self):
         """清空回复显示区。"""
@@ -292,8 +294,8 @@ class GalgameDialog(QWidget):
         else:
             super().keyPressEvent(event)
 
-    # ── 字体设置 ──
-    def _apply_font_settings(self):
+    # ── 外观与对话设置 ──
+    def _apply_settings(self):
         from utils.settings import get_settings
         s = get_settings()
         size = s.galgame_font_size
@@ -303,6 +305,8 @@ class GalgameDialog(QWidget):
         self._reply_area.setFont(font)
         self._input_edit.setFont(font)
         self._auto_resize_input()
+        self._typing_speed = max(5, s.galgame_typing_speed)
+        self.setWindowOpacity(max(0.3, min(1.0, s.galgame_panel_opacity / 100.0)))
 
 
     def _auto_resize_input(self):
@@ -319,10 +323,12 @@ class GalgameDialog(QWidget):
         self._input_edit.setFixedHeight(int(height))
 
 
-    def _on_font_settings(self):
-        dlg = GalgameFontSettingsDialog(self)
+    def _on_settings(self):
+        from .galgame_settings_dialog import GalgameSettingsDialog
+        dlg = GalgameSettingsDialog(self)
         if dlg.exec_() == QDialog.Accepted:
-            self._apply_font_settings()
+            self._apply_settings()
+            self.settings_changed.emit()
 
     # ── 静音切换 ──
     def _on_mute_toggle(self):
@@ -457,53 +463,3 @@ class GalgameDialog(QWidget):
                 geo.setBottom(geo.bottom() + delta.y())
 
         self.setGeometry(geo)
-
-
-class GalgameFontSettingsDialog(QDialog):
-    """Galgame 模式字体设置小弹窗。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        from utils.settings import get_settings
-        self._settings = get_settings()
-        self.setWindowTitle("Galgame 字体设置")
-        self.setFixedSize(320, 200)
-        self.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
-        self.setStyleSheet("background-color: #F8F8FC; color: #000000;")
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(20, 16, 20, 16)
-
-        form_layout = QFormLayout()
-        form_layout.setSpacing(10)
-
-        self._size_spin = QSpinBox()
-        self._size_spin.setRange(8, 24)
-        self._size_spin.setValue(self._settings.galgame_font_size)
-        self._size_spin.setSuffix(" pt")
-        form_layout.addRow("字体大小:", self._size_spin)
-
-        self._bold_cb = QCheckBox("加粗")
-        self._bold_cb.setChecked(self._settings.galgame_font_bold)
-        form_layout.addRow("字体粗细:", self._bold_cb)
-
-        layout.addLayout(form_layout)
-
-        # 快捷键提示
-        hotkey_label = QLabel("启动快捷键：<b>Shift+Ctrl+X</b>")
-        hotkey_label.setStyleSheet("color: #555555; font-size: 10pt;")
-        layout.addWidget(hotkey_label)
-
-        layout.addStretch()
-
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self._on_accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
-
-
-    def _on_accept(self):
-        self._settings.galgame_font_size = self._size_spin.value()
-        self._settings.galgame_font_bold = self._bold_cb.isChecked()
-        self.accept()

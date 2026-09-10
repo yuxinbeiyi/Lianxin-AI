@@ -423,7 +423,7 @@ class MainWindow(QMainWindow):
         self._tachie_win: TachieWindow | None = None
         self._galgame_dialog: GalgameDialog | None = None
         self._expression_mgr = ExpressionManager(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "galgame", "assets")
         )
         # 注册表情切换回调（供 set_expression 工具使用）
         import brain.tools as brain_tools
@@ -1736,9 +1736,8 @@ class MainWindow(QMainWindow):
             galgame_emotion = self._expression_mgr.match(first_segment)
             self._galgame_dialog.show_reply(display_text)
             if self._tachie_win:
-                img_path = self._expression_mgr.get_image_path(galgame_emotion)
-                if img_path:
-                    self._tachie_win.set_image(img_path)
+                state = self._expression_mgr.state_for(galgame_emotion)
+                self._tachie_win.set_animation_state(state)
 
         if emotion:
             prob = self._global_settings.emotion_probability
@@ -1777,7 +1776,7 @@ class MainWindow(QMainWindow):
         """显示 Galgame 窗口。"""
         if self._tachie_win is None:
             assets_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"
+                os.path.dirname(os.path.abspath(__file__)), "galgame", "assets"
             )
             self._tachie_win = TachieWindow(assets_dir)
             self._galgame_dialog = GalgameDialog()
@@ -1789,6 +1788,10 @@ class MainWindow(QMainWindow):
             self._tachie_win.position_changed.connect(self._on_tachie_moved)
             # 连接立绘右键 → 切换对话框显示
             self._tachie_win.toggle_dialog_requested.connect(self._toggle_galgame_dialog)
+            # 连接动作列表退出 → 关闭 Galgame 模式
+            self._tachie_win.close_requested.connect(self._toggle_galgame)
+            # 连接设置面板保存 → 应用角色缩放等
+            self._galgame_dialog.settings_changed.connect(self._apply_galgame_settings)
 
         if not self._galgame_positioned:
             # 仅首次显示时放在桌面右上角附近
@@ -1845,6 +1848,9 @@ class MainWindow(QMainWindow):
         """Galgame 对话框发送消息。"""
         if self._galgame_dialog:
             self._galgame_dialog.set_status("莲心正在思考", active=True)
+        if self._tachie_win:
+            state = self._expression_mgr.state_for_event("thinking", "think")
+            self._tachie_win.set_animation_state(state)
         self._send_user_text_to_agent(text)
 
     def _on_galgame_voice_requested(self):
@@ -1885,18 +1891,26 @@ class MainWindow(QMainWindow):
     def _on_galgame_expression(self, emotion: str):
         """set_expression 工具回调：切换立绘表情。"""
         if self._galgame_visible and self._tachie_win:
-            img_path = self._expression_mgr.get_image_path(emotion)
-            if img_path:
-                self._tachie_win.set_image(img_path)
+            state = self._expression_mgr.state_for(emotion)
+            self._tachie_win.set_animation_state(state)
     def _on_galgame_speaking_start(self):
         if self._galgame_visible and self._tachie_win:
             self._tachie_win.stop_breathing()
             self._tachie_win.start_talking()
+            state = self._expression_mgr.state_for_event("speaking", "happy")
+            self._tachie_win.set_animation_state(state)
 
     def _on_galgame_speaking_stop(self):
         if self._galgame_visible and self._tachie_win:
             self._tachie_win.stop_talking()
             self._tachie_win.start_breathing()
+            state = self._expression_mgr.state_for_event("emotion_default", "idle")
+            self._tachie_win.set_animation_state(state)
+
+    def _apply_galgame_settings(self):
+        """Galgame 设置面板保存后：应用角色缩放等外观设置。"""
+        if self._tachie_win:
+            self._tachie_win.apply_settings()
 
     def _setup_galgame_hotkey(self, register: bool = True):
         """Windows 使用全局热键；其他平台降级为窗口内快捷键。"""

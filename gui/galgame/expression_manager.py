@@ -1,13 +1,24 @@
 """
-ExpressionManager：莲心 Galgame 窗口的表情识别与图片映射
+ExpressionManager：莲心 Galgame 窗口的情绪识别与动画状态映射。
+情绪关键词 → 桌宠动画状态（happy/sleep/think/idle 等）。
+映射可在设置面板的“行为动作触发”页自定义。
 """
 import re
-from pathlib import Path
 
-# ── 情绪关键词 → 图片文件名映射 ──────────────────────────
-# 等你准备好表情 PNG 后，把文件名填进来即可
-# 例如: {"开心": "开心.png", "生气": "生气.png"}
-EMOTION_IMAGE_MAP: dict[str, str] = {}
+from .sprite_animation import STATE_INTERVALS
+
+# 情绪名称 → 设置里的触发键（行为动作触发配置）
+EMOTION_TRIGGER_KEYS: dict[str, str] = {
+    "开心": "emotion_happy",
+    "生气": "emotion_angry",
+    "伤心": "emotion_sad",
+    "惊讶": "emotion_surprised",
+    "疑惑": "emotion_confused",
+    "害羞": "emotion_shy",
+    "撒娇": "emotion_coquettish",
+    "疲惫": "emotion_tired",
+    "默认": "emotion_default",
+}
 
 # 情绪正则匹配模式（优先级从高到低）
 _EMOTION_PATTERNS: list[tuple[str, str]] = [
@@ -23,12 +34,15 @@ _EMOTION_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
-class ExpressionManager:
-    """管理情绪识别与图片映射。"""
+def _valid_state(state: str, fallback: str = "idle") -> str:
+    return state if state in STATE_INTERVALS else fallback
 
-    def __init__(self, assets_dir: str | Path):
-        self._assets_dir = Path(assets_dir)
-        self._fallback_image = "莲心形象透明背景.png"
+
+class ExpressionManager:
+    """管理情绪识别与动画状态映射。"""
+
+    def __init__(self, assets_dir):
+        self._assets_dir = assets_dir
 
     def match(self, text: str) -> str:
         """从 AI 回复文本中匹配情绪关键词，返回情绪名称。"""
@@ -39,13 +53,30 @@ class ExpressionManager:
                 return emotion
         return "默认"
 
-    def get_image_path(self, emotion: str) -> str:
-        """获取情绪对应的立绘图片路径，没有则回退到默认图。"""
-        filename = EMOTION_IMAGE_MAP.get(emotion)
-        if filename:
-            img_path = self._assets_dir / filename
-            if img_path.exists():
-                return str(img_path)
-        # 回退到默认图
-        fallback = self._assets_dir / self._fallback_image
-        return str(fallback) if fallback.exists() else ""
+    def state_for_event(self, event_key: str, fallback: str = "idle") -> str:
+        """返回事件（thinking/speaking/emotion_*）对应的动画状态，读取设置面板配置。"""
+        try:
+            from utils.settings import get_settings
+            triggers = get_settings().galgame_action_triggers
+            state = (triggers or {}).get(event_key, "")
+        except Exception:
+            state = ""
+        if not state:
+            state = fallback
+        return _valid_state(state, fallback)
+
+    def state_for(self, emotion: str) -> str:
+        """返回情绪对应的动画状态（读取设置面板中的行为动作触发配置）。"""
+        key = EMOTION_TRIGGER_KEYS.get(emotion, "emotion_default")
+        fallback = {
+            "emotion_happy": "happy",
+            "emotion_angry": "think",
+            "emotion_sad": "sit",
+            "emotion_surprised": "happy",
+            "emotion_confused": "think",
+            "emotion_shy": "sit",
+            "emotion_coquettish": "happy",
+            "emotion_tired": "sleep",
+            "emotion_default": "idle",
+        }.get(key, "idle")
+        return self.state_for_event(key, fallback)

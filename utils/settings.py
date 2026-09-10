@@ -19,6 +19,23 @@ _DEFAULT_SETTINGS = {
     "font_size": 12,                     # 聊天字体大小（像素）
     "galgame_font_size": 12,             # Galgame 字体大小（像素）
     "galgame_font_bold": False,          # Galgame 字体加粗
+    "galgame_typing_speed": 40,          # Galgame 逐字显示速度（毫秒/字）
+    "galgame_panel_opacity": 92,         # Galgame 对话面板透明度（%）
+    "galgame_sprite_scale": 100,         # Galgame 角色精灵缩放（%，100=桌宠原比例 95x150）
+    "galgame_speaking_bounce": True,     # Galgame 说话时弹跳动画
+    "galgame_action_triggers": {         # Galgame 行为动作触发：事件 → 动画状态
+        "thinking": "think",
+        "speaking": "happy",
+        "emotion_happy": "happy",
+        "emotion_angry": "think",
+        "emotion_sad": "sit",
+        "emotion_surprised": "happy",
+        "emotion_confused": "think",
+        "emotion_shy": "sit",
+        "emotion_coquettish": "happy",
+        "emotion_tired": "sleep",
+        "emotion_default": "idle",
+    },
     "standby_auto_send": True,           # 待机模式自动发送：True=开启
     "standby_auto_send_delay": 5,        # 自动发送延迟（秒）
     "standby_end_word": "完毕",           # 待机模式结束词
@@ -148,6 +165,53 @@ class SettingsManager:
     def galgame_font_bold(self, val: bool):
         self._settings["galgame_font_bold"] = val
         self.save()
+    # ========== Galgame 外观与行为动作 ==========
+    @property
+    def galgame_typing_speed(self) -> int:
+        return self._settings.get("galgame_typing_speed", 40)
+
+    @galgame_typing_speed.setter
+    def galgame_typing_speed(self, val: int):
+        self._settings["galgame_typing_speed"] = int(val)
+        self.save()
+
+    @property
+    def galgame_panel_opacity(self) -> int:
+        return self._settings.get("galgame_panel_opacity", 92)
+
+    @galgame_panel_opacity.setter
+    def galgame_panel_opacity(self, val: int):
+        self._settings["galgame_panel_opacity"] = int(val)
+        self.save()
+
+    @property
+    def galgame_sprite_scale(self) -> int:
+        return self._settings.get("galgame_sprite_scale", 100)
+
+    @galgame_sprite_scale.setter
+    def galgame_sprite_scale(self, val: int):
+        self._settings["galgame_sprite_scale"] = int(val)
+        self.save()
+
+    @property
+    def galgame_speaking_bounce(self) -> bool:
+        return self._settings.get("galgame_speaking_bounce", True)
+
+    @galgame_speaking_bounce.setter
+    def galgame_speaking_bounce(self, val: bool):
+        self._settings["galgame_speaking_bounce"] = bool(val)
+        self.save()
+
+    @property
+    def galgame_action_triggers(self) -> dict:
+        value = self._settings.get("galgame_action_triggers", {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    @galgame_action_triggers.setter
+    def galgame_action_triggers(self, val: dict):
+        self._settings["galgame_action_triggers"] = dict(val) if isinstance(val, dict) else {}
+        self.save()
+
     # ========== 待机模式 ==========
     @property
     def standby_auto_send(self) -> bool:
@@ -510,4 +574,3 @@ def get_settings() -> SettingsManager:
     if _global_settings is None:
         _global_settings = SettingsManager()
     return _global_settings
-
