@@ -20,6 +20,8 @@ _DEFAULT_SETTINGS = {
     "galgame_font_size": 12,             # Galgame 字体大小（像素）
     "galgame_font_bold": False,          # Galgame 字体加粗
     "galgame_typing_speed": 40,          # Galgame 逐字显示速度（毫秒/字）
+    "galgame_panel_width": 360,          # Galgame 对话面板初始宽度（像素）
+    "galgame_panel_height": 300,         # Galgame 对话面板初始高度（像素）
     "galgame_panel_opacity": 92,         # Galgame 对话面板透明度（%）
     "galgame_sprite_scale": 100,         # Galgame 角色精灵缩放（%，100=桌宠原比例 95x150）
     "galgame_speaking_bounce": True,     # Galgame 说话时弹跳动画
@@ -173,6 +175,24 @@ class SettingsManager:
     @galgame_typing_speed.setter
     def galgame_typing_speed(self, val: int):
         self._settings["galgame_typing_speed"] = int(val)
+        self.save()
+
+    @property
+    def galgame_panel_width(self) -> int:
+        return self._settings.get("galgame_panel_width", 360)
+
+    @galgame_panel_width.setter
+    def galgame_panel_width(self, val: int):
+        self._settings["galgame_panel_width"] = int(val)
+        self.save()
+
+    @property
+    def galgame_panel_height(self) -> int:
+        return self._settings.get("galgame_panel_height", 300)
+
+    @galgame_panel_height.setter
+    def galgame_panel_height(self, val: int):
+        self._settings["galgame_panel_height"] = int(val)
         self.save()
 
     @property

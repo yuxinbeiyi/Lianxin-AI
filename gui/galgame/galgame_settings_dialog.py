@@ -194,6 +194,18 @@ class GalgameSettingsDialog(QDialog):
         self._scale_spin.setSuffix(" %")
         form.addRow("角色显示比例:", self._scale_spin)
 
+        self._panel_w_spin = QSpinBox()
+        self._panel_w_spin.setRange(240, 900)
+        self._panel_w_spin.setValue(self._settings.galgame_panel_width)
+        self._panel_w_spin.setSuffix(" px")
+        form.addRow("面板宽度:", self._panel_w_spin)
+
+        self._panel_h_spin = QSpinBox()
+        self._panel_h_spin.setRange(200, 900)
+        self._panel_h_spin.setValue(self._settings.galgame_panel_height)
+        self._panel_h_spin.setSuffix(" px")
+        form.addRow("面板高度:", self._panel_h_spin)
+
         self._bounce_cb = QCheckBox("说话时弹跳")
         self._bounce_cb.setChecked(self._settings.galgame_speaking_bounce)
         form.addRow("说话动画:", self._bounce_cb)
@@ -230,6 +242,8 @@ class GalgameSettingsDialog(QDialog):
         s.galgame_font_bold = self._bold_cb.isChecked()
         s.galgame_typing_speed = self._speed_spin.value()
         s.galgame_panel_opacity = self._opacity_spin.value()
+        s.galgame_panel_width = self._panel_w_spin.value()
+        s.galgame_panel_height = self._panel_h_spin.value()
         s.galgame_sprite_scale = self._scale_spin.value()
         s.galgame_speaking_bounce = self._bounce_cb.isChecked()
         triggers = {key: combo.currentData() for key, combo in self._trigger_combos.items()}

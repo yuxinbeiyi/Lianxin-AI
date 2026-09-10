@@ -50,8 +50,16 @@ class GalgameDialog(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowOpacity(0.92)
         self.setMouseTracking(True)   # ← 新增：启用鼠标追踪
-        self.resize(360, 300)
+        self._apply_initial_size()
 
+
+    def _apply_initial_size(self):
+        """从设置读取对话面板初始宽高（可拖拽/缩放微调，不覆盖已保存位置）。"""
+        from utils.settings import get_settings
+        s = get_settings()
+        w = max(240, min(900, int(s.galgame_panel_width)))
+        h = max(200, min(900, int(s.galgame_panel_height)))
+        self.resize(w, h)
 
     def _init_ui(self):
         """创建 UI 组件。"""
