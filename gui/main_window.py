@@ -1800,9 +1800,9 @@ class MainWindow(QMainWindow):
             ty = screen.height() - self._tachie_win.height() - 80
             self._tachie_win.move(tx, ty)
 
-            # 对话框在立绘左侧，下边缘与莲心下边缘对齐（避免被屏幕下方遮挡）
+            # 对话框在立绘左侧留 20px 空隙，下边缘与莲心下边缘对齐（避免被屏幕下方遮挡）
             screen2 = self.screen().availableGeometry()
-            dx = max(screen2.left(), min(tx - self._galgame_dialog.width() + 20,
+            dx = max(screen2.left(), min(tx - self._galgame_dialog.width() - 20,
                                          screen2.right() - self._galgame_dialog.width() + 1))
             dy = max(screen2.top(), ty + self._tachie_win.height() - self._galgame_dialog.height())
             self._galgame_dialog.move(dx, dy)
@@ -1836,7 +1836,7 @@ class MainWindow(QMainWindow):
             from PyQt5.QtWidgets import QApplication
             screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
             area = screen.availableGeometry()
-            dx = max(area.left(), min(tx - self._galgame_dialog.width() + 20,
+            dx = max(area.left(), min(tx - self._galgame_dialog.width() - 20,
                                       area.right() - self._galgame_dialog.width() + 1))
             dy = max(area.top(), ty + self._tachie_win.height() - self._galgame_dialog.height())
             self._galgame_dialog.move(dx, dy)
