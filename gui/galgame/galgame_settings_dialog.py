@@ -100,7 +100,9 @@ class GalgameSettingsDialog(QDialog):
     @staticmethod
     def _style():
         return """
-        QDialog { background: #f4f5f9; color: #303548; }
+        QDialog, QWidget { background: #f0f1f5; color: #303548; }
+        QStackedWidget { background: #f4f5f9; border: none; }
+        QFrame { background: #f4f5f9; }
         QLabel { color: #4d5368; }
         QLabel#SettingsHeading { color: #303548; font-size: 18px; font-weight: 700; }
         QLabel#SettingsSubtitle { color: #8a90a3; font-size: 11px; }
@@ -110,12 +112,15 @@ class GalgameSettingsDialog(QDialog):
         QListWidget::item { color: #5e6478; padding: 10px 12px; border-radius: 7px; }
         QListWidget::item:hover { background: #e1e3ef; color: #4654b6; }
         QListWidget::item:selected { background: #6573d8; color: #ffffff; font-weight: 600; }
-        QFrame#SettingsCard { background: rgba(255,255,255,220); border: 1px solid #e0e2ec; border-radius: 10px; }
+        QFrame#SettingsCard { background: #ffffff; border: 1px solid #e0e2ec; border-radius: 10px; }
         QSpinBox, QComboBox { background: #ffffff; color: #2f3448; border: 1px solid #d5d8e4; border-radius: 7px; padding: 5px 8px; min-height: 18px; }
         QSpinBox:focus, QComboBox:focus { border: 1px solid #7783dc; }
         QComboBox::drop-down { border: none; width: 22px; }
         QComboBox QAbstractItemView { background: #ffffff; border: 1px solid #d5d8e4; selection-background-color: #6573d8; selection-color: white; }
-        QCheckBox { color: #4d5368; spacing: 8px; }
+        QCheckBox { background: transparent; color: #4d5368; spacing: 8px; }
+        QCheckBox::indicator { width: 16px; height: 16px; }
+        QCheckBox::indicator:unchecked { background: #ffffff; border: 1px solid #c9ccda; border-radius: 4px; }
+        QCheckBox::indicator:checked { background: #6573d8; border: 1px solid #6573d8; border-radius: 4px; }
         QPushButton { background: #e8eaf4; color: #4f5bb7; border: 1px solid #d4d7e8; border-radius: 7px; padding: 7px 14px; }
         QPushButton:hover { background: #dde1fb; border-color: #aab3ed; }
         QPushButton:pressed { background: #cbd2f5; }
