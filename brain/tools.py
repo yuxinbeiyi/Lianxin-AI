@@ -5785,7 +5785,7 @@ def git_status(repo_path=None, action="status", limit=10):
     if not cmd:
         return f"不支持的操作：{action}。可选：status/diff/log/branch"
     try:
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         if result.returncode != 0:
             return f"Git 命令失败: {result.stderr[:500]}"
         return result.stdout.strip() or "(无输出)"

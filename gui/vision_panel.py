@@ -33,6 +33,9 @@ class VisionPanel(QDialog):
     # 获取当前帧信号（供工具调用）
     frame_requested = pyqtSignal()
 
+    # 后台加载视觉模块完成（worker, error）
+    _vision_loaded = pyqtSignal(object, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("👁️ 莲心视觉感知")
@@ -49,6 +52,7 @@ class VisionPanel(QDialog):
         self._thread = None
         self._worker = None
         self._current_frame = None  # 缓存当前帧，供"看看你面前的是谁"使用
+        self._frame_busy = False   # 主线程帧处理忙标志（丢帧防积压）
         self._face_tracking_controller = None
         self._oled_panel = None
 
@@ -359,17 +363,41 @@ class VisionPanel(QDialog):
         if self._thread is not None:
             return
 
-        # 动态导入 VisionWorker（避免循环导入）
-        try:
-            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "VisionLab"))
-            from app.camera.vision_worker import VisionWorker
-        except Exception as e:
-            self._append_log(f"❌ 加载 VisionWorker 失败：{e}")
-            QMessageBox.critical(self, "加载失败", f"无法加载视觉模块：{e}")
+        # 重模块（cv2/insightface/mediapipe）导入与 worker 构造放到后台线程，
+        # 避免在主线程阻塞 7 秒级。
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText("加载中…")
+        self._append_log("正在加载视觉模块…")
+
+        import threading
+
+        def _load():
+            error = ""
+            worker = None
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "VisionLab"))
+                from app.camera.vision_worker import VisionWorker
+                worker = VisionWorker()
+            except Exception as e:
+                error = str(e)
+            self._vision_loaded.emit(worker, error)
+
+        threading.Thread(target=_load, daemon=True).start()
+
+    @pyqtSlot(object, str)
+    def _on_vision_loaded(self, worker, error):
+        """后台加载完成后，在主线程完成视觉线程装配。"""
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("启动")
+        if error:
+            self._append_log(f"❌ 加载 VisionWorker 失败：{error}")
+            QMessageBox.critical(self, "加载失败", f"无法加载视觉模块：{error}")
+            return
+        if self._thread is not None:
             return
 
         self._thread = QThread(self)
-        self._worker = VisionWorker()
+        self._worker = worker
 
         # 设置设备
         device = self.face_device_combo.currentText()
@@ -611,18 +639,25 @@ class VisionPanel(QDialog):
     @pyqtSlot(object)
     def _on_frame_ready(self, frame):
         """接收并显示视频帧"""
-        self._current_frame = frame  # 缓存当前帧
+        # 上一帧还没处理完则丢弃当前帧，避免信号队列积压耗尽内存。
+        if self._frame_busy:
+            return
+        self._frame_busy = True
+        try:
+            self._current_frame = frame  # 缓存当前帧
 
-        # 转换为 QPixmap 显示
-        rgb = frame[:, :, ::-1].copy()
-        h, w = rgb.shape[:2]
-        image = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(image).scaled(
-            self.video_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-        self.video_label.setPixmap(pixmap)
+            # 转换为 QPixmap 显示（worker 已降采样，这里用快速缩放即可）
+            rgb = frame[:, :, ::-1].copy()
+            h, w = rgb.shape[:2]
+            image = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(image).scaled(
+                self.video_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.FastTransformation
+            )
+            self.video_label.setPixmap(pixmap)
+        finally:
+            self._frame_busy = False
 
     @pyqtSlot(dict)
     def _on_status_ready(self, status):

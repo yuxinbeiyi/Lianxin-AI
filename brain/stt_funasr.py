@@ -82,8 +82,12 @@ def _load_model_locked():
 
     # Torch must be initialized by the Qt main thread before FunASR creates
     # native model objects on this worker thread.
-    from utils.torch_runtime import ensure_ready
-    ensure_ready()
+    try:
+        from utils.torch_runtime import ensure_ready
+        ensure_ready()
+    except Exception as exc:
+        logger.warning("Torch 初始化失败，FunASR 已降级: %s", exc)
+        return None
 
     # 抑制 funasr import 时的 print() 和 modelscope 的 warnings
     import warnings as _w

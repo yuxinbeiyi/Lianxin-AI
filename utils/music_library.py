@@ -106,7 +106,7 @@ class MusicLibrary:
             "-ar", "44100", "-ac", "2", str(target),
         ]
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
         except Exception:
             target.unlink(missing_ok=True)
             shutil.copy2(source, self.quarantine / source.name)

@@ -44,7 +44,12 @@ class CoordinatedConnection(sqlite3.Connection):
 
     def _acquire_for_write(self) -> None:
         if not self._coordination_held:
-            self._coordination_lock.acquire()
+            timeout = getattr(self, "_coordination_timeout", 5.0)
+            if not self._coordination_lock.acquire(timeout=timeout):
+                raise sqlite3.OperationalError(
+                    "数据库写锁等待超时（>%.1fs），可能有长事务占用同一数据库"
+                    % timeout
+                )
             self._coordination_held = True
 
     def _release_after_transaction(self) -> None:
@@ -126,6 +131,7 @@ def connect_database(
     db_path: Path | str,
     *,
     timeout: float = 5.0,
+    lock_timeout: float = 5.0,
     check_same_thread: bool = True,
     isolation_level: str | None = "",
 ) -> CoordinatedConnection:
@@ -139,4 +145,5 @@ def connect_database(
     )
     conn._coordination_lock = get_database_lock(db_path)
     conn._coordination_held = False
+    conn._coordination_timeout = lock_timeout
     return conn

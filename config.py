@@ -1558,7 +1558,15 @@ def resolve_device(feature: str) -> str:
         return "cpu"
     if pref == "cuda":
         return "cuda:0"
+    # 走 torch_runtime 状态：已就绪才 import（此时已加载，安全）；未就绪或已
+    # 失败时绝不在这里触发原生导入，避免在任意线程上加载 torch DLL 卡死/崩溃。
     try:
+        from utils.torch_runtime import is_ready, is_failed
+        if not is_ready():
+            if is_failed():
+                return "cpu"
+            # 尚未初始化：调用方（FunASR/RAG）会先 ensure_ready，这里保守返回 cpu
+            return "cpu"
         import torch
         return "cuda:0" if torch.cuda.is_available() else "cpu"
     except ImportError:
@@ -1647,10 +1655,14 @@ def save_stt_engine_config(config: dict):
 
 def detect_best_stt_engine() -> str:
     """自动检测最佳 STT 引擎（有GPU→FunASR，无GPU→火山引擎）。"""
+    # 仅在 torch 已就绪时探测 GPU，避免在 voice_duplex 启动路径上触发
+    # 原生 torch 导入（该路径曾在启动时导致 access violation 崩溃）。
     try:
-        import torch
-        if torch.cuda.is_available():
-            return "funasr"
+        from utils.torch_runtime import is_ready
+        if is_ready():
+            import torch
+            if torch.cuda.is_available():
+                return "funasr"
     except ImportError:
         pass
     

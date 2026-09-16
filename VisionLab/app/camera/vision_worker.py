@@ -1,5 +1,7 @@
 import time
 
+import cv2
+
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from .camera_manager import CameraManager
@@ -12,6 +14,8 @@ from ..storage.vision_database import VisionDatabase
 
 
 class VisionWorker(QObject):
+    TARGET_FPS = 15          # 视觉帧率上限（原 30fps，积压易耗尽内存）
+    DISPLAY_WIDTH = 960     # 发往 UI 的降采样宽度
     frame_ready = pyqtSignal(object)
     status_ready = pyqtSignal(dict)
     event_ready = pyqtSignal(str)
@@ -51,81 +55,99 @@ class VisionWorker(QObject):
             self.event_ready.emit(f"姿态检测不可用：{self.pose.error}")
         self._stop = False
         self.started.emit(True, "")
+        consecutive_errors = 0
         while not self._stop:
-            started = time.monotonic()
-            frame = self.camera.read()
-            if frame is None:
-                continue
-            gesture_status = {"gesture": "NONE", "gesture_confidence": 0.0,
-                              "hands": 0, "gesture_state": "READY"}
-            face_status = {"face": "未启用", "face_count": 0,
-                           "face_confidence": 0.0, "identity": "UNKNOWN"}
-            companion_state = "未启用"
-            pose_status = {"pose_present": False, "pose_confidence": 0.0}
-            if self.enabled["face"]:
-                frame, face_status = self.face.process(frame)
-            if self.enabled["face"] or self.enabled["companion"]:
-                if self.enabled["companion"]:
-                    frame, pose_status = self.pose.process(frame)
+            try:
+                started = time.monotonic()
+                frame = self.camera.read()
+                if frame is None:
+                    time.sleep(0.05)
+                    continue
+                gesture_status = {"gesture": "NONE", "gesture_confidence": 0.0,
+                                  "hands": 0, "gesture_state": "READY"}
+                face_status = {"face": "未启用", "face_count": 0,
+                               "face_confidence": 0.0, "identity": "UNKNOWN"}
+                companion_state = "未启用"
+                pose_status = {"pose_present": False, "pose_confidence": 0.0}
                 if self.enabled["face"]:
-                    # 人脸识别优先，避免未更新的状态或姿态误判身份。
-                    present = face_status.get("identity") == "USER"
-                    identity = face_status.get("identity", "UNKNOWN")
+                    frame, face_status = self.face.process(frame)
+                if self.enabled["face"] or self.enabled["companion"]:
+                    if self.enabled["companion"]:
+                        frame, pose_status = self.pose.process(frame)
+                    if self.enabled["face"]:
+                        # 人脸识别优先，避免未更新的状态或姿态误判身份。
+                        present = face_status.get("identity") == "USER"
+                        identity = face_status.get("identity", "UNKNOWN")
+                    else:
+                        # 未启用人脸时，姿态只能表达有人在场，不能确认身份。
+                        present = bool(pose_status.get("pose_present", False))
+                        identity = "USER" if present else "UNKNOWN"
+                    companion_state, events, work_duration = self.companion.update(
+                        1 if present else 0, identity)
+                    for event in events:
+                        # USER_RETURN 携带失陪秒数（USER_RETURN|秒），供 UI 分级反馈
+                        emit_event = (
+                            f"USER_RETURN|{self.companion.last_absence_seconds:.0f}"
+                            if event == "USER_RETURN" else event
+                        )
+                        self.event_ready.emit(emit_event)
+                        self.database.record_event(emit_event)
+                        if event in ("USER_ENTER", "USER_RETURN"):
+                            self.database.add_presence_time(0, session_started=True)
+                        elif event == "USER_LEAVE":
+                            self.database.add_presence_time(work_duration, left_at=None)
                 else:
-                    # 未启用人脸时，姿态只能表达有人在场，不能确认身份。
-                    present = bool(pose_status.get("pose_present", False))
-                    identity = "USER" if present else "UNKNOWN"
-                companion_state, events, work_duration = self.companion.update(
-                    1 if present else 0, identity)
-                for event in events:
-                    # USER_RETURN 携带失陪秒数（USER_RETURN|秒），供 UI 分级反馈
-                    emit_event = (
-                        f"USER_RETURN|{self.companion.last_absence_seconds:.0f}"
-                        if event == "USER_RETURN" else event
-                    )
-                    self.event_ready.emit(emit_event)
-                    self.database.record_event(emit_event)
-                    if event in ("USER_ENTER", "USER_RETURN"):
-                        self.database.add_presence_time(0, session_started=True)
-                    elif event == "USER_LEAVE":
-                        self.database.add_presence_time(work_duration, left_at=None)
-            else:
-                work_duration = 0.0
-            if self.enabled["gesture"]:
-                frame, gesture_status = self.gesture.process(frame)
-                # 手势事件触发：检查 should_trigger 标志
-                if gesture_status.get("should_trigger", False) and gesture_status["gesture"] != "NONE":
-                    event = f"GESTURE_{gesture_status['gesture']}"
-                    self.event_ready.emit(event)
-                    self.database.record_event(event)
-            self.frame_ready.emit(frame)
-            status = {
-                "camera": f"{self.camera.width}x{self.camera.height}",
-                "fps": round(self.camera.fps, 1),
-                "face": "未启用" if not self.enabled["face"] else "待接入",
-                "gesture": "未启用" if not self.enabled["gesture"] else gesture_status["gesture"],
-                "gesture_confidence": gesture_status["gesture_confidence"],
-                "hands": gesture_status["hands"],
-                "gesture_state": gesture_status["gesture_state"],
-                "face": face_status["face"],
-                "face_count": face_status["face_count"],
-                "face_confidence": face_status["face_confidence"],
-                "companion": companion_state,
-                "video_duration": round(
-                    max(0.0, time.monotonic() - self._video_started_at)
-                    if self._video_started_at is not None else 0.0
-                ),
-                "pose_confidence": pose_status["pose_confidence"],
-            }
-            summary = self.database.today_summary()
-            status["today_presence"] = round(
-                summary["total_seconds"] + self.companion.current_duration()
-            )
-            status["today_sessions"] = summary["session_count"]
-            self.status_ready.emit(status)
-            remaining = 1 / 30 - (time.monotonic() - started)
-            if remaining > 0:
-                time.sleep(remaining)
+                    work_duration = 0.0
+                if self.enabled["gesture"]:
+                    frame, gesture_status = self.gesture.process(frame)
+                    # 手势事件触发：检查 should_trigger 标志
+                    if gesture_status.get("should_trigger", False) and gesture_status["gesture"] != "NONE":
+                        event = f"GESTURE_{gesture_status['gesture']}"
+                        self.event_ready.emit(event)
+                        self.database.record_event(event)
+                # 降采样后再发往 UI，减轻主线程缩放负担与信号队列内存积压
+                display = frame
+                if frame.shape[1] > self.DISPLAY_WIDTH:
+                    scale = self.DISPLAY_WIDTH / frame.shape[1]
+                    display = cv2.resize(frame, (self.DISPLAY_WIDTH, max(1, int(frame.shape[0] * scale))))
+                self.frame_ready.emit(display)
+                status = {
+                    "camera": f"{self.camera.width}x{self.camera.height}",
+                    "fps": round(self.camera.fps, 1),
+                    "face": "未启用" if not self.enabled["face"] else "待接入",
+                    "gesture": "未启用" if not self.enabled["gesture"] else gesture_status["gesture"],
+                    "gesture_confidence": gesture_status["gesture_confidence"],
+                    "hands": gesture_status["hands"],
+                    "gesture_state": gesture_status["gesture_state"],
+                    "face": face_status["face"],
+                    "face_count": face_status["face_count"],
+                    "face_confidence": face_status["face_confidence"],
+                    "companion": companion_state,
+                    "video_duration": round(
+                        max(0.0, time.monotonic() - self._video_started_at)
+                        if self._video_started_at is not None else 0.0
+                    ),
+                    "pose_confidence": pose_status["pose_confidence"],
+                }
+                summary = self.database.today_summary()
+                status["today_presence"] = round(
+                    summary["total_seconds"] + self.companion.current_duration()
+                )
+                status["today_sessions"] = summary["session_count"]
+                self.status_ready.emit(status)
+                remaining = 1 / self.TARGET_FPS - (time.monotonic() - started)
+                if remaining > 0:
+                    time.sleep(remaining)
+                consecutive_errors = 0
+            except Exception as exc:
+                # 单帧异常（如 cv2 分配失败）不允许打崩整个视觉线程：
+                # 记录后短暂休眠继续；连续失败则自动停止，避免反复崩溃。
+                consecutive_errors += 1
+                print(f"[VisionWorker] 视觉处理异常(第{consecutive_errors}次): {exc}", flush=True)
+                if consecutive_errors >= 5:
+                    self.event_ready.emit(f"视觉识别异常，已自动停止：{exc}")
+                    break
+                time.sleep(0.2)
         pending_presence = self.companion.flush_session()
         if pending_presence > 0:
             self.database.add_presence_time(pending_presence, left_at=None)

@@ -31,10 +31,10 @@ class MCPManager:
 
         scan_thread = threading.Thread(target=_do_scan, daemon=True)
         scan_thread.start()
-        scan_thread.join(timeout=5)
+        scan_thread.join(timeout=20)
 
         if scan_thread.is_alive():
-            print("[MCP] 初始化超时（5秒），跳过 MCP 注册")
+            print("[MCP] 初始化超时（20秒），跳过 MCP 注册")
             self._initialized = True
             return
 

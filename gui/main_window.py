@@ -5245,6 +5245,14 @@ class MainWindow(QMainWindow):
             self._heartbeat_frozen = False
             print(f"[看门狗] 主线程已恢复")
 
+    def _memory_summary(self) -> str:
+        """返回当前内存状态一行摘要，供看门狗报告使用。"""
+        try:
+            from utils.memory_guard import get_memory_status, format_status
+            return "内存:" + format_status(get_memory_status())
+        except Exception:
+            return "内存:未知"
+
     def _watchdog_loop(self):
         """后台线程：轮询心跳时间戳，卡顿时实时抓取主线程调用堆栈。"""
         import traceback
@@ -5261,24 +5269,26 @@ class MainWindow(QMainWindow):
             if not self._heartbeat_frozen:
                 # 首次检测到卡顿，立即抓堆栈
                 self._heartbeat_frozen = True
+                mem = self._memory_summary()
                 for t in threading.enumerate():
                     if t.name == 'MainThread':
                         frame = sys._current_frames().get(t.ident)
                         if frame:
                             stacks = "".join(traceback.format_stack(frame))
-                            print(f"[看门狗] WARN 主线程已卡住 {elapsed:.1f} 秒！调用堆栈：\n{stacks}")
+                            print(f"[看门狗] WARN 主线程已卡住 {elapsed:.1f} 秒！{mem}\n调用堆栈：\n{stacks}")
                         else:
-                            print(f"[看门狗] WARN 主线程已卡住 {elapsed:.1f} 秒（无法获取堆栈）")
+                            print(f"[看门狗] WARN 主线程已卡住 {elapsed:.1f} 秒（无法获取堆栈）{mem}")
                         break
 
             elif round(elapsed) % 30 == 0:
                 # 长时间卡顿，每 30 秒再抓一次堆栈看有没有变化
+                mem = self._memory_summary()
                 for t in threading.enumerate():
                     if t.name == 'MainThread':
                         frame = sys._current_frames().get(t.ident)
                         if frame:
                             stacks = "".join(traceback.format_stack(frame))
-                            print(f"[看门狗] 仍在卡顿中 ({elapsed:.0f}s) 堆栈：\n{stacks}")
+                            print(f"[看门狗] 仍在卡顿中 ({elapsed:.0f}s) {mem} 堆栈：\n{stacks}")
                         break
 
     def _sample_modal_state(self):

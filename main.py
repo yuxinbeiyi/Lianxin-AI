@@ -406,6 +406,13 @@ def main():
     sys.excepthook = _qt_exception_handler
 
     _apply_saved_provider_on_startup()
+
+    # ── 后台内存监控：心跳 + 阈值告警 + 危急时转储全线程堆栈到 fault.log ──
+    try:
+        from utils.memory_guard import start_memory_monitor
+        start_memory_monitor()
+    except Exception as exc:
+        print(f"[内存] 监控启动失败: {exc}", flush=True)
     splash.update_status("✓ 读取配置", "正在初始化基础界面", 20)
 
     # 全局字体

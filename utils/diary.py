@@ -191,6 +191,13 @@ def generate_diary_content(messages: List[Dict]) -> Optional[Dict]:
     """同步生成日记内容（不依赖 QThread），供 write_diary 工具调用。
     返回 {"content": str, "weather": str, "is_red_line": bool, "echo_text": str} 或 None。
     """
+    # 内存采样：写日记为 LLM + 本地模型密集操作，记录前后内存便于定位 OOM
+    try:
+        from utils.memory_guard import log_memory_snapshot
+        log_memory_snapshot("write_diary-before")
+    except Exception:
+        pass
+
     agent = AgentCore()
     from brain.persona.runtime import capture_persona_snapshot
     persona_snapshot = capture_persona_snapshot()
@@ -231,10 +238,20 @@ def generate_diary_content(messages: List[Dict]) -> Optional[Dict]:
         cfg = get_diary_config()
         max_chars = max(400, min(5000, int(cfg.get("max_chars", 1600) or 1600)))
         result["content"] = str(result.get("content", "")).strip()[:max_chars]
+        try:
+            from utils.memory_guard import log_memory_snapshot
+            log_memory_snapshot("write_diary-after")
+        except Exception:
+            pass
         return result if result["content"] else None
     except Exception as e:
         provider = get_api_config().get("provider", "unknown")
         print(f"[日记] 生成失败 provider={provider}, reason={e}", flush=True)
+        try:
+            from utils.memory_guard import log_memory_snapshot
+            log_memory_snapshot("write_diary-after-failed")
+        except Exception:
+            pass
         return None
 
 def _build_diary_prompt(messages: List[Dict], persona_snapshot=None) -> str:

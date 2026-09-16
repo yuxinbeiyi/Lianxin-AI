@@ -37,6 +37,7 @@ class FaceFeature:
         self._last_status = {"face": "未检测到人脸", "face_count": 0,
                              "face_confidence": 0.0, "identity": "UNKNOWN"}
         self._last_boxes = []
+        self._consecutive_failures = 0
 
     def _load_profile(self):
         try:
@@ -130,6 +131,9 @@ class FaceFeature:
         if not self.initialized or self.analysis is None:
             return frame, {"face": "未初始化", "face_count": 0,
                             "face_confidence": 0.0, "identity": "UNKNOWN"}
+        if not self._valid_frame(frame):
+            return frame, {"face": "帧异常", "face_count": 0,
+                           "face_confidence": 0.0, "identity": "UNKNOWN"}
         now = time.monotonic()
 
         # 动态调整推理间隔：检测到人脸时快（0.15s，~6.7 FPS），无人时慢（0.33s，~3 FPS）
@@ -140,7 +144,10 @@ class FaceFeature:
             return frame, dict(self._last_status)
         try:
             self._last_inference = now
-            faces = self.analysis.get(frame)
+            # onnxruntime 需要 C 连续内存，非连续帧可能触发原生崩溃
+            if not frame.flags["C_CONTIGUOUS"]:
+                frame = np.ascontiguousarray(frame)
+            faces = self._sanitize_faces(self.analysis.get(frame))
             count = len(faces)
             confidence = max((float(face.det_score) for face in faces), default=0.0)
             self._last_boxes = []
@@ -174,13 +181,52 @@ class FaceFeature:
             self._last_status = {"face": state, "face_count": count,
                                  "face_confidence": round(confidence, 2),
                                  "identity": identity}
+            self._consecutive_failures = 0
             self._draw_boxes(frame)
             return frame, dict(self._last_status)
         except Exception as exc:
             self.error = str(exc)
+            self._consecutive_failures += 1
             self._last_status = {"face": "检测异常", "face_count": 0,
                                  "face_confidence": 0.0, "identity": "UNKNOWN"}
+            # 连续失败说明模型或输入不稳定，自动停用人脸，避免反复异常。
+            if self._consecutive_failures >= 5:
+                self.initialized = False
+                self.error = f"人脸识别连续失败，已自动停用：{exc}"
+                self._last_status = {"face": "已停用", "face_count": 0,
+                                     "face_confidence": 0.0, "identity": "UNKNOWN"}
             return frame, dict(self._last_status)
+
+    def _valid_frame(self, frame) -> bool:
+        """校验输入帧是否适合送入人脸推理，过滤可能触发原生崩溃的异常帧。"""
+        try:
+            return (isinstance(frame, np.ndarray)
+                    and frame.ndim == 3
+                    and frame.dtype == np.uint8
+                    and frame.size > 0
+                    and frame.shape[2] in (3, 4)
+                    and frame.shape[0] >= 16 and frame.shape[1] >= 16)
+        except Exception:
+            return False
+
+    def _sanitize_faces(self, faces):
+        """过滤 NaN/Inf 或明显越界的检测框，避免异常结果进入后续链路。"""
+        clean = []
+        try:
+            for face in faces:
+                bbox = np.asarray(face.bbox, dtype=np.float64)
+                kps = np.asarray(face.kps, dtype=np.float64)
+                if bbox.size != 4 or kps.size == 0:
+                    continue
+                if not (np.isfinite(bbox).all() and np.isfinite(kps).all()):
+                    continue
+                x1, y1, x2, y2 = bbox
+                if x2 <= x1 or y2 <= y1 or abs(x1) > 1e4 or abs(y1) > 1e4:
+                    continue
+                clean.append(face)
+        except Exception:
+            return []
+        return clean
 
     def _draw_boxes(self, frame):
         labels = []
