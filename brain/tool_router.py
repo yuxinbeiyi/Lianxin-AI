@@ -283,6 +283,23 @@ def filter_builtin_tools_for_route(all_tools: List[dict], route: RequestRoute,
     return filter_definitions_for_request(selected, user_message)
 
 
+def dedupe_tool_definitions(tools: List[dict]) -> List[dict]:
+    """按函数名去重工具定义，保留首次出现（内置优先）。
+
+    OpenAI 兼容 API 会拒绝重复的函数声明；内置 TOOL_DEFINITIONS 与已激活
+    技能可能定义同名工具（例如 read_diary/write_diary），组装时必须去重。
+    """
+    seen: Set[str] = set()
+    result: List[dict] = []
+    for item in tools:
+        name = str(item.get("function", {}).get("name", "") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(item)
+    return result
+
+
 def select_contextual_external_tools(definitions: List[dict], current_text: str,
                                      recent_context: str = "") -> List[dict]:
     """只在当前请求点名服务，或明确承接上一轮服务建议时注入 MCP。"""

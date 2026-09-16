@@ -19,6 +19,7 @@ import litellm
 from config import get_api_config
 from brain.auto_task_manager import get_auto_task_manager
 from brain.tools import TOOL_DEFINITIONS, execute_tool
+from brain.tool_router import dedupe_tool_definitions
 from utils.auto_task_data import AutoTask
 
 logger = logging.getLogger("AutoTaskExecutor")
@@ -151,7 +152,7 @@ def _get_all_available_tools() -> list[dict]:
         tools.extend(get_all_mcp_tool_definitions())
     except Exception:
         pass
-    return tools
+    return dedupe_tool_definitions(tools)
 
 
 # ── ReAct Agent 核心 ────────────────────────────────────

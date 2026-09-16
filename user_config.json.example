@@ -12,6 +12,17 @@
     "local_base_url": "http://localhost:11434/v1",
     "local_model_name": "my-qwen"
   },
+  "chat_profiles": [
+    {
+      "name": "示例中转站",
+      "api_key": "",
+      "base_url": "https://你的中转站地址/v1",
+      "model": "gemini-3.8-flash",
+      "max_tokens": 8192,
+      "api_format": "openai"
+    }
+  ],
+  "active_chat_profile": "",
   "device_preferences": {
     "rag": "cpu",
     "whisper": "cpu",

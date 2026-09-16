@@ -26,7 +26,7 @@ from brain.skill_manager import get_active_tool_definitions, get_active_knowledg
 from brain.tool_router import (
     filter_builtin_tools, filter_builtin_tools_for_route, build_tool_catalog, match_categories,
     detect_tool_request, get_activation_tool_names, CATEGORY_ORDER, is_diary_request,
-    select_contextual_external_tools,
+    select_contextual_external_tools, dedupe_tool_definitions,
 )
 from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
@@ -3281,6 +3281,10 @@ class AgentCore:
             if not route.is_light:
                 # request_tools 是模糊任务的语义兜底，不附带庞大的工具目录。
                 all_tools.extend([REQUEST_TOOLS_DEFINITION, TOOL_ENABLE_REQUEST_DEFINITION])
+            # 同一函数名可能同时来自内置 TOOL_DEFINITIONS 与已激活技能
+            # （例如 read_diary/write_diary），OpenAI 兼容 API 会拒绝重复声明。
+            # 组装完成后按函数名去重，保留首次出现（内置优先）。
+            all_tools = dedupe_tool_definitions(all_tools)
             try:
                 from brain.mcp.mcp_registry import get_disabled_mcp_names
                 disabled_mcp = set(get_disabled_mcp_names())
@@ -3746,6 +3750,18 @@ class AgentCore:
                     except Exception:
                         pass
                 error_msg = str(e).lower()
+                # 余额/额度耗尽属于账户级错误，重试无意义，直接给用户明确提示。
+                is_balance_error = any(kw in error_msg for kw in (
+                    "402", "payment required", "insufficient balance",
+                    "insufficient_balance", "insufficient credit",
+                    "余额不足", "欠费", "额度不足", "额度已用完",
+                    "out of quota", "no quota", "quota exceeded",
+                ))
+                if is_balance_error:
+                    return (
+                        "（API 账户余额不足或额度已用完，暂时无法调用模型。"
+                        "请充值后再试；使用中转站的话请检查套餐余额与额度。）"
+                    )
                 is_retryable = any(kw in error_msg for kw in [
                     "timeout", "connection", "getaddrinfo", "name or service not known",
                     "rate limit", "server", "500", "502", "503", "504",

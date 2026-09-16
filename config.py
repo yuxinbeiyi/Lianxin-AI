@@ -172,6 +172,74 @@ def save_api_config(config: dict):
     _save_full_config(full)
 
 
+# ── 聊天API 配置记录（多 Key 一键切换） ──
+
+def get_chat_profiles() -> list:
+    """读取聊天API配置记录列表（每项含 name/api_key/base_url/model 等）。"""
+    full = _load_full_config()
+    return list(full.get("chat_profiles", []) or [])
+
+
+def save_chat_profile(profile: dict) -> bool:
+    """按名称新增或更新一条聊天API配置记录。"""
+    name = str((profile or {}).get("name") or "").strip()
+    if not name:
+        return False
+    full = _load_full_config()
+    profiles = list(full.get("chat_profiles", []) or [])
+    merged = dict(profile)
+    merged["name"] = name
+    for i, item in enumerate(profiles):
+        if item.get("name") == name:
+            profiles[i] = merged
+            break
+    else:
+        profiles.append(merged)
+    full["chat_profiles"] = profiles
+    _save_full_config(full)
+    return True
+
+
+def delete_chat_profile(name: str) -> bool:
+    """删除一条聊天API配置记录；若为当前生效项则同时清除激活标记。"""
+    name = str(name or "").strip()
+    full = _load_full_config()
+    profiles = list(full.get("chat_profiles", []) or [])
+    new_profiles = [p for p in profiles if p.get("name") != name]
+    if len(new_profiles) == len(profiles):
+        return False
+    full["chat_profiles"] = new_profiles
+    if full.get("active_chat_profile") == name:
+        full["active_chat_profile"] = ""
+    _save_full_config(full)
+    return True
+
+
+def get_active_chat_profile_name() -> str:
+    """读取当前生效的聊天API配置记录名称。"""
+    full = _load_full_config()
+    return str(full.get("active_chat_profile") or "")
+
+
+def set_active_chat_profile(name: str) -> bool:
+    """设置当前生效的聊天API配置记录名称。"""
+    full = _load_full_config()
+    full["active_chat_profile"] = str(name or "")
+    _save_full_config(full)
+    return True
+
+
+def get_active_chat_profile() -> dict:
+    """读取当前生效的聊天API配置记录；无记录时返回空字典。"""
+    active = get_active_chat_profile_name()
+    if not active:
+        return {}
+    for profile in get_chat_profiles():
+        if profile.get("name") == active:
+            return profile
+    return {}
+
+
 def has_api_key() -> bool:
     """检查用户是否已配置 API Key（根据当前 provider 判断）。"""
     cfg = get_api_config()

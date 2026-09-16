@@ -430,11 +430,24 @@ def is_self_knowledge_request(text: str) -> bool:
     )
 
 # 这类问题要求从持久化记录中确认事实，不能只依赖当前上下文或模型补全。
-_RECALL_HISTORY_RE = re.compile(
+# 分两层判定，避免“什么时候/几点”这类时间词把日常询问误判成历史核验：
+# - 强锚点（聊天记录/原话/当时/那次……）命中即视为历史核验；
+# - 裸时间词只有紧邻说话/回忆动作（说过/聊过/答应/发生……）时才升级为核验。
+_RECALL_STRONG_RE = re.compile(
     r"(?:聊天记录|历史记录|原聊天|原记录|对话记录|日志时间|时间戳|原话|"
     r"当时|那次|那件事|那一回|那段对话|具体(?:的)?时间|准确时间|"
-    r"哪天|几号|几点|什么时候|说了什么|发生(?:在|的)?时间|"
-    r"不是今天|不是昨天)",
+    r"说了什么|发生(?:在|的)?时间|不是今天|不是昨天)",
+    re.IGNORECASE,
+)
+_RECALL_WEAK_TIME_RE = re.compile(
+    r"(?:哪天|几号|几点|什么时候|啥时候)",
+    re.IGNORECASE,
+)
+_RECALL_TIME_NEAR_ANCHOR_RE = re.compile(
+    r"(?:什么时候|啥时候|哪天|几号|几点).{0,8}(?:说过|聊过|提过|讲过|问过|答应|承诺|告诉|认识|见过|发生|记录|"
+    r"说的|聊的|提的|讲的|说了|聊了|问了|提到|提及|说|聊|谈|讲)"
+    r"|(?:说过|聊过|提过|讲过|问过|答应|承诺|告诉|认识|见过|发生|记录|"
+    r"说的|聊的|提的|讲的|说了|聊了|问了|提到|提及|说|聊|谈|讲).{0,8}(?:什么时候|啥时候|哪天|几号|几点)",
     re.IGNORECASE,
 )
 
@@ -442,7 +455,9 @@ _RECALL_HISTORY_RE = re.compile(
 def is_verifiable_recall_request(text: str) -> bool:
     """判断是否必须用真实聊天记录核验历史事件。"""
     value = str(text or "").strip()
-    if not value or not _RECALL_HISTORY_RE.search(value):
+    if not value:
+        return False
+    if not (_RECALL_STRONG_RE.search(value) or _RECALL_TIME_NEAR_ANCHOR_RE.search(value)):
         return False
     # “现在几点”“今天是几号”属于实时钟表查询；只有带明确历史语境时
     # 才走聊天记录，避免“几号/时间”这个词把实时问题升级成历史检索。

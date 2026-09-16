@@ -1,6 +1,6 @@
 """
 ApiConfigDialog：API Key 配置对话框
-支持填写 DeepSeek API、QQ 桥接等配置信息。
+支持填写聊天API（OpenAI 兼容，任意中转站）、QQ 桥接等配置信息。
 语音识别相关配置已统一迁移至「语音转录中心」。
 """
 
@@ -10,12 +10,15 @@ from PyQt5.QtWidgets import (
     QWidget, QFormLayout, QCheckBox, QComboBox, QApplication,
     QDoubleSpinBox,
     QRadioButton, QButtonGroup,
+    QInputDialog,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from config import (
     get_api_config, save_api_config,
+    get_chat_profiles, save_chat_profile, delete_chat_profile,
+    get_active_chat_profile_name, get_active_chat_profile, set_active_chat_profile,
     normalize_local_base_url, normalize_local_model_name,
     get_qq_bridge_config, save_qq_bridge_config,
     get_siliconflow_config, save_siliconflow_config,
@@ -26,7 +29,10 @@ from config import (
 )
 from gui.model_fetcher import run_model_fetch, show_model_picker
 
-# ── 测试 DeepSeek 连接的后台线程 ──────────────────────────────
+# 配置记录下拉框的「不保存记录」占位项
+_NO_PROFILE_TEXT = "（直接填写下方配置）"
+
+# ── 测试连接的后台线程 ──────────────────────────────
 
 class _TestWorker(QThread):
     success = pyqtSignal(str)
@@ -61,23 +67,6 @@ class _TestWorker(QThread):
             self.success.emit(reply[:20])
         except Exception as e:
             self.failed.emit(str(e))
-
-
-class _BalanceWorker(QThread):
-    success = pyqtSignal(dict)
-    failed  = pyqtSignal(str)
-
-    def __init__(self, api_key: str, parent=None):
-        super().__init__(parent)
-        self._api_key = api_key
-
-    def run(self):
-        from utils.balance import get_balance_info
-        result, error = get_balance_info(self._api_key)
-        if error:
-            self.failed.emit(error)
-        else:
-            self.success.emit(result)
 
 
 class _ImageGenTestWorker(QThread):
@@ -150,6 +139,7 @@ class ApiConfigDialog(QDialog):
         self.setWindowFlags(Qt.Window)
         
         self._test_worker: _TestWorker | None = None
+        self._loading = False
         self._build_ui()
         self._load()
 
@@ -167,7 +157,7 @@ class ApiConfigDialog(QDialog):
         layout.addWidget(title)
 
         desc = QLabel(
-            "配置 DeepSeek API Key 和 QQ 桥接等参数。\n"
+            "配置聊天API（OpenAI 兼容，支持任意中转站）和 QQ 桥接等参数。\n"
             "语音识别相关配置请使用「语音转录中心」管理。\n"
             "所有信息仅保存在本地 data/user_config.json，不会上传到任何服务器。"
         )
@@ -212,10 +202,10 @@ class ApiConfigDialog(QDialog):
         """)
         self._tab_widget = tabs
 
-        # Tab 0: DeepSeek API
+        # Tab 0: 聊天API
         tab_ds = QWidget()
         self._build_tab_deepseek(tab_ds)
-        tabs.addTab(tab_ds, "DeepSeek API")
+        tabs.addTab(tab_ds, "聊天API")
 
         # Tab 1: NapCat QQ 聊天
         tab_qq = QWidget()
@@ -247,7 +237,7 @@ class ApiConfigDialog(QDialog):
         # ── 底部按钮区 ──
         btn_row = QHBoxLayout()
 
-        self._test_btn = QPushButton("测试 DeepSeek 连接")
+        self._test_btn = QPushButton("测试连接")
         self._test_btn.setFixedHeight(36)
         self._test_btn.setFont(QFont("Microsoft YaHei UI", 9))
         self._test_btn.setCursor(Qt.PointingHandCursor)
@@ -303,7 +293,7 @@ class ApiConfigDialog(QDialog):
 
         layout.addLayout(btn_row)
 
-    # ── Tab: DeepSeek API ───────────────────────────────────
+    # ── Tab: 聊天API ───────────────────────────────────────
 
     def _build_tab_deepseek(self, parent: QWidget):
         layout = QVBoxLayout(parent)
@@ -320,7 +310,7 @@ class ApiConfigDialog(QDialog):
 
         self._provider_group = QButtonGroup(self)
 
-        self._radio_deepseek = QRadioButton("DeepSeek（云端）")
+        self._radio_deepseek = QRadioButton("聊天API（云端）")
         self._radio_agnes = QRadioButton("Agnes AI（云端）")
         self._radio_local = QRadioButton("Ollama（本地）")
 
@@ -356,7 +346,7 @@ class ApiConfigDialog(QDialog):
         layout.addWidget(self._provider_hint)
         layout.addSpacing(4)
 
-        # ── DeepSeek 配置分组 ──
+        # ── 聊天API 配置分组 ──
         self._deepseek_group = QFrame()
         self._deepseek_group.setStyleSheet("QFrame { border: none; }")
         ds_layout = QVBoxLayout(self._deepseek_group)
@@ -364,6 +354,82 @@ class ApiConfigDialog(QDialog):
         ds_form = QFormLayout()
         ds_form.setSpacing(16)
         ds_form.setContentsMargins(0, 0, 0, 0)
+
+        # ── 配置记录（多 Key 一键切换） ──
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(8)
+
+        profile_label = QLabel("配置记录：")
+        profile_label.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        profile_label.setStyleSheet("color: #3A3A5C;")
+        profile_row.addWidget(profile_label)
+
+        self._profile_combo = QComboBox()
+        self._profile_combo.setFixedHeight(34)
+        self._profile_combo.setFont(QFont("Microsoft YaHei UI", 10))
+        self._profile_combo.setStyleSheet("""
+            QComboBox {
+                border: 1px solid #D8D8EE; border-radius: 8px; padding: 4px 8px;
+                background-color: #FFFFFF; color: #2C2C2C;
+            }
+            QComboBox:focus { border: 1px solid #6C7BFF; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox QAbstractItemView {
+                background-color: #FFFFFF; border: 1px solid #D8D8EE;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                color: #2C2C2C;
+                padding: 6px 8px;
+            }
+            QComboBox QAbstractItemView::item:hover,
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #ECEEFF;
+                color: #5060DD;
+            }
+
+        """)
+        profile_row.addWidget(self._profile_combo, 1)
+
+        self._profile_save_btn = QPushButton("保存")
+        self._profile_save_btn.setFixedHeight(32)
+        self._profile_save_btn.setFont(QFont("Microsoft YaHei UI", 9))
+        self._profile_save_btn.setCursor(Qt.PointingHandCursor)
+        self._profile_save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ECEEFF; color: #5060DD;
+                border-radius: 6px; border: 1px solid #C8CCEE;
+            }
+            QPushButton:hover { background-color: #DDE0FF; }
+        """)
+        profile_row.addWidget(self._profile_save_btn)
+
+        self._profile_del_btn = QPushButton("删除")
+        self._profile_del_btn.setFixedHeight(32)
+        self._profile_del_btn.setFont(QFont("Microsoft YaHei UI", 9))
+        self._profile_del_btn.setCursor(Qt.PointingHandCursor)
+        self._profile_del_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FBECEC; color: #C0504D;
+                border-radius: 6px; border: 1px solid #F0C8C8;
+            }
+            QPushButton:hover { background-color: #F7DDDD; }
+        """)
+        profile_row.addWidget(self._profile_del_btn)
+
+        ds_layout.addLayout(profile_row)
+
+        self._profile_hint = QLabel("")
+        self._profile_hint.setFont(QFont("Microsoft YaHei UI", 8))
+        self._profile_hint.setStyleSheet(
+            "color: #999999; background-color: #1E1E30; padding: 6px 8px; border-radius: 6px;")
+        self._profile_hint.setWordWrap(True)
+        ds_layout.addWidget(self._profile_hint)
+        ds_layout.addSpacing(6)
+
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        self._profile_save_btn.clicked.connect(self._on_profile_save)
+        self._profile_del_btn.clicked.connect(self._on_profile_delete)
 
         self._key_edit = QLineEdit()
         self._key_edit.setPlaceholderText("sk-xxxxxxxxxxxxxxxxxxxxxxxx")
@@ -392,13 +458,13 @@ class ApiConfigDialog(QDialog):
         ds_form.addRow("API Key:", key_layout)
 
         self._url_edit = QLineEdit()
-        self._url_edit.setPlaceholderText("https://api.deepseek.com")
+        self._url_edit.setPlaceholderText("https://你的中转站地址/v1")
         self._url_edit.setFont(QFont("Consolas", 10))
         self._apply_field_style(self._url_edit)
         ds_form.addRow("Base URL:", self._url_edit)
 
         self._model_edit = QLineEdit()
-        self._model_edit.setPlaceholderText("deepseek-v4-flash")
+        self._model_edit.setPlaceholderText("模型名称（如 deepseek-v4-flash）")
         self._model_edit.setFont(QFont("Consolas", 10))
         self._apply_field_style(self._model_edit)
         model_row = QHBoxLayout()
@@ -422,8 +488,18 @@ class ApiConfigDialog(QDialog):
             QComboBox::drop-down { border: none; width: 24px; }
             QComboBox QAbstractItemView {
                 background-color: #FFFFFF; border: 1px solid #D8D8EE;
-                selection-background-color: #ECEEFF; color: #2C2C2C;
+                outline: none;
             }
+            QComboBox QAbstractItemView::item {
+                color: #2C2C2C;
+                padding: 6px 8px;
+            }
+            QComboBox QAbstractItemView::item:hover,
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #ECEEFF;
+                color: #5060DD;
+            }
+
         """)
         ds_form.addRow("API 格式:", self._api_format_combo)
 
@@ -442,22 +518,6 @@ class ApiConfigDialog(QDialog):
         ds_form.addRow("最大 Token 数:", self._tokens_spin)
 
         ds_layout.addLayout(ds_form)
-
-        self._balance_btn = QPushButton("💰 查询余额")
-        self._balance_btn.setFixedHeight(36)
-        self._balance_btn.setFont(QFont("Microsoft YaHei UI", 9))
-        self._balance_btn.setCursor(Qt.PointingHandCursor)
-        self._balance_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9500; color: white; border-radius: 8px;
-                border: none; padding: 0 16px;
-            }
-            QPushButton:hover   { background-color: #E08600; }
-            QPushButton:pressed { background-color: #C07600; }
-            QPushButton:disabled{ background-color: #CCCCCC; }
-        """)
-        self._balance_btn.clicked.connect(self._on_balance_query)
-        ds_layout.addWidget(self._balance_btn)
 
         layout.addWidget(self._deepseek_group)
 
@@ -565,11 +625,11 @@ class ApiConfigDialog(QDialog):
             self._agnes_group.setVisible(False)
             self._local_group.setVisible(False)
             self._provider_hint.setText(
-                "💡 DeepSeek V4 模型，支持 Function Calling 工具调用。\n"
-                "    需在 platform.deepseek.com 注册并申请 API Key。"
+                "💡 聊天API：支持任意中转站或官方服务（OpenAI 兼容协议）。\n"
+                "    填写 API Key 和 Base URL 后，点击「获取模型」拉取模型列表即可使用；支持 Function Calling 工具调用。"
             )
             self._provider_hint.show()
-            self._test_btn.setText("测试 DeepSeek 连接")
+            self._test_btn.setText("测试连接")
             self._test_btn.show()
             self._agnes_test_btn.hide()
         elif btn is self._radio_agnes:
@@ -595,6 +655,126 @@ class ApiConfigDialog(QDialog):
             self._test_btn.setText("测试本地模型连接")
             self._test_btn.show()
             self._agnes_test_btn.hide()
+
+    # ── 配置记录（多 Key 一键切换） ──────────────────────────────
+
+    def _apply_profile_to_form(self, profile: dict):
+        """将一条配置记录填充到聊天API表单字段。"""
+        self._key_edit.setText(profile.get("api_key", ""))
+        self._url_edit.setText(profile.get("base_url", "https://api.deepseek.com"))
+        self._model_edit.setText(profile.get("model", "deepseek-v4-flash"))
+        self._tokens_spin.setValue(int(profile.get("max_tokens", 4096) or 4096))
+        fmt = profile.get("api_format", "openai")
+        fidx = self._api_format_combo.findText(fmt)
+        if fidx >= 0:
+            self._api_format_combo.setCurrentIndex(fidx)
+
+    def _reload_profile_combo(self, restore_active: bool = False):
+        """重建配置记录下拉框；restore_active 时恢复当前生效记录。"""
+        profiles = get_chat_profiles()
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        self._profile_combo.addItem(_NO_PROFILE_TEXT)
+        for p in profiles:
+            self._profile_combo.addItem(str(p.get("name") or ""))
+        if restore_active:
+            active = get_active_chat_profile_name()
+            idx = self._profile_combo.findText(active)
+            if idx >= 0:
+                self._profile_combo.setCurrentIndex(idx)
+        self._profile_combo.blockSignals(False)
+        self._update_profile_hint()
+
+    def _update_profile_hint(self):
+        active = get_active_chat_profile_name()
+        if active:
+            self._profile_hint.setText(
+                f"当前生效配置：{active}\n从下拉框选择记录即可一键切换聊天 API Key。"
+            )
+        else:
+            self._profile_hint.setText(
+                "在下方填写后点击「保存」可存为配置记录；从下拉框选择记录即可一键切换聊天 API Key。"
+            )
+
+    def _on_profile_selected(self, index: int):
+        """一键切换：选中某条配置记录后立即填充表单并生效。"""
+        if getattr(self, "_loading", False):
+            return
+        if index <= 0:
+            set_active_chat_profile("")
+            self._update_profile_hint()
+            return
+        name = self._profile_combo.itemText(index)
+        profile = next((p for p in get_chat_profiles() if p.get("name") == name), None)
+        if not profile:
+            return
+        if not self._radio_deepseek.isChecked():
+            self._radio_deepseek.setChecked(True)
+            self._on_provider_changed(self._radio_deepseek)
+        self._apply_profile_to_form(profile)
+        ds_cfg = self._collect_deepseek()
+        save_api_config(ds_cfg)
+        set_active_chat_profile(name)
+        self._update_profile_hint()
+
+    def _on_profile_save(self):
+        """将当前表单保存为一条配置记录。"""
+        if not self._radio_deepseek.isChecked():
+            QMessageBox.information(self, "提示", "配置记录仅用于「聊天API（云端）」模式。")
+            return
+        api_key = self._key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "提示", "请先填写 API Key 再保存配置记录！")
+            return
+        name = self._profile_combo.currentText()
+        if not name or name == _NO_PROFILE_TEXT:
+            name, ok = QInputDialog.getText(self, "新增配置记录", "请输入这条配置记录的名称：")
+            name = (name or "").strip()
+            if not ok or not name:
+                return
+        profile = {
+            "name": name,
+            "api_key": api_key,
+            "base_url": self._url_edit.text().strip() or "https://api.deepseek.com",
+            "model": self._model_edit.text().strip() or "deepseek-v4-flash",
+            "max_tokens": self._tokens_spin.value(),
+            "api_format": self._api_format_combo.currentText(),
+        }
+        if save_chat_profile(profile):
+            set_active_chat_profile(name)
+            self._reload_profile_combo(restore_active=True)
+            QMessageBox.information(self, "保存成功", f"已保存配置记录「{name}」。")
+
+    def _on_profile_delete(self):
+        """删除选中的配置记录。"""
+        name = self._profile_combo.currentText()
+        if not name or name == _NO_PROFILE_TEXT:
+            QMessageBox.information(self, "提示", "请先在下方选择要删除的配置记录。")
+            return
+        ret = QMessageBox.question(
+            self, "删除配置记录", f"确定删除配置记录「{name}」吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
+        delete_chat_profile(name)
+        self._reload_profile_combo(restore_active=True)
+
+    def _sync_current_profile_on_save(self):
+        """保存对话框时，若选中了某条记录则同步最新表单内容。"""
+        name = self._profile_combo.currentText()
+        if not name or name == _NO_PROFILE_TEXT:
+            return
+        profile = {
+            "name": name,
+            "api_key": self._key_edit.text().strip(),
+            "base_url": self._url_edit.text().strip() or "https://api.deepseek.com",
+            "model": self._model_edit.text().strip() or "deepseek-v4-flash",
+            "max_tokens": self._tokens_spin.value(),
+            "api_format": self._api_format_combo.currentText(),
+        }
+        save_chat_profile(profile)
+        set_active_chat_profile(name)
 
     def _toggle_agnes_key_visibility(self, checked: bool):
         self._agnes_key_edit.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
@@ -1357,7 +1537,8 @@ class ApiConfigDialog(QDialog):
         self._fetch_models_btn.setText("获取模型")
 
     def _load(self):
-        # DeepSeek 配置
+        self._loading = True
+        # 聊天API 配置
         ds_cfg = get_api_config()
         provider = ds_cfg.get("provider", "deepseek")
         self._key_edit.setText(ds_cfg.get("api_key", ""))
@@ -1447,11 +1628,19 @@ class ApiConfigDialog(QDialog):
         if idx >= 0:
             self._qw_remind_time.setCurrentIndex(idx)
 
+        # 配置记录（多 Key 一键切换）
+        self._reload_profile_combo(restore_active=True)
+        # 有生效记录时让表单与所选记录保持一致
+        active_profile = get_active_chat_profile()
+        if active_profile:
+            self._apply_profile_to_form(active_profile)
+        self._loading = False
+
 
     # ── 数据收集 ─────────────────────────────────────────────
 
     def _collect_deepseek(self) -> dict:
-        """收集 DeepSeek 配置（含 provider 选择）。"""
+        """收集聊天API配置（含 provider 选择）。"""
         if self._radio_local.isChecked():
             provider = "local"
         elif self._radio_agnes.isChecked():
@@ -1539,16 +1728,18 @@ class ApiConfigDialog(QDialog):
     # ── 保存 ─────────────────────────────────────────────────
 
     def _on_save(self):
-        # DeepSeek（含 provider 选择）
+        # 聊天API（含 provider 选择）
         ds_cfg = self._collect_deepseek()
         provider = ds_cfg.get("provider", "deepseek")
         if provider == "deepseek" and not ds_cfg["api_key"]:
-            QMessageBox.warning(self, "提示", "DeepSeek API Key 不能为空！")
+            QMessageBox.warning(self, "提示", "API Key 不能为空！")
             return
         if provider == "agnes" and not self._agnes_key_edit.text().strip():
             QMessageBox.warning(self, "提示", "Agnes AI API Key 不能为空！")
             return
         save_api_config(ds_cfg)
+        # 若选中了某条配置记录，则同步最新表单内容
+        self._sync_current_profile_on_save()
 
         # Agnes AI 配置（独立存储）
         agnes_cfg = self._collect_agnes()
@@ -1639,7 +1830,7 @@ class ApiConfigDialog(QDialog):
         agnes_cfg = get_agnes_config()
         api_key = agnes_cfg.get("api_key", "").strip()
         if not api_key:
-            QMessageBox.warning(self, "提示", "请先在 DeepSeek API 选项卡中选择 Agnes AI 并填写 API Key！")
+            QMessageBox.warning(self, "提示", "请先在「聊天API」选项卡中选择 Agnes AI 并填写 API Key！")
             return
 
         self._vg_test_btn.setEnabled(False)
@@ -1730,10 +1921,10 @@ class ApiConfigDialog(QDialog):
         import threading
         threading.Thread(target=_test, daemon=True).start()
 
-    # ── 测试 DeepSeek 连接 ────────────────────────────────────
+    # ── 测试连接 ────────────────────────────────────
 
     def _on_test(self):
-        """测试连接（DeepSeek 或 Ollama 本地）。"""
+        """测试连接（聊天API 或 Ollama 本地）。"""
         if self._radio_local.isChecked():
             cfg = self._collect_deepseek()
             api_key = "ollama"
@@ -1751,13 +1942,13 @@ class ApiConfigDialog(QDialog):
         else:
             cfg = self._collect_deepseek()
             if not cfg["api_key"]:
-                QMessageBox.warning(self, "提示", "请先填写 DeepSeek API Key！")
+                QMessageBox.warning(self, "提示", "请先填写 API Key！")
                 return
             api_key = cfg["api_key"]
             base_url = cfg["base_url"]
             model = cfg["model"]
             is_local = False
-            api_name = "DeepSeek API"
+            api_name = "聊天API"
 
         if self._test_worker and self._test_worker.isRunning():
             return
@@ -1808,7 +1999,7 @@ class ApiConfigDialog(QDialog):
         if self._radio_local.isChecked():
             self._test_btn.setText("测试本地模型连接")
         else:
-            self._test_btn.setText("测试 DeepSeek 连接")
+            self._test_btn.setText("测试连接")
         QMessageBox.information(self, "连接成功", f"{api_name} 连接正常！\n模型回复了：{reply}…")
 
     def _on_test_failed(self, err: str, api_name: str = "API", is_local: bool = False):
@@ -1816,7 +2007,7 @@ class ApiConfigDialog(QDialog):
         if is_local:
             self._test_btn.setText("测试本地模型连接")
         else:
-            self._test_btn.setText("测试 DeepSeek 连接")
+            self._test_btn.setText("测试连接")
         hint = (
             "请确认 Ollama 已启动（命令行运行 ollama serve），\n"
             f"且模型已通过 ollama create 导入。"
@@ -1826,41 +2017,3 @@ class ApiConfigDialog(QDialog):
             f"无法连接到 {api_name}。{hint}\n\n错误信息：{err}"
         )
 
-    # ── 余额查询 ──────────────────────────────────────────
-
-    def _on_balance_query(self):
-        """仅支持 DeepSeek 余额查询。"""
-        if not self._radio_deepseek.isChecked():
-            QMessageBox.information(self, "提示", "余额查询仅支持 DeepSeek API。")
-            return
-        api_key = self._key_edit.text().strip()
-        if not api_key:
-            QMessageBox.warning(self, "提示", "请先在 DeepSeek API 选项卡中填写 API Key！")
-            return
-        self._balance_worker = _BalanceWorker(api_key, self)
-        self._balance_worker.success.connect(self._on_balance_success)
-        self._balance_worker.failed.connect(self._on_balance_failed)
-        self._balance_worker.start()
-
-    def _on_balance_success(self, info: dict):
-        total = info["total_balance"]
-        currency = info["currency"]
-        if total < 1.0:
-            message = f"⚠️ 余额预警：当前余额为 {total:.2f} {currency}，已不足 1 元，请尽快充值以免影响使用！"
-        else:
-            message = f"✅ 当前账户余额为：{total:.2f} {currency}"
-        mb = QMessageBox(self)
-        mb.setWindowTitle("💰 余额查询")
-        mb.setText(message)
-        if total < 1.0:
-            import webbrowser
-            recharge_btn = mb.addButton("去充值", QMessageBox.AcceptRole)
-            mb.addButton(QMessageBox.Cancel)
-            mb.exec_()
-            if mb.clickedButton() == recharge_btn:
-                webbrowser.open("https://platform.deepseek.com/usage")
-        else:
-            mb.exec_()
-
-    def _on_balance_failed(self, err: str):
-        QMessageBox.warning(self, "余额查询失败", f"无法获取余额信息：\n{err}")
