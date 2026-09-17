@@ -372,7 +372,7 @@ class DutyScheduler(QObject):
         try:
             from brain.emotional import get_manager
             mgr = get_manager()
-            if mgr.enabled and not mgr.proactive_allowed:
+            if mgr.enabled and not mgr.proactive_allowed_nonblocking(timeout=0.05):
                 now = time.monotonic()
                 if now - self._last_emotion_gate_notice >= 300:
                     self._last_emotion_gate_notice = now

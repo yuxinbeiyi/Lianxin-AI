@@ -974,6 +974,15 @@ class EmotionManager:
             return True
         return not (state.rupture >= 0.78 and state.repair < 0.08)
 
+    def proactive_allowed_nonblocking(self, timeout: float = 0.05) -> bool:
+        """主线程安全变体：情绪锁忙时最多等待 timeout 秒，超时默认放行，绝不卡死事件循环。"""
+        if not self._lock.acquire(timeout=timeout):
+            return True
+        try:
+            return self.proactive_allowed
+        finally:
+            self._lock.release()
+
     @_synchronized
     def get_proactive_motive(self, *, persona_snapshot=None) -> dict:
         key = self._resolve_key(persona_snapshot=persona_snapshot)

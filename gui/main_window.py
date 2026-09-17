@@ -124,6 +124,8 @@ class MainWindow(QMainWindow):
     _duplex_ready_signal = pyqtSignal(bool)                   # 跨线程：STT 预加载结果
     _video_tts_started_signal = pyqtSignal(str)                # TTS 分句开始
     _video_tts_finished_signal = pyqtSignal()                  # TTS 分句结束
+    _achievement_unlock_ready = pyqtSignal(list)               # 后台线程查到的待展示新成就
+    _achievement_unlock_done = pyqtSignal()                    # 后台成就检查结束
     def __init__(self, autostart_mode: bool = False):
         super().__init__()
         self._autostart_mode = autostart_mode
@@ -156,6 +158,9 @@ class MainWindow(QMainWindow):
         self._achievement_unlock_poll.setInterval(10_000)
         self._achievement_unlock_poll.timeout.connect(self._check_new_achievement_unlocks)
         self._achievement_unlock_poll.start()
+        self._achievement_unlock_check_running = False
+        self._achievement_unlock_ready.connect(self._on_achievement_unlock_ready)
+        self._achievement_unlock_done.connect(self._on_achievement_unlock_done)
         QTimer.singleShot(900, self._schedule_achievement_unlock_check)
 
         # ── 全局设置 ──────────────────────────────────────────
@@ -655,7 +660,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_achievement_presence_started_at", None) is None:
             self._achievement_presence_started_at = datetime.now().astimezone()
 
-    def _flush_achievement_presence(self):
+    def _flush_achievement_presence(self, *, wait: bool = False):
         started_at = getattr(self, "_achievement_presence_started_at", None)
         if started_at is None:
             return
@@ -664,17 +669,25 @@ class MainWindow(QMainWindow):
         if (ended_at - started_at).total_seconds() < 1:
             return
         self._achievement_presence_sequence += 1
-        try:
-            from brain.interaction_events import record_interaction
-            record_interaction(
-                feature="companion", event_type="presence_segment",
-                local_date=started_at.date().isoformat(),
-                source_id=f"presence:{self._achievement_presence_sequence}:{started_at.isoformat()}",
-                searchable=False,
-                metadata={"started_at": started_at.isoformat(), "ended_at": ended_at.isoformat()},
-            )
-        except Exception as exc:
-            print(f"[成就记录] 陪伴片段记录失败: {exc}")
+        sequence = self._achievement_presence_sequence
+
+        def _write() -> None:
+            try:
+                from brain.interaction_events import record_interaction
+                record_interaction(
+                    feature="companion", event_type="presence_segment",
+                    local_date=started_at.date().isoformat(),
+                    source_id=f"presence:{sequence}:{started_at.isoformat()}",
+                    searchable=False,
+                    metadata={"started_at": started_at.isoformat(), "ended_at": ended_at.isoformat()},
+                )
+            except Exception as exc:
+                print(f"[成就记录] 陪伴片段记录失败: {exc}")
+
+        if wait:
+            _write()
+        else:
+            threading.Thread(target=_write, daemon=True, name="achievement-presence-flush").start()
 
     def _roll_achievement_presence(self):
         if self.isMinimized():
@@ -684,27 +697,54 @@ class MainWindow(QMainWindow):
 
     def _schedule_achievement_unlock_check(self):
         """将成就检查合并到下一轮事件循环，避免阻塞当前交互动画。"""
-        if self._achievement_unlock_check_queued:
+        if self._achievement_unlock_check_queued or self._achievement_unlock_check_running:
+            self._achievement_unlock_check_queued = True
             return
         self._achievement_unlock_check_queued = True
         QTimer.singleShot(180, self._check_new_achievement_unlocks)
 
     def _check_new_achievement_unlocks(self):
-        """同步新事件并在主窗口右下角展示新解锁成就。"""
+        """后台查询新解锁成就，主线程只负责弹提示，避免 SQLite 重活卡住事件循环。"""
         self._achievement_unlock_check_queued = False
+        if self._achievement_unlock_check_running:
+            self._achievement_unlock_check_queued = True
+            return
+        self._achievement_unlock_check_running = True
+
+        def _work() -> None:
+            fresh = []
+            try:
+                from gui.achievement.service import AchievementService
+                service = AchievementService()
+                fresh = service.state().get("new_unlocks", [])
+                if fresh:
+                    service.mark_unlocks_read([item.get("id", "") for item in fresh])
+            except Exception as exc:
+                print(f"[成就记录] 解锁提示检查失败: {exc}")
+            finally:
+                self._achievement_unlock_ready.emit(fresh)
+                self._achievement_unlock_done.emit()
+
+        threading.Thread(target=_work, daemon=True, name="achievement-unlock-check").start()
+
+    def _on_achievement_unlock_ready(self, fresh: list) -> None:
+        """主线程：展示后台线程查到的新解锁成就。"""
+        if not fresh:
+            return
         try:
-            from gui.achievement.service import AchievementService
-            service = AchievementService()
-            fresh = service.state().get("new_unlocks", [])
-            if not fresh:
-                return
-            service.mark_unlocks_read([item.get("id", "") for item in fresh])
             from gui.achievement.unlock_toast import AchievementUnlockToast
             if self._achievement_unlock_toast is None:
                 self._achievement_unlock_toast = AchievementUnlockToast(self)
             self._achievement_unlock_toast.show_achievements(fresh)
         except Exception as exc:
-            print(f"[成就记录] 解锁提示检查失败: {exc}")
+            print(f"[成就记录] 解锁提示展示失败: {exc}")
+
+    def _on_achievement_unlock_done(self) -> None:
+        """主线程：后台检查结束，若期间又有请求则补跑一轮。"""
+        self._achievement_unlock_check_running = False
+        if self._achievement_unlock_check_queued:
+            self._achievement_unlock_check_queued = False
+            QTimer.singleShot(180, self._check_new_achievement_unlocks)
 
     # ── 界面构建 ─────────────────────────────────────────────
 
@@ -3828,7 +3868,7 @@ class MainWindow(QMainWindow):
         # -------------------------------------------------
 
         # 以下是原有关闭逻辑（确认退出时执行）
-        self._flush_achievement_presence()
+        self._flush_achievement_presence(wait=True)
         self._achievement_presence_timer.stop()
         self._achievement_unlock_poll.stop()
         self._accompany_stats.end_session()
