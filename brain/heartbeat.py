@@ -28,6 +28,12 @@ _HEARTBEAT_SYSTEM = """你是莲心AI的心跳自检助手。一轮对话刚刚�
 - 如果一切正常，无需任何提醒，**只回复 HEARTBEAT_OK**（不要加任何其他文字）
 - 如果有需要提醒用户的事项，用莲心的语气简洁汇报（不超过200字），像朋友关心一样自然
 
+**提醒纪律（必须遵守）**：
+- 用户已明确表示"看过/不需要/知道了/别惦记/算了"的事项，一律不得再次提醒。
+- 只提醒真正未完成、且用户没有拒绝的事项；"还没找到某链接"这类你自己提起的待办，若用户没有要求跟进，不得当作需要提醒的事项。
+- 如果待提醒事项与用户最近正在聊的话题无关，必须先用一句话说清"这是另一件事：……"，避免突兀打断当前话题。
+- 提醒内容要写清楚指代对象（比如"那篇 DeepSeek 推文"），不要让用户猜你指的是哪件事。
+
 你可以使用以下指令操作待办清单（每条指令独占一行，不会展示给用户）：
 - [ADD_ITEM] 内容 — 新增一条待办事项
 - [DONE_ITEM] 内容关键词 — 将匹配的待办条目标记为已完成
@@ -134,6 +140,20 @@ def perform_heartbeat(recent_messages: list[dict]) -> Optional[str]:
     if len(conversation_text) < 50:
         return None
 
+    # 当前对话状态：最后一条用户消息 + 用户是否已拒绝某些事项
+    _REJECT_HINTS = ("不用", "不需要", "看过了", "知道了", "别惦记", "不要再", "已看过", "算了", "没有惦记")
+    recent_tail = conversation_text[-800:]
+    rejected = [hint for hint in _REJECT_HINTS if hint in recent_tail]
+    user_lines = [line for line in lines if line.startswith("[用户]: ")]
+    current_topic = user_lines[-1][:200] if user_lines else "（无）"
+    state_lines = [f"最近用户消息：{current_topic}"]
+    if rejected:
+        state_lines.append(
+            "用户最近明确表达过：" + "、".join(rejected)
+            + "——对应事项一律不要再次提醒。"
+        )
+    current_state = "\n".join(state_lines)
+
     # 待办清单
     checklist = HeartbeatChecklist()
     checklist_text = checklist.format_for_prompt()
@@ -152,7 +172,11 @@ def perform_heartbeat(recent_messages: list[dict]) -> Optional[str]:
         snapshot=persona_snapshot,
         scene="proactive",
     )
-    user_text = f"{_HEARTBEAT_USER}\n\n{checklist_text}\n\n【最近对话记录】\n{conversation_text[:4000]}"
+    user_text = (
+        f"{_HEARTBEAT_USER}\n\n{checklist_text}\n\n"
+        f"【当前对话状态】\n{current_state}\n\n"
+        f"【最近对话记录】\n{conversation_text[:4000]}"
+    )
 
     try:
         response = litellm.completion(

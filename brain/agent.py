@@ -2965,6 +2965,43 @@ class AgentCore:
             except Exception:
                 pass
 
+        # 跨轮事实一致性：同主题数字口径保持一致（轻聊天/本地模式跳过）
+        if not self._use_local and not route.is_light:
+            try:
+                from brain.fact_consistency import build_consistency_context
+                _fact_ctx = build_consistency_context(
+                    getattr(self, "_session_id", 0),
+                    getattr(self, "_current_request_text", "") or "",
+                )
+                if _fact_ctx:
+                    messages.append({"role": "system", "content": _fact_ctx})
+            except Exception:
+                pass
+
+        # 指代消解锚点：用户回复紧跟主动/心跳消息时，帮助模型区分指代对象
+        if not self._use_local and not route.is_light:
+            try:
+                _recent_hist = self.history[-4:]
+                _has_active = any(
+                    isinstance(m.get("content"), str)
+                    and (m["content"].startswith("[心跳提醒]")
+                         or m["content"].startswith("[主动]"))
+                    for m in _recent_hist
+                )
+                if _has_active and re.search(
+                    r"(那篇|那个|这件事|这个|它|这)", self._current_request_text or ""
+                ):
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "【指代消解提示】用户刚才的回复紧跟一条 [心跳提醒] 或 [主动] 消息。"
+                            "如果用户使用“那篇/那个/这件事/它”等指代词，请优先指向上一条主动/心跳"
+                            "消息里提到的对象，而不是更早话题中的内容。"
+                        ),
+                    })
+            except Exception:
+                pass
+
         # 注入跨端记忆上下文（有则加，无则忽略；轻聊天跳过）
         if not self._use_local and not route.is_light:
             cross_ctx = self._get_cross_session_context()
@@ -4073,6 +4110,11 @@ class AgentCore:
                     final_content, _msg_for_match, request_audit,
                     capabilities=route.capabilities, mode=route.mode.value,
                 )
+                try:
+                    from brain.fact_consistency import record_facts
+                    record_facts(getattr(self, "_session_id", 0), final_content)
+                except Exception:
+                    pass
                 # 网页工具结果或短期证据缓存只能支持原文中确实出现的数字、
                 # 时间和比例。把这一层放在执行真实性守卫之后，避免模型先
                 # 通过“已搜索/已读取”校验，再把无依据的具体数字交付给用户。

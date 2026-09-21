@@ -93,13 +93,17 @@ class JiwenStatusWidget(QWidget):
         self._event_log.setReadOnly(True)
         self._event_log.setStyleSheet("QPlainTextEdit { color:#AEB7D4; background:rgba(9,14,28,180); border:1px solid #303A5C; border-radius:6px; padding:4px; font:8pt 'Microsoft YaHei UI'; }")
         root.addWidget(self._event_log, 1)
+        self._refreshing = False
         self._timer = QTimer(self)
-        self._timer.setInterval(1500)
+        self._timer.setInterval(3000)
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
         self.refresh()
 
     def refresh(self):
+        if self._refreshing:
+            return
+        self._refreshing = True
         try:
             from brain.emotional import get_manager
             manager = get_manager()
@@ -118,6 +122,8 @@ class JiwenStatusWidget(QWidget):
             self._event_log.setPlainText("\n".join(lines) or "暂无情绪事件")
         except Exception:
             self._mood.setText("状态暂不可用")
+        finally:
+            self._refreshing = False
 
     def closeEvent(self, event):
         self._timer.stop()

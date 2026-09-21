@@ -67,6 +67,8 @@ class EmotionManager:
         self._saga_bias_cache: dict[str, tuple[float, dict]] = {}
         self._simulation_baselines: dict[tuple[str, str], dict] = {}
         self._active_key = (DEFAULT_PERSONA_ID, DEFAULT_SUBJECT_ID)
+        self._debug_cache: dict[str, tuple[float, dict]] = {}
+        self._debug_cache_ttl = 1.0
         self._store.migrate_v2_json(
             legacy_state_path or LEGACY_STATE_FILE,
             persona_id=DEFAULT_PERSONA_ID,
@@ -1036,6 +1038,11 @@ class EmotionManager:
     @_synchronized
     def get_debug_info(self, *, persona_snapshot=None) -> dict:
         key = self._resolve_key(persona_snapshot=persona_snapshot)
+        now = time.time()
+        cache_key = f"{key[0]}\x1f{key[1]}"
+        hit = self._debug_cache.get(cache_key)
+        if hit is not None and now - hit[0] < self._debug_cache_ttl:
+            return dict(hit[1])
         state = self._get_state(*key)
         needs, emotions, middle = self._legacy_debug_values(state)
         events = self._store.recent_events(*key, limit=30)
@@ -1053,7 +1060,7 @@ class EmotionManager:
             "immersion": round(state.immersion, 4),
         }
         motive = self._dynamics.motive(state)
-        return {
+        result = {
             "version": 3,
             "persona_id": state.persona_id,
             "subject_id": state.subject_id,
@@ -1114,8 +1121,10 @@ class EmotionManager:
                 "active": key in self._simulation_baselines,
                 "can_restore": key in self._simulation_baselines,
             },
-            "sync": {"status": "live", "updated_at": time.time(), "poll_interval_ms": 1500},
+            "sync": {"status": "live", "updated_at": now, "poll_interval_ms": 3000},
         }
+        self._debug_cache[cache_key] = (now, result)
+        return result
 
     @classmethod
     def _axis_details(cls, axes: dict, events: list[dict], bias: dict) -> dict:

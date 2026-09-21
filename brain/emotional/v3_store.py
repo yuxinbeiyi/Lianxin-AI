@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,9 @@ class EmotionStore:
         self._lock = get_database_lock(self.db_path)
         self._local = threading.local()
         self._memory_conn: sqlite3.Connection | None = None
+        self._event_cache: dict[tuple[str, str], deque] = {}
+        self._event_cache_counts: dict[tuple[str, str], tuple[int, int, float] | None] = {}
+        self._event_cache_size = 500
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -65,6 +69,30 @@ class EmotionStore:
             self.close()
         except Exception:
             pass
+
+    def _cache_key(self, persona_id: str, subject_id: str) -> tuple[str, str]:
+        return (str(persona_id), str(subject_id))
+
+    def _cache_add_event(self, event: dict[str, Any]) -> None:
+        key = self._cache_key(event["persona_id"], event["subject_id"])
+        bucket = self._event_cache.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=self._event_cache_size)
+            self._event_cache[key] = bucket
+        bucket.append(event)
+        counts = self._event_cache_counts.get(key)
+        if counts is not None:
+            total, significant, threshold = counts
+            significance = float(event.get("significance", 0.0) or 0.0)
+            self._event_cache_counts[key] = (
+                total + 1,
+                significant + (1 if significance >= threshold else 0),
+                threshold,
+            )
+
+    def _cache_drop(self, key: tuple[str, str]) -> None:
+        self._event_cache.pop(key, None)
+        self._event_cache_counts.pop(key, None)
 
     def _ensure_schema(self) -> None:
         with self._lock:
@@ -195,6 +223,8 @@ class EmotionStore:
         with self._lock:
             conn = self._connect()
             try:
+                now = time.time()
+                delta_json = json.dumps(delta.to_dict(), ensure_ascii=False, separators=(",", ":"))
                 cur = conn.execute(
                     """INSERT INTO emotion_v3_events
                        (persona_id,subject_id,source_channel,source_session_id,
@@ -204,12 +234,28 @@ class EmotionStore:
                     (
                         state.persona_id, state.subject_id, str(source_channel or ""),
                         source_session_id, source_message_id, delta.event_type,
-                        json.dumps(delta.to_dict(), ensure_ascii=False, separators=(",", ":")),
+                        delta_json,
                         delta.confidence, delta.significance, delta.summary, "",
-                        str(idempotency_key or ""), time.time(),
+                        str(idempotency_key or ""), now,
                     ),
                 )
                 conn.commit()
+                self._cache_add_event({
+                    "id": int(cur.lastrowid),
+                    "persona_id": state.persona_id,
+                    "subject_id": state.subject_id,
+                    "source_channel": str(source_channel or ""),
+                    "source_session_id": source_session_id,
+                    "source_message_id": source_message_id,
+                    "event_type": delta.event_type,
+                    "delta_json": delta_json,
+                    "confidence": delta.confidence,
+                    "significance": delta.significance,
+                    "summary": delta.summary,
+                    "resulting_state_json": "",
+                    "idempotency_key": str(idempotency_key or ""),
+                    "created_at": now,
+                })
                 return int(cur.lastrowid)
             except sqlite3.IntegrityError:
                 conn.rollback()
@@ -233,8 +279,10 @@ class EmotionStore:
         with self._lock:
             conn = self._connect()
             try:
+                now = time.time()
+                delta_json = json.dumps(delta.to_dict(), ensure_ascii=False, separators=(",", ":"))
                 conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
+                cur = conn.execute(
                     """INSERT INTO emotion_v3_events
                        (persona_id,subject_id,source_channel,source_session_id,
                         source_message_id,event_type,delta_json,confidence,
@@ -243,10 +291,10 @@ class EmotionStore:
                     (
                         state.persona_id, state.subject_id, str(source_channel or ""),
                         source_session_id, source_message_id, delta.event_type,
-                        json.dumps(delta.to_dict(), ensure_ascii=False, separators=(",", ":")),
+                        delta_json,
                         delta.confidence, delta.significance, delta.summary,
                         state_payload,
-                        str(idempotency_key or ""), time.time(),
+                        str(idempotency_key or ""), now,
                     ),
                 )
                 conn.execute(
@@ -259,10 +307,26 @@ class EmotionStore:
                          updated_at=excluded.updated_at""",
                     (
                         state.persona_id, state.subject_id, state.schema_version,
-                        state_payload, time.time(),
+                        state_payload, now,
                     ),
                 )
                 conn.commit()
+                self._cache_add_event({
+                    "id": int(cur.lastrowid),
+                    "persona_id": state.persona_id,
+                    "subject_id": state.subject_id,
+                    "source_channel": str(source_channel or ""),
+                    "source_session_id": source_session_id,
+                    "source_message_id": source_message_id,
+                    "event_type": delta.event_type,
+                    "delta_json": delta_json,
+                    "confidence": delta.confidence,
+                    "significance": delta.significance,
+                    "summary": delta.summary,
+                    "resulting_state_json": state_payload,
+                    "idempotency_key": str(idempotency_key or ""),
+                    "created_at": now,
+                })
                 return True
             except sqlite3.IntegrityError:
                 conn.rollback()
@@ -274,14 +338,23 @@ class EmotionStore:
     def recent_events(
         self, persona_id: str, subject_id: str, *, limit: int = 30
     ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        key = self._cache_key(persona_id, subject_id)
         with self._lock:
+            bucket = self._event_cache.get(key)
+            if bucket is not None and len(bucket) > 0:
+                return [dict(event) for event in reversed(bucket)][:limit]
             rows = self._connect().execute(
                 """SELECT * FROM emotion_v3_events
                    WHERE persona_id=? AND subject_id=?
                    ORDER BY created_at DESC,id DESC LIMIT ?""",
-                (str(persona_id), str(subject_id), max(1, min(int(limit), 200))),
+                (str(persona_id), str(subject_id), self._event_cache_size),
             ).fetchall()
-        return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+            bucket = deque(reversed(result), maxlen=self._event_cache_size)
+            self._event_cache[key] = bucket
+            self._event_cache_counts.setdefault(key, None)
+            return result[:limit]
 
     def query_events(
         self, persona_id: str, subject_id: str, *, since: float | None = None,
@@ -351,20 +424,27 @@ class EmotionStore:
         return result
 
     def event_stats(self, persona_id: str, subject_id: str, *, significant: float = 0.82) -> dict:
+        threshold = float(significant)
+        key = self._cache_key(persona_id, subject_id)
         with self._lock:
+            counts = self._event_cache_counts.get(key)
+            if counts is not None and abs(counts[2] - threshold) < 1e-9:
+                return {"total": counts[0], "significant": counts[1]}
             row = self._connect().execute(
                 """SELECT COUNT(*) AS total,
                           SUM(CASE WHEN significance>=? THEN 1 ELSE 0 END) AS significant
                    FROM emotion_v3_events WHERE persona_id=? AND subject_id=?""",
-                (float(significant), str(persona_id), str(subject_id)),
+                (threshold, str(persona_id), str(subject_id)),
             ).fetchone()
-        return {
-            "total": int(row["total"] or 0) if row else 0,
-            "significant": int(row["significant"] or 0) if row else 0,
-        }
+            total = int(row["total"] or 0) if row else 0
+            significant_count = int(row["significant"] or 0) if row else 0
+            self._event_cache_counts[key] = (total, significant_count, threshold)
+            return {"total": total, "significant": significant_count}
 
     def delete_scope(self, persona_id: str, subject_id: str) -> None:
+        key = self._cache_key(persona_id, subject_id)
         with self._lock:
+            self._cache_drop(key)
             conn = self._connect()
             conn.execute(
                 "DELETE FROM emotion_v3_events WHERE persona_id=? AND subject_id=?",
@@ -377,7 +457,9 @@ class EmotionStore:
             conn.commit()
 
     def clear_events(self, persona_id: str, subject_id: str) -> None:
+        key = self._cache_key(persona_id, subject_id)
         with self._lock:
+            self._cache_drop(key)
             conn = self._connect()
             conn.execute(
                 "DELETE FROM emotion_v3_events WHERE persona_id=? AND subject_id=?",
@@ -386,7 +468,9 @@ class EmotionStore:
             conn.commit()
 
     def clear_simulation_events(self, persona_id: str, subject_id: str) -> int:
+        key = self._cache_key(persona_id, subject_id)
         with self._lock:
+            self._cache_drop(key)
             conn = self._connect()
             cur = conn.execute(
                 "DELETE FROM emotion_v3_events WHERE persona_id=? AND subject_id=? AND source_channel='ui_simulation'",
