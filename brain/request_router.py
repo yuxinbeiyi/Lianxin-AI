@@ -754,6 +754,19 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         capabilities.add("hardware")
         reasons.append("肩载设备或 ESP32-CAM 操作")
 
+    # 音乐/听歌请求：进入任务路由，确保 netease_music MCP 工具可被注入
+    if re.search(
+        r"(?:一起听歌|听歌|放歌|放首|放个|放一首|放音乐|播放音乐|播放|来一首|点播|听一首|"
+        r"点歌|切歌|网易云|歌单|歌词|下一首|上一首|音量|音乐|歌曲)",
+        text,
+        re.IGNORECASE,
+    ):
+        return RequestRoute(
+            RequestMode.TASK_DIRECT,
+            frozenset({"music"}),
+            "音乐播放/听歌请求",
+        )
+
     if capabilities:
         return RequestRoute(RequestMode.TASK_DIRECT, frozenset(capabilities), "；".join(reasons))
     if _SOCIAL_RE.fullmatch(text) or (len(text) <= 18 and not _looks_like_action(text)):

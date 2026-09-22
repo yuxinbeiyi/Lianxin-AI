@@ -300,21 +300,34 @@ def dedupe_tool_definitions(tools: List[dict]) -> List[dict]:
     return result
 
 
+# 音乐类 MCP 服务：用户说“听歌/音乐/网易云/切歌”等时注入，不要求点名服务名
+_MUSIC_SERVICES = {"netease_music"}
+_MUSIC_KEYWORDS = (
+    "听歌", "音乐", "网易云", "点歌", "切歌", "放歌", "放首", "放一首", "播放",
+    "来一首", "点播", "听一首", "暂停", "下一首", "上一首", "音量", "歌单", "歌词", "一起听",
+)
+
+
 def select_contextual_external_tools(definitions: List[dict], current_text: str,
                                      recent_context: str = "") -> List[dict]:
-    """只在当前请求点名服务，或明确承接上一轮服务建议时注入 MCP。"""
+    """只在当前请求点名服务、命中音乐关键词、或明确承接上一轮服务建议时注入 MCP。"""
     current = str(current_text or "").lower()
     recent = str(recent_context or "").lower()
     continuation = any(token in current for token in (
         "那就用", "就用你推荐的", "用它试试", "开始试试", "执行测试", "跑一下",
         "go ahead", "try it",
     ))
+    music_intent = any(kw in current for kw in _MUSIC_KEYWORDS)
     selected = []
     for item in definitions:
         name = item.get("function", {}).get("name", "").lower()
         parts = name.split("__", 2)
         service = parts[1] if len(parts) >= 3 and parts[0] == "mcp" else ""
-        if service and (service in current or (continuation and service in recent)):
+        if not service:
+            continue
+        if service in _MUSIC_SERVICES and music_intent:
+            selected.append(item)
+        elif service in current or (continuation and service in recent):
             selected.append(item)
     return selected
 

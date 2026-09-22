@@ -39,6 +39,7 @@ from gui.voice_stt_dialog import VoiceSTTDialog
 from brain.auto_task_scheduler import AutoTaskScheduler
 from brain.auto_task_manager import get_auto_task_manager
 from brain.auto_task_executor import execute_auto_task
+from brain.music_watcher import MusicWatcher
 from config import has_api_key
 from brain.decision import decide
 from workers.agent_worker      import AgentWorker
@@ -126,6 +127,7 @@ class MainWindow(QMainWindow):
     _video_tts_finished_signal = pyqtSignal()                  # TTS 分句结束
     _achievement_unlock_ready = pyqtSignal(list)               # 后台线程查到的待展示新成就
     _achievement_unlock_done = pyqtSignal()                    # 后台成就检查结束
+    _music_feedback_ready = pyqtSignal(str)                      # 后台听歌反馈 → UI
     def __init__(self, autostart_mode: bool = False):
         super().__init__()
         self._autostart_mode = autostart_mode
@@ -178,6 +180,15 @@ class MainWindow(QMainWindow):
 
         # ── 主动聊天调度器 ────────────────────────────────────
         self._proactive_scheduler = ProactiveChatScheduler()
+
+
+        # ── 后台听歌反馈监听（netease-music-mcp 状态） ─────────
+        self._listen_watcher = MusicWatcher(
+            on_feedback=self._music_feedback_ready.emit,
+            enabled_check=lambda: bool(getattr(self._proactive_scheduler, "desktop_enabled", True)),
+        )
+        self._music_feedback_ready.connect(self._on_music_feedback)
+        self._listen_watcher.start()
 
 
         # ── 自习室模块 ────────────────────────────────────────
@@ -3192,6 +3203,22 @@ class MainWindow(QMainWindow):
         """心跳自检静默完成（无需提醒或失败）。"""
 
 
+    def _on_music_feedback(self, text: str):
+        """后台听歌反馈：新歌开始几秒后根据歌词生成的莲心评论。"""
+        if not text:
+            return
+        try:
+            self._agent.get_history_manager().save_message(
+                self._agent._session_id, "assistant", f"[听歌] {text}"
+            )
+        except Exception:
+            pass
+        self._chat_widget.add_ai_message(text)
+        if self.isMinimized():
+            self.flash_taskbar(flash_count=0)
+        self._speak(text)
+
+
 
     def _is_shoulder_available(self) -> bool:
         """检查肩载设备（ESP32-CAM）是否在线（通过 socket 探测）。"""
@@ -3873,6 +3900,8 @@ class MainWindow(QMainWindow):
         self._achievement_unlock_poll.stop()
         self._accompany_stats.end_session()
         self._duty_scheduler.stop()
+        if getattr(self, '_listen_watcher', None) is not None:
+            self._listen_watcher.stop()
         self._alarm_timer.stop()
         if hasattr(self, '_auto_task_scheduler'):
             self._auto_task_scheduler.stop()

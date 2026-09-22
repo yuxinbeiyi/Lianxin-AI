@@ -1,0 +1,19 @@
+{
+  "name": "netease_music",
+  "displayName": "网易云音乐",
+  "description": "控制本机网易云音乐播放（neteasecli + mpv），支持搜索/播放/切歌/暂停、歌词上下文、本地 Web 播放器",
+  "version": "0.1.0",
+  "author": "luuu-h",
+  "icon": "🎵",
+  "agentType": "external",
+  "connection": {
+    "command": [
+      "node",
+      "{project_root}\\参考项目\\netease-music-mcp-main\\src\\server.js"
+    ],
+    "env": {}
+  },
+  "capabilities": {
+    "tools": "auto"
+  }
+}
