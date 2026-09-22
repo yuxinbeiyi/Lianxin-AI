@@ -146,4 +146,8 @@ def connect_database(
     conn._coordination_lock = get_database_lock(db_path)
     conn._coordination_held = False
     conn._coordination_timeout = lock_timeout
+    # PRAGMA setup must not enter the application write-lock protocol.
+    sqlite3.Connection.execute(
+        conn, f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}"
+    )
     return conn

@@ -12,6 +12,7 @@ class MCPManager:
 
     def __init__(self):
         self._initialized = False
+        self._scan_ready = None
 
     def initialize(self, mcp_dir: str = None):
         """启动时初始化：扫描并注册所有 MCP 服务（带超时保护）。"""
@@ -21,6 +22,7 @@ class MCPManager:
         from brain.mcp.mcp_registry import scan_mcp_services
 
         registered = []
+        self._scan_ready = threading.Event()
 
         def _do_scan():
             nonlocal registered
@@ -28,22 +30,14 @@ class MCPManager:
                 registered = scan_mcp_services(mcp_dir)
             except Exception as e:
                 print(f"[MCP] 初始化异常: {e}")
+            finally:
+                self._scan_ready.set()
 
         scan_thread = threading.Thread(target=_do_scan, daemon=True)
         scan_thread.start()
-        scan_thread.join(timeout=20)
-
-        if scan_thread.is_alive():
-            print("[MCP] 初始化超时（20秒），跳过 MCP 注册")
-            self._initialized = True
-            return
-
-        if registered:
-            print(
-                f"[MCP] 初始化完成，已注册 {len(registered)} 个服务: {registered}"
-            )
-        else:
-            print("[MCP] 初始化完成，未发现 MCP 服务（目录为空或不存在）")
+        # Discovery may touch many manifests. Do not hold up the Qt main
+        # thread; calls wait for readiness when they actually need MCP.
+        print("[MCP] 已在后台启动服务扫描，不阻塞主线程")
         self._initialized = True
 
     async def call(self, tool_name: str, arguments: dict) -> str:
@@ -52,6 +46,12 @@ class MCPManager:
         根据 tool_name 的 mcp__{service}__{tool} 前缀路由到对应 Agent。
         """
         from brain.mcp.mcp_registry import is_mcp_tool, get_mcp_agent
+
+        if self._scan_ready is not None and not self._scan_ready.is_set():
+            import asyncio
+            ready = await asyncio.to_thread(self._scan_ready.wait, 20)
+            if not ready:
+                return '{"status": "error", "message": "MCP 服务扫描超时"}'
 
         service = is_mcp_tool(tool_name)
         if not service:

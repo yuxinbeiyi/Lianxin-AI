@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -34,12 +35,24 @@ class ExternalMCPClient:
         self.env = env
         self._process: Optional[subprocess.Popen] = None
         self._request_id = 0
+        # A stdio MCP server has one stdout stream. Keep each write/read pair
+        # together so concurrent calls cannot consume one another's response.
+        self._io_lock = threading.RLock()
+        self._connect_lock = threading.Lock()
         self._connected = False
         self._tools: List[Dict] = []
         self.icon = "🔌"
         self.description = f"外部 MCP 服务: {service_name}"
 
     async def _connect(self) -> bool:
+        if self._connected:
+            return True
+        with self._connect_lock:
+            if self._connected:
+                return True
+            return await self._connect_locked()
+
+    async def _connect_locked(self) -> bool:
         """启动子进程并完成 MCP 初始化握手"""
         if self._connected:
             return True
@@ -84,6 +97,10 @@ class ExternalMCPClient:
         return False
 
     async def _request(self, method: str, params: dict) -> dict:
+        with self._io_lock:
+            return await self._request_locked(method, params)
+
+    async def _request_locked(self, method: str, params: dict) -> dict:
         self._request_id += 1
         payload = {
             "jsonrpc": "2.0",
@@ -99,7 +116,17 @@ class ExternalMCPClient:
             line = self._process.stdout.readline()
             if not line:
                 return {}
-            return json.loads(line).get("result", {})
+            response = json.loads(line)
+            if response.get("id") != self._request_id:
+                logger.error(
+                    "[MCP] RPC response id mismatch: method=%s expected=%s actual=%s",
+                    method, self._request_id, response.get("id"),
+                )
+                return {}
+            if "error" in response:
+                logger.error("[MCP] RPC returned error: %s", response["error"])
+                return {}
+            return response.get("result", {})
         except Exception as e:
             logger.error(f"[MCP] RPC 失败: {method} → {e}")
             return {}

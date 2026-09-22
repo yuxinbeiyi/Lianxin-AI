@@ -99,6 +99,7 @@ _TOOL_NAME_PATTERN = re.compile(
 
 
 CAPABILITY_DESCRIPTIONS = {
+    "self_knowledge": "查询莲心自身已登记的能力、配置和运行状态",
     "memory_read": "读取已确认的长期记忆或历史会话",
     "memory_write": "按用户明确要求写入或修改长期记忆",
     "contacts": "回顾近期与莲心互动过的联系人或查询 QQ 好友列表（仅主人可见）",
@@ -119,6 +120,7 @@ CAPABILITY_DESCRIPTIONS = {
     "bilibili": "搜索或管理 B 站内容",
     "time_capsule": "读取或写入时间胶囊日记",
     "embodied": "在莲心虚拟世界中导航、移动或查询贪吃蛇执行状态",
+    "hardware": "控制肩载设备、ESP32-CAM 及相关观测和云台能力",
 }
 
 _URL_RE = re.compile(r"https?://\S+", re.I)
@@ -757,10 +759,10 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
     # 音乐/听歌请求：进入任务路由，确保 netease_music MCP 工具可被注入
     if re.search(
         r"(?:一起听歌|听歌|放歌|放首|放个|放一首|放音乐|播放音乐|播放|来一首|点播|听一首|"
-        r"点歌|切歌|网易云|歌单|歌词|下一首|上一首|音量|音乐|歌曲)",
+        r"点歌|切歌|换歌|换一首|网易云|歌单|歌词|下一首|上一首|音量|音乐|歌曲)",
         text,
         re.IGNORECASE,
-    ):
+    ) and not re.search(r"(?:打开|启动|关闭|退出).{0,12}(?:应用|软件|程序)$", text):
         return RequestRoute(
             RequestMode.TASK_DIRECT,
             frozenset({"music"}),
@@ -804,7 +806,7 @@ def format_capability_result(capabilities: Iterable[str]) -> str:
         return "没有识别到可开放的能力。请改用自然语言回答，或用更准确的能力类别重试一次。"
     lines = ["已为当前任务开放以下能力："]
     for key in selected:
-        lines.append(f"- {key}：{CAPABILITY_DESCRIPTIONS[key]}")
+        lines.append(f"- {key}：{CAPABILITY_DESCRIPTIONS.get(key, key)}")
     lines.append("请立即使用已开放的真实工具继续任务，不要只描述调用计划。")
     return "\n".join(lines)
 

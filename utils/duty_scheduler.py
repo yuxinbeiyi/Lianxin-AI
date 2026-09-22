@@ -7,6 +7,7 @@ DutyScheduler：统一后台职责调度器
 
 import time
 import uuid
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1352,6 +1353,10 @@ class MemoryExtractionDuty(Duty):
         self._candidate: dict | None = None
         self._active_store = None
         self._active_session_id = 0
+        self._probe_thread: threading.Thread | None = None
+        self._probe_result: list[dict] | None = None
+        self._probe_error: Exception | None = None
+        self._probe_lock = threading.Lock()
 
     @staticmethod
     def _config() -> dict:
@@ -1403,11 +1408,31 @@ class MemoryExtractionDuty(Duty):
         if getattr(state.agent, "_use_local", False):
             self.status.detail_text = "本地模型模式下暂停自动提取"
             return False
-        try:
-            store = self._store(state)
-            candidates = store.list_pending_sessions(owner_only=True)
-        except Exception as exc:
-            self.status.detail_text = f"状态读取失败：{exc}"
+        # The Qt timer owns this method. SQLite probing belongs on a daemon
+        # thread so a locked database cannot freeze the application's UI.
+        with self._probe_lock:
+            probe = self._probe_thread
+            if probe is None:
+                self._probe_result = None
+                self._probe_error = None
+                db_path = state.history_manager.db_path
+                self._probe_thread = threading.Thread(
+                    target=self._probe_pending_sessions,
+                    args=(db_path,),
+                    name="memory-extraction-probe",
+                    daemon=True,
+                )
+                self._probe_thread.start()
+                self.status.detail_text = "正在后台检查待提取消息"
+                return False
+            if probe.is_alive():
+                self.status.detail_text = "正在后台检查待提取消息"
+                return False
+            candidates = self._probe_result or []
+            probe_error = self._probe_error
+            self._probe_thread = None
+        if probe_error:
+            self.status.detail_text = f"状态读取失败：{probe_error}"
             return False
 
         self.status.pending_count = sum(int(item.get("pending_count", 0)) for item in candidates)
@@ -1463,6 +1488,18 @@ class MemoryExtractionDuty(Duty):
         else:
             self.status.detail_text = waiting_reason or f"积压 {self.status.pending_count} 条，等待空闲"
         return False
+
+    def _probe_pending_sessions(self, db_path):
+        try:
+            from brain.memory_extraction_pipeline import MemoryExtractionStore
+            store = MemoryExtractionStore(db_path)
+            result = store.list_pending_sessions(owner_only=True)
+        except Exception as exc:
+            with self._probe_lock:
+                self._probe_error = exc
+            return
+        with self._probe_lock:
+            self._probe_result = result
 
     def manual_trigger(self, state: SchedulerState, **kwargs):
         kwargs.setdefault("trigger", "manual")

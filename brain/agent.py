@@ -2559,7 +2559,7 @@ class AgentCore:
                     flush=True,
                 )
                 return result
-            print("[上下文摘要] 模型未返回正文，启用确定性降级", flush=True)
+            print("[上下文摘要] 摘要模型返回空正文，启用确定性降级", flush=True)
             return None
         except Exception as exc:
             logger.warning("生成历史摘要失败，将使用确定性降级摘要: %s", exc)

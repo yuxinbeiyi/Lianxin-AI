@@ -122,8 +122,8 @@ class MusicWatcher:
             print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
             return
         text = self._generate_feedback(state)
-        self._last_feedback_at = time.time()
         if text:
+            self._last_feedback_at = time.time()
             self._reported.add(self._key_of(state))
             if len(self._reported) > 200:
                 self._reported.clear()
@@ -131,7 +131,8 @@ class MusicWatcher:
             if self._on_feedback:
                 self._on_feedback(text)
         else:
-            print("[MusicWatcher] 反馈为空，跳过")
+            logger.info("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
+            print("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
 
     def _generate_feedback(self, state: dict) -> Optional[str]:
         try:
@@ -180,9 +181,19 @@ class MusicWatcher:
             )
             raw = (response.choices[0].message.content or "").strip()
             if not raw or raw.upper() == "EMPTY":
-                return None
+                logger.info("[MusicWatcher] 模型返回 EMPTY，使用保底反馈")
+                return self._fallback_feedback(name, style, lyric_text)
             return raw
         except Exception as exc:
-            logger.warning("[MusicWatcher] 生成反馈失败: %s", exc)
-            print("[MusicWatcher] 生成反馈失败: " + str(exc))
+            logger.warning("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: %s", exc)
+            print("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: " + str(exc))
             return None
+
+    @staticmethod
+    def _fallback_feedback(name: str, style: str, lyric_text: str) -> str:
+        """为纯音乐或稀疏歌词保留一条简短的主动反馈。"""
+        if lyric_text and lyric_text not in {"纯音乐，请欣赏", "（暂无歌词）"}:
+            return f"《{name}》这段旋律挺有画面感，先安静听一会儿。"
+        if style:
+            return f"《{name}》的{style}很适合当下这段时间，先陪你听着。"
+        return f"《{name}》是纯音乐，旋律先替我们把气氛撑住了。"
