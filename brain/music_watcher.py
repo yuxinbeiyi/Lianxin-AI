@@ -81,7 +81,7 @@ class MusicWatcher:
         state = self._read_state()
         key = self._key_of(state)
         now = time.time()
-        if key:
+        if key and bool(state.get("active")):
             if key != self._last_key:
                 self._last_key = key
                 print("[MusicWatcher] 检测到新歌: " + str(state.get("name")) + " id=" + str(state.get("id")))
@@ -92,7 +92,7 @@ class MusicWatcher:
                 self._pending_key = None
                 if now - self._last_feedback_at >= self._min_interval:
                     self._fire(state)
-        else:
+        elif not key:
             self._last_key = None
             self._pending_key = None
 
@@ -102,7 +102,7 @@ class MusicWatcher:
         sid = state.get("id")
         if not sid:
             return None
-        return (str(sid),)
+        return (str(sid), bool(state.get("active")))
 
     def _read_state(self) -> Optional[dict]:
         try:
@@ -114,6 +114,13 @@ class MusicWatcher:
             return None
 
     def _fire(self, state: dict) -> None:
+        # 与主对话错峰：主对话请求进行中时延后反馈，避免抢占中转站单并发。
+        from brain.llm_gate import main_request_active
+        if main_request_active():
+            self._pending_key = self._key_of(state)
+            self._pending_since = time.time()
+            print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
+            return
         text = self._generate_feedback(state)
         self._last_feedback_at = time.time()
         if text:

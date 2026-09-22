@@ -80,6 +80,7 @@ class ProactiveChatScheduler:
     def _default_settings(self) -> dict:
         return {
             "desktop_enabled": False,
+            "music_feedback_enabled": True,
             "weights": list(_DEFAULT_WEIGHTS),           # 24 个整数 0~10
             "frequency": 3,                               # 1~15
             "min_interval_minutes": DEFAULT_MIN_INTERVAL_MINUTES,
@@ -167,6 +168,14 @@ class ProactiveChatScheduler:
     @desktop_enabled.setter
     def desktop_enabled(self, val: bool):
         self._settings["desktop_enabled"] = val
+
+    @property
+    def music_feedback_enabled(self) -> bool:
+        return self._settings.get("music_feedback_enabled", True)
+
+    @music_feedback_enabled.setter
+    def music_feedback_enabled(self, val: bool):
+        self._settings["music_feedback_enabled"] = val
 
     @property
     def weights(self) -> list[int]:

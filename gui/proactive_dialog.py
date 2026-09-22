@@ -292,6 +292,18 @@ class ProactiveDialog(QDialog):
         self._qq_cb.setFixedSize(20, 20)
         qq_row.addWidget(self._qq_cb)
         layout.addLayout(qq_row)
+        # 独立于主动聊天开关
+        music_row = QHBoxLayout()
+        music_lbl = QLabel("启用听歌反馈")
+        music_lbl.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+        music_lbl.setStyleSheet("color: #3A3A5C;")
+        music_lbl.setToolTip("开启后，播放歌曲时莲心会针对当前歌曲发表评论（不受桌面主动聊天开关影响）。")
+        music_row.addWidget(music_lbl)
+        music_row.addStretch()
+        self._music_feedback_cb = QCheckBox()
+        self._music_feedback_cb.setFixedSize(20, 20)
+        music_row.addWidget(self._music_feedback_cb)
+        layout.addLayout(music_row)
 
         behavior_group = QGroupBox("行为随机权重")
         behavior_group.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
@@ -1383,6 +1395,7 @@ class ProactiveDialog(QDialog):
 
     def _load_from_scheduler(self):
         self._enable_cb.setChecked(self._scheduler.desktop_enabled)
+        self._music_feedback_cb.setChecked(self._scheduler.music_feedback_enabled)
         self._qq_cb.setChecked(self._scheduler.qq_enabled)
         self._freq_slider.setValue(self._scheduler.frequency)
         self._interval_spin.setValue(self._scheduler.min_interval_minutes)
@@ -1456,6 +1469,7 @@ class ProactiveDialog(QDialog):
             QMessageBox.warning(self, "无法保存", "四类主动行为的权重不能同时为 0。")
             return
         self._scheduler.desktop_enabled = self._enable_cb.isChecked()
+        self._scheduler.music_feedback_enabled = self._music_feedback_cb.isChecked()
         self._scheduler.qq_enabled = self._qq_cb.isChecked()
         self._scheduler.frequency = self._freq_slider.value()
         self._scheduler.min_interval_minutes = self._interval_spin.value()

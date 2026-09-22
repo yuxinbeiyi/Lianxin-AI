@@ -4,6 +4,7 @@ AgentCore：莲心AI 的大脑（LiteLLM 统一网关 + Function Calling）
 """
 
 import json
+import functools
 import re
 import time
 import threading
@@ -322,6 +323,18 @@ def _update_prompt_usage_debug(input_tokens: int) -> None:
         pass
 
 
+def _track_main_request(method):
+    """在主对话请求生命周期内登记 LLM 门闩，供后台异步调用（如 MusicWatcher）错峰。"""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        from brain.llm_gate import mark_main_request_start, mark_main_request_end
+        mark_main_request_start()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            mark_main_request_end()
+    return wrapper
+
 class AgentCore:
     def __init__(self, session_id: int = None, user_desc: str = None,
                  disable_tools: bool = False, track_emotion: bool = True,
@@ -566,6 +579,7 @@ class AgentCore:
         print("[任务取消] 已记录未完成请求的取消边界", flush=True)
         return True
 
+    @_track_main_request
     def chat(self, user_message: str,
             on_tool_call=None, on_tool_result=None,
             on_round_start=None,
@@ -3568,6 +3582,9 @@ class AgentCore:
         _last_round_tool_sets: list[str] = []  # 最近N轮的工具名集合
         _force_text_response = False         # 下一轮强制 tool_choice="none"
         self._loop_tool_call_history: set = set()  # 本循环中所有 (工具名, 参数序列化) 的集合
+        # 每轮请求开始时重置跨请求残留的去重状态，避免误把新请求首轮工具调用判为重复
+        self._last_tool_call_key = None
+        self._last_tool_was_duplicate = False
         CONTENT_DROUGHT_MAX = 3              # 连续无文本N轮→熔断
         SAME_TOOL_STORM_MAX = 3              # 同工具连续N轮→强制干预
         NO_PROGRESS_MAX = 3                  # 工具名集合连续相同N轮→熔断

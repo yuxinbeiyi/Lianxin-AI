@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
         # ── 后台听歌反馈监听（netease-music-mcp 状态） ─────────
         self._listen_watcher = MusicWatcher(
             on_feedback=self._music_feedback_ready.emit,
-            enabled_check=lambda: bool(getattr(self._proactive_scheduler, "desktop_enabled", True)),
+            enabled_check=lambda: bool(getattr(self._proactive_scheduler, "music_feedback_enabled", True)),
         )
         self._music_feedback_ready.connect(self._on_music_feedback)
         self._listen_watcher.start()
