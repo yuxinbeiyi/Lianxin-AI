@@ -102,7 +102,7 @@ class MusicWatcher:
         sid = state.get("id")
         if not sid:
             return None
-        return (str(sid), str(state.get("startedAt") or ""))
+        return (str(sid),)
 
     def _read_state(self) -> Optional[dict]:
         try:
@@ -115,11 +115,11 @@ class MusicWatcher:
 
     def _fire(self, state: dict) -> None:
         text = self._generate_feedback(state)
-        self._reported.add(self._key_of(state))
-        if len(self._reported) > 200:
-            self._reported.clear()
         self._last_feedback_at = time.time()
         if text:
+            self._reported.add(self._key_of(state))
+            if len(self._reported) > 200:
+                self._reported.clear()
             print("[MusicWatcher] 听歌反馈: " + str(text))
             if self._on_feedback:
                 self._on_feedback(text)
