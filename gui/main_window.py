@@ -3863,6 +3863,38 @@ class MainWindow(QMainWindow):
 
     # ── 窗口关闭 ─────────────────────────────────────────────
 
+
+    def _stop_netease_mpv(self):
+        """退出时自动停止网易云后台 mpv 播放器并清理残留状态文件。
+
+        通过可执行路径（netease-music-mcp-main）或命令行特征（neteasecli-mpv
+        的 IPC 管道）精确匹配，避免误杀用户自己打开的其他 mpv 播放器。
+        """
+        try:
+            import subprocess
+            ps = (
+                "Get-CimInstance Win32_Process -Filter \"Name='mpv.exe' or Name='mpv.com'\" | "
+                "Where-Object { ($_.ExecutablePath -like '*netease-music-mcp-main*') "
+                "-or ($_.CommandLine -like '*neteasecli-mpv*') } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                timeout=10, capture_output=True,
+            )
+        except Exception as exc:
+            print(f"[退出] 停止网易云 mpv 失败: {exc}", flush=True)
+        # 清理 MusicWatcher 轮询的残留状态文件，避免重启后误判仍在播放
+        try:
+            state_file = (
+                Path(__file__).resolve().parent.parent
+                / "参考项目" / "netease-music-mcp-main" / ".listening-state.json"
+            )
+            if state_file.exists():
+                state_file.unlink()
+        except Exception as exc:
+            print(f"[退出] 清理网易云状态文件失败: {exc}", flush=True)
+
     def closeEvent(self, event):
         if (not self._force_quit and hasattr(self, "_window_experience")
                 and self._window_experience.should_close_to_tray()):
@@ -3914,6 +3946,7 @@ class MainWindow(QMainWindow):
             self._music_box_widget.shutdown()
         if getattr(self, '_music_space_window', None) is not None:
             self._music_space_window.shutdown()
+        self._stop_netease_mpv()
         
         # ── 停止待机模式相关线程（新版）──
         if hasattr(self, '_note_poll_timer') and self._note_poll_timer:
