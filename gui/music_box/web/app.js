@@ -158,6 +158,8 @@
         nowTitle: qs("#nowTitleB"),
         lyricInner: qs("#lyricBInner"),
         lyricPlaceholder: qs("#lyricPlaceholderB"),
+        lyricTrack: qs("#lyricTrack"),
+        lyricTrackDot: qs("#lyricTrackDot"),
         openWebBtn: qs("#openWebBtn"),
         killMpvBtn: qs("#killMpvBtn"),
         spaceToast: qs("#spaceToast")
@@ -230,13 +232,35 @@
   }
 
   /* ---------- 歌词瀑布：构建歌词行 / 纯音乐占位 ---------- */
-  var lyricWaterfall = { sig: "", active: -1, raf: 0, basePos: -1, baseAt: 0 };
+  var lyricWaterfall = { sig: "", active: -1, raf: 0, basePos: -1, baseAt: 0, scrollTarget: -1 };
+
+  // 纵深分层：距当前行越远，越暗/越小/越模糊（Apple Music 式 focus 效果）
+  var LW_DEPTH = [
+    { opacity: 1,   scale: 1,    blur: 0 },
+    { opacity: 0.6, scale: 0.96, blur: 0 },
+    { opacity: 0.4, scale: 0.92, blur: 0.8 },
+    { opacity: 0.25,scale: 0.90, blur: 1.5 }
+  ];
+
+  function applyLyricDepth(rows, active) {
+    var n = rows.length;
+    for (var i = 0; i < n; i++) {
+      var d = Math.abs(i - active);
+      if (d > 3) d = 3;
+      var cfg = LW_DEPTH[d];
+      var s = rows[i].style;
+      s.setProperty("--lw-opacity", cfg.opacity);
+      s.setProperty("--lw-scale", cfg.scale);
+      s.setProperty("--lw-blur", cfg.blur + "px");
+    }
+  }
 
   function renderLyricWaterfall() {
     if (MODE !== "full" || !refs.lyric) return;
     var lines = state.lyrics || [];
     var instrumental = !!state.instrumental || !lines.length;
     if (refs.lyricPlaceholder) refs.lyricPlaceholder.hidden = !instrumental;
+    if (refs.lyricTrack) refs.lyricTrack.hidden = instrumental;
     if (refs.lyricInner) {
       refs.lyricInner.hidden = instrumental;
       var sig = lines.map(function (l) { return l.time + ":" + l.text; }).join("|");
@@ -244,6 +268,7 @@
         lyricWaterfall.sig = sig;
         lyricWaterfall.active = -1;
         lyricWaterfall.basePos = -1;
+        lyricWaterfall.scrollTarget = -1;
         refs.lyricInner.innerHTML = "";
         lines.forEach(function (l) {
           var row = document.createElement("div");
@@ -251,6 +276,7 @@
           row.textContent = l.text;
           refs.lyricInner.appendChild(row);
         });
+        applyLyricDepth(refs.lyricInner.children, 0);
         if (refs.lyric) refs.lyric.scrollTop = 0;
       }
     }
@@ -260,6 +286,8 @@
     if (MODE !== "full" || !refs.lyric || lyricWaterfall.raf) return;
     function tick() {
       updateLyricHighlight();
+      easeLyricScroll();
+      updateLyricTrackDot();
       lyricWaterfall.raf = requestAnimationFrame(tick);
     }
     lyricWaterfall.raf = requestAnimationFrame(tick);
@@ -284,21 +312,46 @@
       if (lines[i].time <= pos) active = i;
       else break;
     }
-    if (active === lyricWaterfall.active) return;
     var rows = refs.lyricInner.children;
-    if (lyricWaterfall.active >= 0 && lyricWaterfall.active < rows.length) {
-      rows[lyricWaterfall.active].classList.remove("active");
-    }
-    lyricWaterfall.active = active;
-    if (active < rows.length) {
-      rows[active].classList.add("active");
-      var container = refs.lyric;
-      var target = rows[active].offsetTop - container.clientHeight / 2 + rows[active].clientHeight / 2;
-      target = Math.max(0, Math.min(target, container.scrollHeight - container.clientHeight));
-      if (Math.abs(container.scrollTop - target) > 4) {
-        container.scrollTo({ top: target, behavior: "smooth" });
+    if (active !== lyricWaterfall.active) {
+      if (lyricWaterfall.active >= 0 && lyricWaterfall.active < rows.length) {
+        rows[lyricWaterfall.active].classList.remove("active");
+      }
+      lyricWaterfall.active = active;
+      if (active < rows.length) rows[active].classList.add("active");
+      applyLyricDepth(rows, active);
+      if (active < rows.length) {
+        var container = refs.lyric;
+        var target = rows[active].offsetTop - container.clientHeight / 2 + rows[active].clientHeight / 2;
+        target = Math.max(0, Math.min(target, container.scrollHeight - container.clientHeight));
+        lyricWaterfall.scrollTarget = target;
       }
     }
+  }
+
+  /* 指数缓动滚动：每帧向目标逼近，替代 scrollTo smooth，切换更丝滑 */
+  function easeLyricScroll() {
+    if (MODE !== "full" || !refs.lyric || lyricWaterfall.scrollTarget < 0) return;
+    var container = refs.lyric;
+    var diff = lyricWaterfall.scrollTarget - container.scrollTop;
+    if (Math.abs(diff) < 0.5) {
+      container.scrollTop = lyricWaterfall.scrollTarget;
+      lyricWaterfall.scrollTarget = -1;
+      return;
+    }
+    container.scrollTop += diff * 0.16;
+  }
+
+  /* 左侧轨道光点跟随当前行 */
+  function updateLyricTrackDot() {
+    if (MODE !== "full" || !refs.lyricTrackDot || lyricWaterfall.active < 0) return;
+    var rows = refs.lyricInner.children;
+    var row = rows[lyricWaterfall.active];
+    if (!row) return;
+    var container = refs.lyric;
+    var y = row.offsetTop + row.offsetHeight / 2 - container.scrollTop;
+    y = Math.max(12, Math.min(y, container.clientHeight - 12));
+    refs.lyricTrackDot.style.top = y + "px";
   }
 
   /* ---------- 渲染：收藏状态 ---------- */
