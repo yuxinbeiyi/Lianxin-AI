@@ -80,14 +80,21 @@ class MusicWatcher:
     def _poll_once(self) -> None:
         state = self._read_state()
         key = self._key_of(state)
+        trigger = str(state.get("trigger") or "") if state else ""
         now = time.time()
         if key and bool(state.get("active")):
             if key != self._last_key:
                 self._last_key = key
                 print("[MusicWatcher] 检测到新歌: " + str(state.get("name")) + " id=" + str(state.get("id")))
-                if key not in self._reported and self._enabled_check():
-                    self._pending_key = key
-                    self._pending_since = now
+                if self._enabled_check():
+                    if trigger == "manual":
+                        # 用户手动切歌：立即反馈，绕过 5s 延迟、去重与最小间隔
+                        self._pending_key = None
+                        self._fire(state, force=True)
+                        return
+                    if key not in self._reported:
+                        self._pending_key = key
+                        self._pending_since = now
             if self._pending_key == key and now - self._pending_since >= self._feedback_delay:
                 self._pending_key = None
                 if now - self._last_feedback_at >= self._min_interval:
@@ -113,7 +120,7 @@ class MusicWatcher:
             logger.warning("[MusicWatcher] 读取状态失败: %s", exc)
             return None
 
-    def _fire(self, state: dict) -> None:
+    def _fire(self, state: dict, force: bool = False) -> None:
         # 与主对话错峰：主对话请求进行中时延后反馈，避免抢占中转站单并发。
         from brain.llm_gate import main_request_active
         if main_request_active():
@@ -122,6 +129,17 @@ class MusicWatcher:
             print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
             return
         text = self._generate_feedback(state)
+        if not text and force:
+            # 手动切歌保底：LLM 失败/EMPTY 也保证给一句反馈，避免"反馈为空，跳过"
+            name = state.get("name") or "未知歌曲"
+            style = state.get("style") or ""
+            first = state.get("firstLyrics") or []
+            lyric_text = (
+                " / ".join(str(x) for x in first[:4])
+                if isinstance(first, list)
+                else str(first or "（暂无歌词）")
+            )
+            text = self._fallback_feedback(name, style, lyric_text)
         if text:
             self._last_feedback_at = time.time()
             self._reported.add(self._key_of(state))
