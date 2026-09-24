@@ -72,6 +72,12 @@ class ExternalMCPClient:
                 encoding="utf-8",
                 bufsize=1,
             )
+            # 外部 MCP 服务（含其派生的分离进程如 mpv）随莲心退出被系统自动清理
+            try:
+                from utils.child_kill_job import assign_pid_to_kill_job
+                assign_pid_to_kill_job(self._process.pid)
+            except Exception:
+                pass
 
             init_result = await self._request("initialize", {
                 "protocolVersion": "2024-11-05",

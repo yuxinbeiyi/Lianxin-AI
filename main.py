@@ -491,6 +491,12 @@ def main():
                         _funasr_process.kill()
             app.aboutToQuit.connect(_stop_funasr_service)
 
+    # ── 网易云 mpv 退出兜底：正常退出时无论走 closeEvent / aboutToQuit /
+    # atexit 都停掉 mpv；被强杀时由 utils.child_kill_job 的 Job Object 兜底 ──
+    from utils.net_ease_cleanup import stop_netease_mpv
+    app.aboutToQuit.connect(stop_netease_mpv)
+    atexit.register(stop_netease_mpv)
+
 
     # ── QQ 桥接（由 MainWindow 管理，详见 main_window.py）─────
 

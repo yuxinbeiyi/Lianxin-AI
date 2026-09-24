@@ -49,7 +49,7 @@ from workers.standby_worker    import StandbyWorker   # 不再需要 contains_en
 from brain.voice_duplex        import VoiceDuplexManager
 from utils.accompany_stats  import AccompanyStats
 import json
-from gui.music_box.bridge import MusicBoxBridge
+from gui.music_box.net_ease_bridge import NetEaseMusicBridge
 from gui.music_box.music_box_widget import MusicBoxWidget
 from gui.music_box.music_space_window import MusicSpaceWindow
 
@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
             flash_taskbar_func=self.flash_taskbar,
             qq_bridge_func=lambda: self._bridge_controller.qq_bridge,
             dialog_func=lambda: self._proactive_dialog,
-            next_track_func=self._next_track,
+            next_track_func=lambda: getattr(self, "_music_box_bridge", None) and self._music_box_bridge.next(),
         )
         import brain.tools as brain_tools
         brain_tools.set_music_control_callback(self._handle_music_control)
@@ -562,32 +562,38 @@ class MainWindow(QMainWindow):
             return "未知查询。"
 
     def _handle_music_control(self, action: str) -> str:
+        bridge = getattr(self, "_music_box_bridge", None)
+        if bridge is None:
+            return "音乐播放器未就绪。"
         if action == "play":
-            self._on_music_play_pause()
+            bridge.play()
             return "已开始播放音乐。"
         elif action == "pause":
-            self._on_music_play_pause()
+            bridge.pause()
             return "已暂停音乐。"
         elif action == "next":
-            self._next_track()
+            bridge.next()
             return "已切换到下一首。"
         elif action == "prev":
-            self._prev_track()
+            bridge.previous()
             return "已切换到上一首。"
         elif action == "loop":
-            self._on_loop_mode_clicked()
-            return "已切换循环模式。"
+            bridge.setPlayMode("shuffle")
+            return "已切换播放模式。"
         elif action == "volume_up":
-            new_val = min(1.0, self._global_settings.music_volume + 0.1)
-            self._set_music_volume(new_val)
+            cur = float(getattr(self._global_settings, "music_volume", 0.5))
+            new_val = min(1.0, cur + 0.1)
+            self._global_settings.music_volume = new_val
+            bridge.setVolume(new_val)
             return f"音量增加到 {int(round(new_val * 100))}%"
         elif action == "volume_down":
-            new_val = max(0.0, self._global_settings.music_volume - 0.1)
-            self._set_music_volume(new_val)
+            cur = float(getattr(self._global_settings, "music_volume", 0.5))
+            new_val = max(0.0, cur - 0.1)
+            self._global_settings.music_volume = new_val
+            bridge.setVolume(new_val)
             return f"音量减小到 {int(round(new_val * 100))}%"
         else:
             return "不支持的操作。"
-
     def flash_taskbar(self, flash_count=3):
         """让任务栏图标闪烁（仅 Windows）"""
         if not sys.platform.startswith('win'):
@@ -1092,36 +1098,25 @@ class MainWindow(QMainWindow):
 
 
         # 音乐盒（Mode A 嵌入式 Web 播放器 + Mode B 沉浸式音乐空间）
-        self._music_box_bridge = MusicBoxBridge(
-            self._music_box_state, self,
+        # NetEase bridge: control 8765 player directly, no LLM roundtrip
+        self._music_box_bridge = NetEaseMusicBridge(
+            parent=self,
             space_settings_provider=self._music_space_settings,
             space_settings_saver=self._save_music_space_settings,
         )
-        self._music_box_bridge.import_music_requested.connect(self._import_music_files)
-        self._music_box_bridge.quarantine_requested.connect(self._manage_music_quarantine)
+        self._music_box_bridge.state_changed.connect(self._on_netease_state_changed)
         self._music_box_widget = MusicBoxWidget(self._music_box_bridge, self)
         self._char_widget.install_music_box_view(self._music_box_widget)
         self._music_space_window = None   # Mode B 懒加载
 
         _mb = self._music_box_bridge
-        _mb.toggle_play_requested.connect(self._on_music_play_pause)
-        _mb.play_requested.connect(self._resume_music)
-        _mb.pause_requested.connect(self._pause_music)
-        _mb.next_requested.connect(self._next_track)
-        _mb.previous_requested.connect(self._prev_track)
-        _mb.seek_requested.connect(self._seek_to_seconds)
-        _mb.volume_requested.connect(self._set_music_volume)
-        _mb.play_mode_requested.connect(self._set_loop_mode)
-        _mb.track_requested.connect(self._switch_to_track)
         _mb.open_space_requested.connect(self._open_music_space)
         _mb.close_space_requested.connect(self._close_music_space)
         _mb.minimize_space_requested.connect(self._minimize_music_space)
         _mb.maximize_space_requested.connect(self._toggle_max_music_space)
-        _mb.toggle_favorite_requested.connect(self._toggle_favorite)
 
-        # 初始化音量与状态推送
+        # init volume clamp (actual volume is managed by 8765)
         self._global_settings.music_volume = max(0.0, min(1.0, float(self._global_settings.music_volume)))
-        self._push_music_state()
         
     def _open_note_dialog(self):
         play_sound("MemoBook.mp3")
@@ -3865,35 +3860,12 @@ class MainWindow(QMainWindow):
 
 
     def _stop_netease_mpv(self):
-        """退出时自动停止网易云后台 mpv 播放器并清理残留状态文件。
-
-        通过可执行路径（netease-music-mcp-main）或命令行特征（neteasecli-mpv
-        的 IPC 管道）精确匹配，避免误杀用户自己打开的其他 mpv 播放器。
-        """
+        """退出时自动停止网易云后台 mpv 播放器并清理残留状态文件。"""
         try:
-            import subprocess
-            ps = (
-                "Get-CimInstance Win32_Process -Filter \"Name='mpv.exe' or Name='mpv.com'\" | "
-                "Where-Object { ($_.ExecutablePath -like '*netease-music-mcp-main*') "
-                "-or ($_.CommandLine -like '*neteasecli-mpv*') } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                timeout=10, capture_output=True,
-            )
+            from utils.net_ease_cleanup import stop_netease_mpv as _cleanup_netease_mpv
+            _cleanup_netease_mpv()
         except Exception as exc:
             print(f"[退出] 停止网易云 mpv 失败: {exc}", flush=True)
-        # 清理 MusicWatcher 轮询的残留状态文件，避免重启后误判仍在播放
-        try:
-            state_file = (
-                Path(__file__).resolve().parent.parent
-                / "参考项目" / "netease-music-mcp-main" / ".listening-state.json"
-            )
-            if state_file.exists():
-                state_file.unlink()
-        except Exception as exc:
-            print(f"[退出] 清理网易云状态文件失败: {exc}", flush=True)
 
     def closeEvent(self, event):
         if (not self._force_quit and hasattr(self, "_window_experience")
@@ -5073,7 +5045,7 @@ class MainWindow(QMainWindow):
         settings.setValue("space_wallpaper_fit",
                           "contain" if str(fit) == "contain" else "cover")
         settings.sync()
-        self._push_music_state()
+        self._refresh_netease_state()
         return self._music_space_settings()
 
     def _load_favorite_stems(self):
@@ -5130,6 +5102,35 @@ class MainWindow(QMainWindow):
                 space.push_state(payload)
             except Exception as exc:
                 print(f"[音乐盒] Mode B 推送失败: {exc}")
+
+    def _on_netease_state_changed(self, payload: str):
+        """NetEase bridge state update -> forward to Mode A / Mode B frontends."""
+        if not payload:
+            return
+        widget = getattr(self, "_music_box_widget", None)
+        if widget is not None:
+            try:
+                widget.push_state(payload)
+            except Exception as exc:
+                print(f"[musicbox] Mode A push failed: {exc}")
+        space = getattr(self, "_music_space_window", None)
+        if space is not None:
+            try:
+                space.push_state(payload)
+            except Exception as exc:
+                print(f"[musicbox] Mode B push failed: {exc}")
+
+    def _refresh_netease_state(self):
+        """Force a fresh NetEase state round-trip and push to frontends."""
+        try:
+            bridge = getattr(self, "_music_box_bridge", None)
+            if bridge is None:
+                return
+            payload = bridge.getState()
+            if payload:
+                self._on_netease_state_changed(payload)
+        except Exception as exc:
+            print(f"[musicbox] NetEase state refresh failed: {exc}")
 
     def _push_music_position(self):
         """轻量级推送：仅推送播放位置，不序列化播放列表/壁纸/设置等重数据"""
@@ -5188,7 +5189,7 @@ class MainWindow(QMainWindow):
         # （QWebEngineView 为原生子窗口，不隐藏会射穿到最上层）
         if getattr(self, "_music_box_widget", None) is not None:
             self._music_box_widget.hide()
-        self._push_music_state()
+        self._refresh_netease_state()
 
     def _close_music_space(self):
         """关闭沉浸式音乐空间（Mode B）"""

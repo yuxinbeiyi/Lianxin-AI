@@ -128,9 +128,9 @@
     <div class="playlist-col glass">
       <div class="tabs">
         <button class="tab active" data-tab="all" id="tabAll">全部歌曲</button>
-        <button class="tab" data-tab="fav" id="tabFav"><span class="tab-heart">♥</span> 收藏歌单</button>
-        <button class="tab import-music" id="importMusicBtn" title="导入音乐">＋ 导入音乐</button>
-        <button class="tab quarantine-music" id="quarantineMusicBtn" title="异常音乐">异常音乐</button>
+        <button class="tab" data-tab="fav" id="tabFav" style="display:none"><span class="tab-heart">♥</span> 收藏歌单</button>
+        <button class="tab import-music" id="importMusicBtn" style="display:none" title="导入音乐">＋ 导入音乐</button>
+        <button class="tab quarantine-music" id="quarantineMusicBtn" style="display:none" title="异常音乐">异常音乐</button>
       </div>
       <div class="playlist" id="listB"></div>
       <div class="list-empty" id="listEmptyB" hidden>暂无歌曲</div>
@@ -161,7 +161,7 @@
         <div class="vol-wide">
           <button class="vol-btn" id="volBtnB" title="音量"></button>
           <input type="range" id="volSliderB" min="0" max="100" value="50" step="1">
-          <button class="ctl fav-ctl" id="favBottomBtn" title="收藏 / 取消收藏">
+          <button class="ctl fav-ctl" id="favBottomBtn" style="display:none" title="收藏 / 取消收藏">
             <span class="heart small" id="heartBottom">♥</span>
           </button>
         </div>
