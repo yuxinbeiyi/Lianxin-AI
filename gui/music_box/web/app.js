@@ -50,6 +50,10 @@
     loop_mode: "list",
     volume: 0.5,
     wallpaper: "",
+    coverUrl: "",
+    lyrics: [],
+    style: "",
+    instrumental: false,
     has_playlist: false,
     favorite: false,
     space_background: "",
@@ -61,6 +65,9 @@
   var currentTab = "all";
   var lastSpaceBg = "";
   var spaceDirty = false; // 壁纸预览中标记，防止播放进度推送覆盖预览
+  var killArmed = false;      // 停止 mpv 按钮二次确认状态
+  var killArmedTimer = null;
+  var COVER_FALLBACK = "linear-gradient(135deg,#2a3a52 0%,#16202e 55%,#0f1622 100%)";
 
   /* ---------- 元素引用 ---------- */
   function collectRefs() {
@@ -70,6 +77,7 @@
         turntable: qs("#turntableA"),
         tonearm: qs("#tonearmA"),
         vinyl: qs("#vinylA"),
+        vinylCover: qs("#vinylCoverA"),
         eq: qs("#eqA"),
         songInfo: qs("#songInfoA"),
         title: qs("#titleA"),
@@ -147,7 +155,12 @@
         winMaxBtn: qs("#winMaxBtn"),
         winCloseBtn: qs("#winCloseBtn"),
         nowThumb: qs("#nowThumb"),
-        nowTitle: qs("#nowTitleB")
+        nowTitle: qs("#nowTitleB"),
+        lyricInner: qs("#lyricBInner"),
+        lyricPlaceholder: qs("#lyricPlaceholderB"),
+        openWebBtn: qs("#openWebBtn"),
+        killMpvBtn: qs("#killMpvBtn"),
+        spaceToast: qs("#spaceToast")
       };
     }
   }
@@ -213,8 +226,78 @@
       var album = state.album || "";
       refs.album.textContent = album ? ("专辑 · " + album) : "专辑 · 未知";
     }
-    if (refs.lyric) {
-      // 预留：一句歌词氛围（后续可接入歌词数据）
+    renderLyricWaterfall();
+  }
+
+  /* ---------- 歌词瀑布：构建歌词行 / 纯音乐占位 ---------- */
+  var lyricWaterfall = { sig: "", active: -1, raf: 0, basePos: -1, baseAt: 0 };
+
+  function renderLyricWaterfall() {
+    if (MODE !== "full" || !refs.lyric) return;
+    var lines = state.lyrics || [];
+    var instrumental = !!state.instrumental || !lines.length;
+    if (refs.lyricPlaceholder) refs.lyricPlaceholder.hidden = !instrumental;
+    if (refs.lyricInner) {
+      refs.lyricInner.hidden = instrumental;
+      var sig = lines.map(function (l) { return l.time + ":" + l.text; }).join("|");
+      if (sig !== lyricWaterfall.sig) {
+        lyricWaterfall.sig = sig;
+        lyricWaterfall.active = -1;
+        lyricWaterfall.basePos = -1;
+        refs.lyricInner.innerHTML = "";
+        lines.forEach(function (l) {
+          var row = document.createElement("div");
+          row.className = "lyric-row";
+          row.textContent = l.text;
+          refs.lyricInner.appendChild(row);
+        });
+        if (refs.lyric) refs.lyric.scrollTop = 0;
+      }
+    }
+  }
+
+  function startLyricWaterfall() {
+    if (MODE !== "full" || !refs.lyric || lyricWaterfall.raf) return;
+    function tick() {
+      updateLyricHighlight();
+      lyricWaterfall.raf = requestAnimationFrame(tick);
+    }
+    lyricWaterfall.raf = requestAnimationFrame(tick);
+  }
+
+  function updateLyricHighlight() {
+    if (MODE !== "full" || !refs.lyricInner || refs.lyricInner.hidden) return;
+    var lines = state.lyrics || [];
+    if (!lines.length) return;
+    var base = Number(state.position || 0);
+    if (base !== lyricWaterfall.basePos) {
+      lyricWaterfall.basePos = base;
+      lyricWaterfall.baseAt = Date.now();
+    }
+    var pos = base;
+    if (state.playing && lyricWaterfall.baseAt) {
+      var dt = (Date.now() - lyricWaterfall.baseAt) / 1000;
+      if (dt > 0 && dt < 10) pos = Math.min(Number(state.duration || 0), base + dt);
+    }
+    var active = 0;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].time <= pos) active = i;
+      else break;
+    }
+    if (active === lyricWaterfall.active) return;
+    var rows = refs.lyricInner.children;
+    if (lyricWaterfall.active >= 0 && lyricWaterfall.active < rows.length) {
+      rows[lyricWaterfall.active].classList.remove("active");
+    }
+    lyricWaterfall.active = active;
+    if (active < rows.length) {
+      rows[active].classList.add("active");
+      var container = refs.lyric;
+      var target = rows[active].offsetTop - container.clientHeight / 2 + rows[active].clientHeight / 2;
+      target = Math.max(0, Math.min(target, container.scrollHeight - container.clientHeight));
+      if (Math.abs(container.scrollTop - target) > 4) {
+        container.scrollTo({ top: target, behavior: "smooth" });
+      }
     }
   }
 
@@ -519,6 +602,34 @@
     if (refs.nowTitle) refs.nowTitle.textContent = title;
   }
 
+  /* ---------- 渲染：封面（真实网易云封面，与壁纸解耦） ---------- */
+  function renderCover() {
+    var url = state.coverUrl || "";
+    var value = url ? "url(\"" + url + "\")" : COVER_FALLBACK;
+    document.documentElement.style.setProperty("--cover-url", value);
+    if (refs.vinylCover) refs.vinylCover.classList.toggle("has-cover", !!url);
+  }
+
+  /* ---------- 轻提示（toast） ---------- */
+  function showToast(text) {
+    if (!refs.spaceToast) return;
+    refs.spaceToast.textContent = text;
+    refs.spaceToast.classList.add("show");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(function () {
+      refs.spaceToast.classList.remove("show");
+    }, 2200);
+  }
+
+  function resetKillBtn() {
+    killArmed = false;
+    if (killArmedTimer) { clearTimeout(killArmedTimer); killArmedTimer = null; }
+    if (refs.killMpvBtn) {
+      refs.killMpvBtn.classList.remove("armed");
+      refs.killMpvBtn.title = "停止后台播放器 (mpv)";
+    }
+  }
+
   /* ---------- 渲染：状态提示 ---------- */
   function renderError() {
     if (state.error && refs.statusLine) {
@@ -553,6 +664,10 @@
     if ("album" in next && next.album !== state.album) d |= D_SONG;
     if ("current_index" in next && next.current_index !== state.current_index) d |= D_SONG;
     if ("volume" in next && next.volume !== state.volume) d |= D_VOLUME;
+    if ("coverUrl" in next && next.coverUrl !== state.coverUrl) d |= D_SONG;
+    if ("lyrics" in next && next.lyrics !== state.lyrics) d |= D_SONG;
+    if ("style" in next && next.style !== state.style) d |= D_SONG;
+    if ("instrumental" in next && next.instrumental !== state.instrumental) d |= D_SONG;
     if ("loop_mode" in next && next.loop_mode !== state.loop_mode) d |= D_MODE;
     if ("favorite" in next && next.favorite !== state.favorite) d |= D_FAVORITE;
     if ("playlist" in next && next.playlist !== state.playlist) d |= D_PLAYLIST;
@@ -570,6 +685,7 @@
     if (dirty & D_PROGRESS)  renderProgress();
     if (dirty & D_VOLUME)    renderVolume();
     if (dirty & D_SONG)      renderSongInfo();
+    if (dirty & D_SONG)      renderCover();
     if (dirty & D_TURNTABLE) renderTurntable();
     if (dirty & D_MODE)      renderModeButton(refs.modeBtn);
     if (dirty & D_FAVORITE)  renderFavorite();
@@ -658,6 +774,30 @@
       refs.expandBtn.addEventListener("click", function (e) {
         e.stopPropagation();
         if (bridge) bridge.openMusicSpace();
+      });
+    }
+    if (refs.openWebBtn) {
+      refs.openWebBtn.addEventListener("click", function () {
+        if (bridge && bridge.openWebPlayer) {
+          bridge.openWebPlayer();
+          showToast("已打开 Web 网易云播放器");
+        }
+      });
+    }
+    if (refs.killMpvBtn) {
+      refs.killMpvBtn.addEventListener("click", function () {
+        if (!bridge || !bridge.killMpv) return;
+        if (killArmed) {
+          resetKillBtn();
+          bridge.killMpv();
+          showToast("已停止后台播放器");
+        } else {
+          killArmed = true;
+          refs.killMpvBtn.classList.add("armed");
+          refs.killMpvBtn.title = "再次点击确认停止播放";
+          clearTimeout(killArmedTimer);
+          killArmedTimer = setTimeout(resetKillBtn, 3000);
+        }
       });
     }
     if (refs.back) {
@@ -905,6 +1045,7 @@
     bindEvents();
     render();
     startEqAnim();
+    startLyricWaterfall();
   }
 
   function connect() {

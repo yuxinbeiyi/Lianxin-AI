@@ -22,6 +22,7 @@
         </div>
         <div class="vinyl" id="vinylA">
           <div class="vinyl-sheen"></div>
+          <div class="vinyl-cover" id="vinylCoverA"></div>
           <div class="vinyl-label" id="labelA">
             <span class="label-hub"></span>
           </div>
@@ -97,11 +98,16 @@
   <div class="space-main">
     <!-- 左：当前歌曲信息 -->
     <div class="info-col glass">
-      <div class="now-playing">NOW PLAYING</div>
-      <div class="song-title big" id="titleB"></div>
-      <div class="song-sub big" id="subB"></div>
-      <div class="song-meta" id="albumB"></div>
-      <div class="song-lyric" id="lyricB">在某个温柔的夜晚，听见一首旧歌。</div>
+      <div class="info-head">
+        <div class="now-playing">NOW PLAYING</div>
+        <div class="song-title big" id="titleB"></div>
+        <div class="song-sub big" id="subB"></div>
+        <div class="song-meta" id="albumB"></div>
+      </div>
+      <div class="lyric-waterfall" id="lyricB">
+        <div class="lyric-waterfall-inner" id="lyricBInner"></div>
+        <div class="lyric-placeholder" id="lyricPlaceholderB">纯音乐无声，莲心将与你一起聆听</div>
+      </div>
     </div>
 
     <!-- 中：黑胶播放器 -->
@@ -137,6 +143,9 @@
     </div>
   </div>
 
+  <!-- 轻提示（toast） -->
+  <div class="space-toast" id="spaceToast"></div>
+
   <footer class="space-bottom">
     <div class="progress-row wide">
       <span class="time" id="curTimeB">00:00</span>
@@ -166,6 +175,15 @@
           </button>
         </div>
       </div>
+    </div>
+    <!-- 底部工具栏：打开 Web 播放器 / 停止后台 mpv（设置齿轮左侧） -->
+    <div class="space-corner-tools" id="spaceSideTools">
+      <button class="side-tool" id="openWebBtn" title="打开 Web 网易云播放器">
+        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm7.9 9h-3.4a15.7 15.7 0 0 0-.9-4.5A8 8 0 0 1 19.9 11zM12 4c.8 1.1 1.9 2.8 2.3 5H9.7C10.1 6.8 11.2 5.1 12 4zM4 12c0-.7.1-1.3.3-2h3.3c-.1 1.3-.1 2.7 0 4H4.3A8.6 8.6 0 0 1 4 12zm2.1 5h2.6c.4 1.7 1 3 1.6 4-1.7-.5-3.1-1.4-4.2-4zM7.6 9H4.3c.7-1.9 1.8-3.5 3.3-4.5a8 8 0 0 0 0 4.5zM12 20c-.8-1.1-1.9-2.8-2.3-5h4.6c-.4 2.2-1.5 3.9-2.3 5zm2.7-1.5c.6-1 1.2-2.3 1.6-4h2.6a8.6 8.6 0 0 1-4.2 4zm1.7-7c.1-1.3.1-2.7 0-4h3.3c.2.7.3 1.3.3 2s-.1 1.3-.3 2h-3.3z"/></svg>
+      </button>
+      <button class="side-tool danger" id="killMpvBtn" title="停止后台播放器 (mpv)">
+        <svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.8 2.9a8 8 0 1 1-11.6 0l1.4 1.4a6 6 0 1 0 8.8 0l1.4-1.4z"/></svg>
+      </button>
     </div>
     <button class="space-settings-gear" id="settingsBtn" title="音乐空间设置">
       <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>

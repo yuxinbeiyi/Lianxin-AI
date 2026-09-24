@@ -53,6 +53,8 @@ class NetEaseMusicBridge(QObject):
         self._poll_inflight = False
         self._last_cover_url = None
         self._last_cover_local = ""
+        self._last_lyrics = []
+        self._last_lyrics_sig = ""
         try:
             _COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -61,6 +63,12 @@ class NetEaseMusicBridge(QObject):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_once)
         self._poll_timer.start(max(500, int(poll_interval_ms)))
+
+        # 封面缓存定时清理：每小时一轮 + 启动时一次（封面可随时重新下载）
+        self._cleanup_timer = QTimer(self)
+        self._cleanup_timer.timeout.connect(self._cleanup_cover_cache)
+        self._cleanup_timer.start(60 * 60 * 1000)
+        self._cleanup_cover_cache()
 
     # ---------- HTTP ----------
     def _headers(self):
@@ -187,6 +195,54 @@ class NetEaseMusicBridge(QObject):
     def maximizeMusicSpace(self):
         self.maximize_space_requested.emit()
 
+    # ---------- 音乐空间左侧工具栏 ----------
+    @pyqtSlot()
+    def openWebPlayer(self):
+        """在默认浏览器打开 Web 网易云播放器（8765）"""
+        try:
+            from PyQt5.QtCore import QUrl
+            from PyQt5.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl("http://127.0.0.1:8765/"))
+        except Exception as exc:
+            print(f"[网易云] 打开 Web 播放器失败: {exc}", flush=True)
+
+    @pyqtSlot()
+    def killMpv(self):
+        """杀掉后台 mpv 播放器，并立即向前端推送停止态（不必等轮询）"""
+        try:
+            from utils.net_ease_cleanup import stop_netease_mpv
+            stop_netease_mpv()
+        except Exception as exc:
+            print(f"[网易云] 停止 mpv 失败: {exc}", flush=True)
+        try:
+            last = self._last_state or {}
+            try:
+                volume = max(0.0, min(1.0, float(last.get("volume") or 0.6)))
+            except (TypeError, ValueError):
+                volume = 0.6
+            stopped = {
+                "playing": False,
+                "current_index": -1,
+                "title": "",
+                "artist": "",
+                "album": "",
+                "duration": 0,
+                "position": 0,
+                "playlist": [],
+                "loop_mode": "list",
+                "volume": volume,
+                "has_playlist": False,
+                "error": "",
+                "favorite": False,
+                "coverUrl": "",
+                "space_background": "",
+                "wallpaper": "",
+                "space_settings": self._space_settings_payload(),
+            }
+            self.state_changed.emit(json.dumps(stopped, ensure_ascii=False))
+        except Exception as exc:
+            print(f"[网易云] 推送停止态失败: {exc}", flush=True)
+
     # ---------- 封面下载缓存到本地（绕开 LocalContentCanAccessRemoteUrls=False） ----------
     def _local_cover_url(self, remote_url):
         if not remote_url:
@@ -211,6 +267,35 @@ class NetEaseMusicBridge(QObject):
             pass
         return ""
 
+    # ---------- 封面缓存定时清理 ----------
+    def _cleanup_cover_cache(self):
+        """删除 mtime 超 7 天或超过 100 张的封面缓存（封面可随时重新下载）。"""
+        try:
+            if not _COVER_CACHE_DIR.exists():
+                return
+            entries = []
+            for child in _COVER_CACHE_DIR.iterdir():
+                try:
+                    if child.is_file():
+                        entries.append((child.stat().st_mtime, child))
+                except Exception:
+                    continue
+            if not entries:
+                return
+            entries.sort(key=lambda e: e[0], reverse=True)  # 最新在前
+            now = time.time()
+            keep = []
+            for mtime, child in entries:
+                if mtime < now - 7 * 86400 or len(keep) >= 100:
+                    try:
+                        child.unlink()
+                    except Exception:
+                        pass
+                else:
+                    keep.append(child)
+        except Exception as exc:
+            print(f"[网易云] 封面缓存清理失败: {exc}", flush=True)
+
     # ---------- 状态收集与轮询 ----------
     def collect_state(self) -> dict:
         """从 8765 拉取状态并映射成前端 state"""
@@ -221,6 +306,31 @@ class NetEaseMusicBridge(QObject):
             status_data, queue_data = {}, {}
         st = status_data.get("status") or {}
         playback = status_data.get("playback") or {}
+        listening = status_data.get("listening") or {}
+        # 从 /api/status 的 listening 透传歌词/曲风/纯音乐标记（8765 与桥接共用同一数据源）
+        lyrics_raw = listening.get("lyrics") if isinstance(listening, dict) else None
+        lyrics = []
+        if isinstance(lyrics_raw, list):
+            for ln in lyrics_raw:
+                if not isinstance(ln, dict):
+                    continue
+                txt = str(ln.get("text") or "").strip()
+                if not txt:
+                    continue
+                try:
+                    t_sec = float(ln.get("time"))
+                except (TypeError, ValueError):
+                    t_sec = 0.0
+                lyrics.append({"time": t_sec, "text": txt})
+            lyrics.sort(key=lambda x: x["time"])
+        sig = "|".join("{:.2f}:{}".format(x["time"], x["text"]) for x in lyrics)
+        if sig != self._last_lyrics_sig:
+            self._last_lyrics = lyrics
+            self._last_lyrics_sig = sig
+        style = str(listening.get("style") or "") if isinstance(listening, dict) else ""
+        placeholder_set = {"纯音乐，请欣赏", "暂无歌词", "纯音乐", "（暂无歌词）"}
+        has_lyric = any(x["text"] not in placeholder_set for x in self._last_lyrics)
+        instrumental = not has_lyric
         q = queue_data.get("queue") if isinstance(queue_data.get("queue"), list) else []
         index = int(queue_data.get("index", -1) or -1)
         mode = str(queue_data.get("mode", "sequence"))
@@ -264,6 +374,9 @@ class NetEaseMusicBridge(QObject):
             "error": "",
             "favorite": False,
             "coverUrl": self._local_cover_url(playback.get("coverUrl") or ""),
+            "lyrics": self._last_lyrics,
+            "style": style,
+            "instrumental": instrumental,
             "space_background": "",
             "wallpaper": "",
             "space_settings": self._space_settings_payload(),
@@ -356,5 +469,6 @@ class NetEaseMusicBridge(QObject):
     def shutdown(self):
         try:
             self._poll_timer.stop()
+            self._cleanup_timer.stop()
         except Exception:
             pass

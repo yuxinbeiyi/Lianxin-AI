@@ -2,8 +2,9 @@
 """MusicWatcher：监听本机网易云播放状态（.listening-state.json）。
 
 用户通过 netease-music-mcp 的 Web 播放器/点歌播放音乐后，该服务在后台轮询
-状态文件：检测到新歌开始，等几秒后根据当前歌词调用 LLM 生成一句莲心风格的
-听歌反馈，通过 on_feedback 回调推送给界面（仿 heartbeat 的主动消息通道）。
+状态文件：检测到新歌开始，等它稳定播放 10~20 秒（默认 15s）后再根据当前
+歌曲信息/歌词调用 LLM 生成一句莲心风格的听歌反馈，通过 on_feedback 回调
+推送给界面（仿 heartbeat 的主动消息通道）。快速切歌/被跳过的歌不会评论。
 停止播放时状态文件会被删除，watcher 据此判断"没有在听歌"。
 """
 
@@ -37,7 +38,8 @@ class MusicWatcher:
         state_file: Path = None,
         on_feedback: Callable[[str], None] = None,
         poll_interval: float = 3.0,
-        feedback_delay: float = 5.0,
+        feedback_delay: float = 15.0,
+        listen_min_seconds: float = 10.0,
         min_interval_seconds: float = 120.0,
         enabled_check: Callable[[], bool] = None,
     ):
@@ -45,11 +47,14 @@ class MusicWatcher:
         self._on_feedback = on_feedback
         self._poll_interval = poll_interval
         self._feedback_delay = feedback_delay
+        self._listen_min = listen_min_seconds
         self._min_interval = min_interval_seconds
         self._enabled_check = enabled_check or (lambda: True)
         self._last_key: Optional[tuple] = None
         self._pending_key: Optional[tuple] = None
         self._pending_since: float = 0.0
+        self._song_started_at: float = 0.0
+        self._consecutive_skips: int = 0
         self._last_feedback_at: float = 0.0
         self._reported: set = set()
         self._stop = threading.Event()
@@ -80,25 +85,30 @@ class MusicWatcher:
     def _poll_once(self) -> None:
         state = self._read_state()
         key = self._key_of(state)
-        trigger = str(state.get("trigger") or "") if state else ""
         now = time.time()
         if key and bool(state.get("active")):
             if key != self._last_key:
+                prev_key = self._last_key
                 self._last_key = key
+                # 连续切歌计数：上一首从未被评论过 => 被用户跳过
+                if prev_key is not None and prev_key not in self._reported:
+                    self._consecutive_skips += 1
+                else:
+                    self._consecutive_skips = 0
+                # 新歌统一进入"试听门槛"流程：切歌即取消上一首的 pending（跳过的歌不评论）
+                self._pending_key = key
+                self._pending_since = now
+                self._song_started_at = now
                 print("[MusicWatcher] 检测到新歌: " + str(state.get("name")) + " id=" + str(state.get("id")))
-                if self._enabled_check():
-                    if trigger == "manual":
-                        # 用户手动切歌：立即反馈，绕过 5s 延迟、去重与最小间隔
-                        self._pending_key = None
-                        self._fire(state, force=True)
-                        return
-                    if key not in self._reported:
-                        self._pending_key = key
-                        self._pending_since = now
-            if self._pending_key == key and now - self._pending_since >= self._feedback_delay:
+            if key in self._reported:
                 self._pending_key = None
-                if now - self._last_feedback_at >= self._min_interval:
-                    self._fire(state)
+            elif (self._pending_key == key
+                    and now - self._pending_since >= self._feedback_delay
+                    and self._played_seconds(state, now) >= self._listen_min
+                    and now - self._last_feedback_at >= self._min_interval
+                    and self._enabled_check()):
+                self._pending_key = None
+                self._fire(state, rapid_skips=self._consecutive_skips)
         elif not key:
             self._last_key = None
             self._pending_key = None
@@ -120,7 +130,7 @@ class MusicWatcher:
             logger.warning("[MusicWatcher] 读取状态失败: %s", exc)
             return None
 
-    def _fire(self, state: dict, force: bool = False) -> None:
+    def _fire(self, state: dict, force: bool = False, rapid_skips: int = 0) -> None:
         # 与主对话错峰：主对话请求进行中时延后反馈，避免抢占中转站单并发。
         from brain.llm_gate import main_request_active
         if main_request_active():
@@ -128,7 +138,7 @@ class MusicWatcher:
             self._pending_since = time.time()
             print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
             return
-        text = self._generate_feedback(state)
+        text = self._generate_feedback(state, rapid_skips=rapid_skips)
         if not text and force:
             # 手动切歌保底：LLM 失败/EMPTY 也保证给一句反馈，避免"反馈为空，跳过"
             name = state.get("name") or "未知歌曲"
@@ -152,16 +162,31 @@ class MusicWatcher:
             logger.info("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
             print("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
 
-    def _generate_feedback(self, state: dict) -> Optional[str]:
+    def _generate_feedback(self, state: dict, rapid_skips: int = 0) -> Optional[str]:
         try:
             name = state.get("name") or "未知歌曲"
             artist = state.get("artist") or "未知歌手"
+            album = state.get("album") or ""
             style = state.get("style") or ""
             first = state.get("firstLyrics") or []
             if isinstance(first, list):
-                lyric_text = " / ".join(str(x) for x in first[:4])
+                lyric_text = " / ".join(str(x) for x in first[:6])
             else:
                 lyric_text = str(first or "（暂无歌词）")
+            wiki = state.get("wiki") or {}
+            genre = ""
+            if isinstance(wiki, dict):
+                if wiki.get("genre"):
+                    genre = str(wiki["genre"])
+                elif isinstance(wiki.get("genres"), list):
+                    genre = "、".join(str(x) for x in wiki["genres"][:3])
+            played = int(self._played_seconds(state, time.time()))
+            rapid_hint = ""
+            if rapid_skips >= 3:
+                rapid_hint = (
+                    "\n（额外提示：用户刚刚快速连续切换了至少 " + str(rapid_skips) + " 首歌，最后停在这首。"
+                    "可以轻松调侃一句这种选歌过程，语气自然友好、别指责、别连续反问，也可以选择不提。）"
+                )
 
             import litellm
             from config import get_api_config, get_user_name, normalize_model_for_litellm
@@ -182,8 +207,10 @@ class MusicWatcher:
                 scene="proactive",
             )
             user_text = (
-                f"当前歌曲：{name}\n歌手：{artist}\n曲风：{style}\n"
-                f"接下来几句歌词：{lyric_text}"
+                f"当前歌曲：{name}\n歌手：{artist}\n专辑：{album}\n曲风：{style}"
+                + (f"\n类型标签：{genre}" if genre else "")
+                + f"\n已播放：约{played}秒\n接下来几句歌词：{lyric_text}"
+                + rapid_hint
             )
             response = litellm.completion(
                 model=model,
@@ -206,6 +233,20 @@ class MusicWatcher:
             logger.warning("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: %s", exc)
             print("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: " + str(exc))
             return None
+
+    def _played_seconds(self, state: dict, now: float) -> float:
+        """当前歌曲已连续播放的秒数（优先用服务端 startedAt，缺省按本地检测时间估算）。"""
+        started = state.get("startedAt")
+        if started:
+            try:
+                import datetime
+                dt = datetime.datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                return max(0.0, now - dt.timestamp())
+            except Exception:
+                pass
+        return max(0.0, now - self._song_started_at)
 
     @staticmethod
     def _fallback_feedback(name: str, style: str, lyric_text: str) -> str:

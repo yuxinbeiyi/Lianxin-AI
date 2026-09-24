@@ -428,6 +428,16 @@ svg { fill: currentColor; display: block; }
   z-index: 3;
 }
 
+/* 紧凑音乐盒中心封面：真实封面出现时替换薄荷绿标签 */
+#app-compact .vinyl-cover {
+  display: none;
+  top: 30%; right: 30%; bottom: 30%; left: 30%;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.12), inset 0 0 16px rgba(0,0,0,0.5);
+}
+#app-compact .vinyl-cover.has-cover { display: block; }
+#app-compact .vinyl-cover.has-cover ~ .vinyl-label { display: none; }
+
 /* 薄荷绿播放键 */
 #app-compact .ctl.play {
   background: linear-gradient(145deg, #4ce3b0, #18bd8d);
@@ -581,15 +591,68 @@ svg { fill: currentColor; display: block; }
   padding: 6px clamp(18px, 4vw, 60px) 8px;
 }
 
+/* ---------- 底部工具栏：打开 Web 播放器 / 停止 mpv（设置齿轮左侧） ---------- */
+.space-corner-tools {
+  position: absolute;
+  right: calc(clamp(16px, 3vw, 44px) + 50px);
+  bottom: 24px;
+  z-index: 4;
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+.side-tool {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-mid);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: color .15s, background .15s, border-color .15s, transform .12s;
+}
+.side-tool svg { width: 19px; height: 19px; fill: currentColor; }
+.side-tool:hover { color: var(--mint-hi); background: var(--mint-soft); border-color: rgba(47,217,160,0.4); }
+.side-tool.danger:hover { color: #ff9a9a; background: rgba(255,90,90,0.12); border-color: rgba(255,110,110,0.4); }
+.side-tool.armed { color: #fff; background: rgba(255,90,90,0.22); border-color: rgba(255,110,110,0.6); }
+
+/* ---------- 轻提示 toast ---------- */
+.space-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: 70%;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(12,17,28,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--text-hi);
+  font-size: 13px;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.space-toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+
 /* ---------- 左：歌曲信息 ---------- */
 .info-col {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 14px;
   min-height: 0;
-  padding: 26px 22px;
+  padding: 26px 22px 14px;
   margin: 8px 0;
+  overflow: hidden;
+}
+.info-head {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 0 0 auto;
 }
 .now-playing {
   font-size: 11px;
@@ -614,13 +677,46 @@ svg { fill: currentColor; display: block; }
   color: var(--text-low);
   min-height: 1.3em;
 }
-.song-lyric {
+.lyric-waterfall {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  margin-top: 8px;
+  padding: 4px 2px;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 10%, #000 90%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 10%, #000 90%, transparent);
+}
+.lyric-waterfall::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.lyric-waterfall-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 44px 0;
+}
+.lyric-row {
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(160,165,181,0.4);
+  transition: color .28s ease, font-size .28s ease, transform .28s ease;
+  transform-origin: left center;
+  will-change: transform, color;
+}
+.lyric-row.active {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  transform: scale(1.04);
+  text-shadow: 0 0 14px rgba(47,217,160,.28);
+}
+.lyric-placeholder {
   font-size: 13px;
-  color: rgba(160,165,181,0.72);
+  color: rgba(160,165,181,0.55);
   line-height: 1.75;
-  border-left: 2px solid var(--accent-soft);
-  padding-left: 12px;
-  margin-top: 4px;
+  text-align: center;
+  padding: 12px 0;
 }
 .fav-btn {
   align-self: flex-start;
@@ -713,7 +809,7 @@ svg { fill: currentColor; display: block; }
 .vinyl-cover {
   position: absolute; top: 26%; right: 26%; bottom: 26%; left: 26%;
   border-radius: 50%;
-  background-image: var(--space-wallpaper, none);
+  background-image: var(--cover-url, none);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -784,7 +880,7 @@ svg { fill: currentColor; display: block; }
   flex: 0 0 auto;
   width: 52px; height: 52px;
   border-radius: 12px;
-  background-image: var(--space-wallpaper, none);
+  background-image: var(--cover-url, none);
   background-size: cover;
   background-position: center;
   border: 1px solid rgba(255,255,255,0.14);
