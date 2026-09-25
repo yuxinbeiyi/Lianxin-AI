@@ -1,0 +1,20 @@
+:root {
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: #edf7f5;
+  background: #081116;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --lx-bg-0: #081116;
+  --lx-bg-1: #0e1b22;
+  --lx-surface: rgba(13, 29, 37, .84);
+  --lx-surface-soft: rgba(25, 49, 57, .68);
+  --lx-border: rgba(157, 214, 205, .18);
+  --lx-border-strong: rgba(105, 215, 195, .42);
+  --lx-text: #edf7f5;
+  --lx-text-muted: #9eb1b5;
+  --lx-accent: #69d7c3;
+  --lx-accent-strong: #3dbda9;
+  --lx-info: #83baff;
+  --lx-warning: #eac477;
+  --lx-persona: #b9a3ed;
+}
