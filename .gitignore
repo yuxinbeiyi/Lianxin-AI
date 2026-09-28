@@ -176,3 +176,12 @@ Lab/HandsDetector/手势识别.md
 /VisionLab/**/__pycache__/
 /VisionLab/**/*.pyc
 .tmp_*.py
+# frontend build artifacts (generated, not committed)
+frontend/node_modules/
+frontend/.dev/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+frontend/tsconfig.node.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
+frontend/dist/

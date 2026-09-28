@@ -169,7 +169,7 @@ export function App() {
       } catch { /* The bundled fallback remains visible while the API is offline. */ }
     };
     void sync(true);
-    const timer = window.setInterval(() => void sync(false), 2500);
+    const timer = window.setInterval(() => void sync(false), 800);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [background.fingerprint]);
   useEffect(() => {

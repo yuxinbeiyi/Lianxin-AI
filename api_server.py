@@ -412,7 +412,7 @@ class LianxinBridge:
             "opacity": float(settings.background_opacity),
             "chatOpacity": float(settings.chat_background_opacity),
             "fitMode": settings.background_fit_mode,
-            "fingerprint": f"{fingerprint}|chat:{settings.chat_background_opacity}",
+            "fingerprint": fingerprint,
             "dataUrl": data_url,
         }
 

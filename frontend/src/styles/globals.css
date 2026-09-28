@@ -7,9 +7,9 @@ button:disabled { cursor: default; opacity: .45; }
 
 .app-shell { position: relative; min-height: 100vh; overflow: hidden; background: #071015; }
 .wallpaper { position: absolute; inset: 0; overflow: hidden; background: #10162a; pointer-events: none; transition: opacity .25s ease; }
-.wallpaper::after { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4, 14, 19, .94) 0%, rgba(6, 17, 23, .75) 43%, rgba(5, 14, 19, .78) 100%); content: ""; }
-.wallpaper-image { position: absolute; inset: -4%; background: url('/lianxin-bg.png') center / cover; filter: saturate(.72) brightness(.62); transition: opacity .25s ease, background-image .25s ease; }
-.app-surface { position: relative; display: flex; flex-direction: column; width: min(100vw, 1680px); height: min(100vh, 1040px); min-height: 600px; margin: 0 auto; overflow: hidden; border: 1px solid rgba(157, 214, 205, .2); background: rgba(5, 16, 22, .47); box-shadow: 0 24px 80px rgba(0,0,0,.32); }
+.wallpaper::after { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4, 14, 19, .30) 0%, rgba(6, 17, 23, .18) 43%, rgba(5, 14, 19, .24) 100%); content: ""; }
+.wallpaper-image { position: absolute; inset: -4%; background: url('/lianxin-bg.png') center / cover; filter: saturate(.9); transition: opacity .25s ease, background-image .25s ease; }
+.app-surface { position: relative; display: flex; flex-direction: column; width: min(100vw, 1680px); height: min(100vh, 1040px); min-height: 600px; margin: 0 auto; overflow: hidden; border: 1px solid rgba(157, 214, 205, .2); background: rgba(5, 16, 22, .28); box-shadow: 0 24px 80px rgba(0,0,0,.32); }
 .topbar { display: flex; align-items: center; gap: 18px; min-height: 70px; padding: 0 20px; border-bottom: 1px solid var(--lx-border); background: rgba(5, 17, 23, .76); backdrop-filter: blur(18px); cursor: grab; user-select: none; }
 .topbar:active { cursor: grabbing; }
 .brand-block { display: flex; align-items: center; gap: 12px; width: 220px; flex: 0 0 220px; }

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QFormLayout,
     QScrollArea,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap
 from datetime import datetime
 import os
@@ -43,6 +43,10 @@ class SettingsDialog(QDialog):
         self._accompany_stats = AccompanyStats()
         self._background_original = self._background_state()
         self._chat_background_original = self._settings.chat_background_opacity
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(120)
+        self._preview_timer.timeout.connect(self._write_background_preview)
 
         self.setWindowTitle("全局设置")
         self.setMinimumSize(540, 780)
@@ -768,6 +772,24 @@ class SettingsDialog(QDialog):
             if not valid:
                 return
         self.background_changed.emit(enabled, source, opacity, source_type, fit_mode)
+        self._preview_timer.start()
+
+    def _write_background_preview(self):
+        """Live-persist the wallpaper preview so the new Web UI follows instantly."""
+        if not hasattr(self, "_background_enabled_cb"):
+            return
+        enabled, source, opacity, source_type, fit_mode = self._background_controls_state()
+        if enabled and source:
+            from gui.background_widget import BackgroundWidget
+            valid = Path(source).is_file() if source_type == "single" else bool(BackgroundWidget.image_files(source))
+            if not valid:
+                return
+        self._settings.background_enabled = enabled
+        self._settings.background_source = source
+        self._settings.background_source_type = source_type
+        self._settings.background_fit_mode = fit_mode
+        self._settings.background_opacity = opacity
+        self._settings.chat_background_opacity = self._chat_background_opacity_slider.value() / 100.0
 
     def _on_background_opacity_changed(self, value):
         self._background_opacity_value.setText(f"{value}%")
@@ -775,6 +797,7 @@ class SettingsDialog(QDialog):
 
     def _on_chat_background_opacity_changed(self, value):
         self._chat_background_opacity_value.setText(f"{value}%")
+        self._preview_timer.start()
         if self.parent() is not None and hasattr(self.parent(), "_on_chat_background_opacity_changed"):
             self.parent()._on_chat_background_opacity_changed(value / 100.0)
 
@@ -856,8 +879,21 @@ class SettingsDialog(QDialog):
         self.background_changed.emit(enabled, source, opacity, source_type, fit_mode)
         if self.parent() is not None and hasattr(self.parent(), "_on_chat_background_opacity_changed"):
             self.parent()._on_chat_background_opacity_changed(self._chat_background_original)
+        self._restore_background_original()
         self._load_background_controls()
         super().reject()
+
+    def _restore_background_original(self):
+        """Write the pre-dialog values back so the new Web UI reverts on cancel."""
+        if not hasattr(self, "_background_enabled_cb"):
+            return
+        enabled, source, opacity, source_type, fit_mode = self._background_original
+        self._settings.background_enabled = enabled
+        self._settings.background_source = source
+        self._settings.background_source_type = source_type
+        self._settings.background_fit_mode = fit_mode
+        self._settings.background_opacity = opacity
+        self._settings.chat_background_opacity = self._chat_background_original
 
     # === 以下为原有方法（保持不变） ===
     def _browse_note_path(self):
@@ -1029,7 +1065,7 @@ class SettingsDialog(QDialog):
         self._chat_background_original = self._settings.chat_background_opacity
         self._background_original = self._background_state()
         # ── 保存头像设置 ──
-        char_widget = self.parent()._char_widget
+        char_widget = getattr(self.parent(), "_char_widget", None)
         if self._avatar_radio_static.isChecked():
             path = self._avatar_path_edit.text().strip()
             if not path or not os.path.exists(path):
@@ -1042,18 +1078,21 @@ class SettingsDialog(QDialog):
                 "static_image_path": path,
                 "static_source_path": getattr(self, "_avatar_source_path", path),
             })
-            char_widget._avatar_mode = "static"
-            char_widget._static_image_path = path
-            char_widget._apply_static_avatar(path)
+            if char_widget is not None:
+                char_widget._avatar_mode = "static"
+                char_widget._static_image_path = path
+                char_widget._apply_static_avatar(path)
         else:
             from config import save_avatar_config
+            static_path = getattr(char_widget, "_static_image_path", "") if char_widget is not None else ""
             save_avatar_config({
                 "mode": "animated",
-                "static_image_path": char_widget._static_image_path,
-                "static_source_path": getattr(self, "_avatar_source_path", char_widget._static_image_path),
+                "static_image_path": static_path,
+                "static_source_path": getattr(self, "_avatar_source_path", static_path),
             })
-            char_widget._avatar_mode = "animated"
-            char_widget._switch_to_animated()
+            if char_widget is not None:
+                char_widget._avatar_mode = "animated"
+                char_widget._switch_to_animated()
 
         # ── 保存桌面端聊天分段停顿 ──
         chat_min = self._chat_pause_min.value()
