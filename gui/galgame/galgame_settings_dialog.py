@@ -54,7 +54,7 @@ class GalgameSettingsDialog(QDialog):
         super().__init__(parent)
         from utils.settings import get_settings
         self._settings = get_settings()
-        self.setWindowTitle("莲心 Galgame 设置")
+        self.setWindowTitle("莲心 桌宠设置")
         self.setMinimumSize(560, 420)
         self.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
         self.setStyleSheet(self._style())
@@ -63,7 +63,7 @@ class GalgameSettingsDialog(QDialog):
         root.setContentsMargins(18, 18, 18, 16)
         root.setSpacing(14)
 
-        heading = QLabel("莲心 Galgame 设置")
+        heading = QLabel("莲心 桌宠设置")
         heading.setObjectName("SettingsHeading")
         subtitle = QLabel("调整角色的外观、对话与行为动作触发")
         subtitle.setObjectName("SettingsSubtitle")

@@ -89,7 +89,7 @@ def _cleanup_cover_cache() -> None:
             else:
                 keep.append(child)
     except Exception as exc:
-        print(f"[LianxinBridge] cover cache cleanup failed: {exc}", flush=True)
+        bridge_log.log("清理", f"封面缓存清理失败: {exc}")
 
 
 def _cover_cleanup_loop() -> None:
@@ -98,8 +98,40 @@ def _cover_cleanup_loop() -> None:
         time.sleep(60 * 60)
         _cleanup_cover_cache()
 
+from utils import bridge_log
 from utils.note_manager import read_note, write_note
 from brain.task_store import get_task_store
+
+
+def _memory_heartbeat_loop() -> None:
+    """Periodic RSS/system-memory heartbeat matching the legacy [内存] log."""
+    while True:
+        try:
+            from utils.memory_guard import get_memory_status
+            status = get_memory_status() or {}
+            rss = status.get("rss_mb")
+            available = status.get("available_mb")
+            percent = status.get("percent")
+            rss_text = f"RSS={rss:.0f}MB" if rss else "RSS=n/a"
+            avail_text = f"可用={available:.0f}MB" if available else "可用=n/a"
+            percent_text = f"占用={percent:.0f}%" if percent is not None else "占用=n/a"
+            bridge_log.log("内存", f"心跳 {rss_text} {avail_text} {percent_text}")
+        except Exception:
+            pass
+        time.sleep(30)
+
+
+def _watchdog_loop() -> None:
+    """Periodic health check while the HTTP server is running."""
+    while True:
+        time.sleep(60)
+        try:
+            bridge_log.log(
+                "看门狗",
+                f"健康检查 运行={bridge_log.uptime_seconds():.0f}s 线程数={threading.active_count()}",
+            )
+        except Exception:
+            pass
 
 
 class LianxinBridge:
@@ -122,6 +154,7 @@ class LianxinBridge:
         self._tts_worker = None
         self._netease_spawn_lock = threading.Lock()
         self._netease_proc = None
+        self._watched_song = None
 
     def agent(self):
         with self._lock:
@@ -694,6 +727,16 @@ class LianxinBridge:
                 duration = float(playback.get("durationMs")) / 1000.0
             placeholder_set = {"纯音乐，请欣赏", "暂无歌词", "纯音乐", "（暂无歌词）"}
             has_lyric = any(x["text"] not in placeholder_set for x in lyrics)
+            try:
+                _title = str(playback.get("name") or "").strip()
+                _song_id = str(playback.get("id") or playback.get("songId") or "").strip()
+                _current = (_title, _song_id)
+                if _current != getattr(self, "_watched_song", None) and _title:
+                    _state_text = "播放中" if st.get("playing") else "已暂停"
+                    bridge_log.log("MusicWatcher", f"当前歌曲: {_title} id={_song_id} [{_state_text}]")
+                    self._watched_song = _current
+            except Exception:
+                pass
             return {
                 "active": bool(st.get("playing")) and not bool(st.get("paused")),
                 "playing": bool(st.get("playing")), "paused": bool(st.get("paused")),
@@ -755,18 +798,38 @@ class LianxinBridge:
                     creationflags=flags,
                 )
                 self._netease_proc = proc
+                bridge_log.log("网易云", f"8765 不在线，自动拉起 netease-music-mcp (PID {proc.pid})")
             except Exception as exc:
-                print(f"[LianxinBridge] 自动拉起网易云 8765 失败: {exc}", flush=True)
+                bridge_log.log("网易云", f"拉起 8765 失败: {exc}")
                 return False
             deadline = time.time() + timeout
             while time.time() < deadline:
                 if self._netease_online():
+                    bridge_log.log("网易云", "8765 已就绪")
                     return True
                 time.sleep(0.3)
+            bridge_log.log("网易云", "8765 拉起超时")
             return False
 
     def music_ensure(self) -> dict:
         return {"online": self.ensure_netease_online(), "url": "http://127.0.0.1:8765/"}
+
+    def open_web_player(self) -> dict:
+        """确保网易云 Web 播放器在线，并在系统默认浏览器中打开 8765 页面。"""
+        import webbrowser
+        url = "http://127.0.0.1:8765/"
+        online = False
+        try:
+            online = self.ensure_netease_online(timeout=8)
+        except Exception as exc:
+            bridge_log.log("网易云", f"确保 8765 在线时异常: {exc}")
+        try:
+            webbrowser.open(url)
+        except Exception as exc:
+            bridge_log.log("网易云", f"打开 Web 播放器失败: {exc}")
+            return {"ok": False, "online": online, "url": url, "error": str(exc)}
+        bridge_log.log("网易云", f"已在系统浏览器打开 Web 播放器 {url} (8765 online={online})")
+        return {"ok": True, "online": online, "url": url}
 
     def music_control(self, action: str, payload: dict | None = None) -> dict:
         import urllib.request
@@ -812,7 +875,7 @@ class LianxinBridge:
                 from utils.net_ease_cleanup import stop_netease_mpv
                 stop_netease_mpv()
             except Exception as exc:
-                print(f"[LianxinBridge] kill mpv failed: {exc}", flush=True)
+                bridge_log.log("网易云", f"kill mpv 失败: {exc}")
             return {"active": False, "playing": False, "paused": False, "source": "netease-8765"}
         else:
             routes = {"toggle": "/api/pause", "play": "/api/pause", "pause": "/api/pause", "next": "/api/next", "previous": "/api/prev"}
@@ -820,6 +883,7 @@ class LianxinBridge:
             if not route:
                 raise ValueError(f"不支持的音乐操作: {action}")
             body = payload
+        bridge_log.log("网易云", f"动作: {action} -> {route}")
         request = urllib.request.Request(
             base + route,
             data=json.dumps(body).encode("utf-8"),
@@ -1025,7 +1089,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         return
 
+    def handle_one_request(self):
+        self._t0 = time.time()
+        super().handle_one_request()
+
     def _send(self, payload, status=200, content_type="application/json"):
+        started = getattr(self, "_t0", None)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
@@ -1033,6 +1102,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+        if started is not None:
+            _path = urlparse(self.path).path
+            _duration = time.time() - started
+            if _duration > 20:
+                bridge_log.log("看门狗", f"慢请求: {self.command} {_path} 耗时 {_duration:.1f}s")
 
     def _body(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -1125,6 +1199,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"error": "wallpaper not found"}, 404)
             if path == "/api/music/state":
                 return self._send(bridge.music_state())
+            if path == "/api/music/spectrum":
+                from utils.spectrum import ensure_started, snapshot
+                ensure_started()
+                on, bars = snapshot()
+                return self._send({"on": on, "bars": bars})
             if path == "/api/voice/status":
                 return self._send(bridge.voice_state())
             if path == "/api/voice/events":
@@ -1205,6 +1284,8 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             if path == "/api/music/control":
                 return self._send(bridge.music_control(str(body.get("action", "")), body))
+            if path == "/api/open-player":
+                return self._send(bridge.open_web_player())
             if path == "/api/voice/start":
                 return self._send(bridge.start_voice())
             if path == "/api/voice/stop":
@@ -1253,17 +1334,95 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": str(exc)}, 500)
 
 
+def _desktop_hotkey_trigger():
+    """Toggle the desktop pet mode at bottom-right; launch it if not running."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import subprocess
+        user32 = ctypes.windll.user32
+        title = "\u83b2\u5fc3 - \u684c\u5ba0\u6a21\u5f0f"
+        hwnd = user32.FindWindowW(None, title)
+        if hwnd:
+            dlg = user32.FindWindowW(None, "\u83b2\u5fc3 - \u5bf9\u8bdd")
+            if user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, 0)
+                if dlg:
+                    user32.ShowWindow(dlg, 0)
+            else:
+                if dlg:
+                    user32.ShowWindow(dlg, 5)
+                user32.ShowWindow(hwnd, 5)
+                rect = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                w = rect.right - rect.left
+                h = rect.bottom - rect.top
+                sw = user32.GetSystemMetrics(0)
+                sh = user32.GetSystemMetrics(1)
+                x = max(0, sw - w - 40)
+                y = max(0, sh - h - 60)
+                user32.SetWindowPos(hwnd, -1, x, y, 0, 0, 0x0001 | 0x0010 | 0x0040)
+        else:
+            launcher = Path(__file__).resolve().parent / "legacy_ui_launcher.py"
+            subprocess.Popen([sys.executable, str(launcher), "galgame"])
+    except Exception as exc:
+        bridge_log.log("热键", f"热键触发错误: {exc}")
+
+
+def _start_desktop_hotkey():
+    """Register the global Ctrl+Alt+X hotkey in a background thread."""
+    def _loop():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hotkey_id = 0x4C58
+            mod_alt = 0x0001
+            mod_control = 0x0002
+            vk_x = 0x58
+            if not user32.RegisterHotKey(None, hotkey_id, mod_control | mod_alt, vk_x):
+                bridge_log.log("热键", "RegisterHotKey Ctrl+Alt+X 失败（可能已被占用）")
+                return
+            wm_hotkey = 0x0312
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == wm_hotkey and msg.wParam == hotkey_id:
+                    _desktop_hotkey_trigger()
+                else:
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception as exc:
+            bridge_log.log("热键", f"热键错误: {exc}")
+    threading.Thread(target=_loop, name="lianxin-desktop-hotkey", daemon=True).start()
+
+
+
 def main():
+    bridge_log.install("debug.log")
+    bridge_log.log("启动", "Lianxin AI2 后端启动 (api_server.py)")
+    try:
+        from config import get_api_config
+        cfg = get_api_config()
+        provider = str(cfg.get("provider", "deepseek") or "deepseek").strip()
+        bridge_log.log("启动", f"当前 LLM provider: {provider}")
+    except Exception as exc:
+        bridge_log.log("启动", f"读取 LLM provider 配置失败: {exc}")
+    _start_desktop_hotkey()
+    bridge_log.log("启动", "桌面热键 Ctrl+Alt+X 注册完成")
     threading.Thread(target=_cover_cleanup_loop, name="cover-cache-cleanup", daemon=True).start()
+    threading.Thread(target=_memory_heartbeat_loop, name="memory-heartbeat", daemon=True).start()
+    threading.Thread(target=_watchdog_loop, name="bridge-watchdog", daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 8766), Handler)
-    print("[LianxinBridge] listening on http://127.0.0.1:8766", flush=True)
+    bridge_log.log("启动", "HTTP 服务已就绪: http://127.0.0.1:8766")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+    bridge_log.log("退出", "后端已关闭")
 
 
 if __name__ == "__main__":
     main()
+

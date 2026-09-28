@@ -56,6 +56,7 @@ from brain.context_compressor import (
     strip_textual_tool_protocol,
 )
 from pathlib import Path
+from utils import bridge_log
 from brain.mcp import get_all_mcp_tool_definitions
 from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
 from brain.web_evidence_cache import (
@@ -2337,10 +2338,10 @@ class AgentCore:
             self._conversation_summary = compact_summary_text(summary, max_chars)
             self._summarized_history_idx = covered
             logger.info("已恢复上下文快照: %s 条消息", covered)
-            print(
-                f"[上下文快照] 已恢复: session={self._session_id}, "
+            bridge_log.log(
+                "上下文快照",
+                f"已恢复: session={self._session_id}, "
                 f"覆盖{covered}条, 摘要{len(self._conversation_summary)}字",
-                flush=True,
             )
         except Exception as exc:
             logger.warning("恢复上下文快照失败，使用完整历史: %s", exc)
@@ -2356,8 +2357,11 @@ class AgentCore:
                 persona_revision=getattr(persona_snapshot, "revision", 0),
                 trigger=trigger, input_tokens=getattr(self, "_last_input_tokens", 0),
             )
-            print(f"[上下文快照] 已保存: id={snapshot_id}, 覆盖{covered}条, "
-                  f"摘要{len(self._conversation_summary)}字, 触发={trigger}", flush=True)
+            bridge_log.log(
+                "上下文快照",
+                f"已保存: id={snapshot_id}, 覆盖{covered}条, "
+                f"摘要{len(self._conversation_summary)}字, 触发={trigger}",
+            )
         except Exception as exc:
             logger.warning("保存后台上下文快照失败: %s", exc)
 
@@ -2476,11 +2480,11 @@ class AgentCore:
                     trigger=selection.trigger,
                     input_tokens=getattr(self, "_last_input_tokens", 0),
                 )
-                print(
-                    f"[上下文快照] 已保存: id={snapshot_id}, "
+                bridge_log.log(
+                    "上下文快照",
+                    f"已保存: id={snapshot_id}, "
                     f"覆盖{covered}条, 摘要{len(self._conversation_summary)}字, "
                     f"触发={selection.trigger}",
-                    flush=True,
                 )
             except Exception as exc:
                 logger.warning("保存上下文快照失败（本轮摘要仍可用）: %s", exc)

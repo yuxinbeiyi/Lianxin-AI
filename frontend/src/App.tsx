@@ -78,7 +78,7 @@ function TopBar({ onNewChat, onPanel, onLegacy, onMinimize, onMaximize, onClose,
   return <header className="topbar" data-tauri-drag-region onMouseDown={onDrag}>
     <div className="brand-block" data-tauri-drag-region><div className="brand-mark"><Sparkles size={24} /></div><div><div className="brand-name">莲心 <span>AI</span></div><div className="brand-status"><span className="status-dot" /> 在线</div></div></div>
     <div className="search-box" role="search"><Search size={17} /><span>搜索对话、记忆和功能</span><kbd>Ctrl K</kbd></div>
-    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("video-call")}><Video size={16} />视频通话</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />Galgame 模式</button><button className="icon-button" title="全局设置" onClick={() => onPanel("management")}><Settings size={18} /></button></nav>
+    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("video-call")}><Video size={16} />视频通话</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />桌宠模式</button><button className="icon-button" title="全局设置" onClick={() => onPanel("management")}><Settings size={18} /></button></nav>
     <div className="window-actions"><button className="icon-button" title="最小化" onClick={onMinimize}><Minimize2 size={16} /></button><button className="icon-button" title="最大化 / 还原" onClick={onMaximize}><Maximize2 size={16} /></button><button className="icon-button close-button" title="关闭莲心" onClick={onClose}><X size={17} /></button></div>
   </header>;
 }
@@ -259,7 +259,17 @@ export function App() {
     if (feature) { openLegacy(feature); return; }
     setActiveWorkspace(workspace);
   };
-  const controlMusic = (action: string, payload?: Record<string, unknown>) => void lianxinApi.musicControl(action, payload).then((state) => { setMusic(state as MusicState); setMusicError(""); }).catch((error) => setMusicError(String((error as Error)?.message ?? "音乐控制失败")));
+  const controlMusic = (action: string, payload?: Record<string, unknown>) => {
+    setMusic((prev) => {
+      const next = { ...prev };
+      if (action === "toggle") next.active = !next.active;
+      else if (action === "play") next.active = true;
+      else if (action === "pause") next.active = false;
+      else if (action === "next" || action === "previous" || action === "select") next.active = true;
+      return next;
+    });
+    void lianxinApi.musicControl(action, payload).then((state) => { setMusic(state as MusicState); setMusicError(""); }).catch((error) => setMusicError(String((error as Error)?.message ?? "\u97f3\u4e50\u63a7\u5236\u5931\u8d25")));
+  };
   const handleAvatarInteraction = (action: "tap" | "headpat") => {
     if (interactionThinking || busy) return;
     setInteractionThinking(true);

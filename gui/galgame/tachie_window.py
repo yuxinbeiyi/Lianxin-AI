@@ -53,7 +53,7 @@ class TachieWindow(QWidget):
     # ── 初始化 ─────────────────────────────────────────────
 
     def _init_window(self):
-        self.setWindowTitle("莲心 - Galgame 角色")
+        self.setWindowTitle("莲心 - 桌宠模式")
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlags(
             Qt.FramelessWindowHint

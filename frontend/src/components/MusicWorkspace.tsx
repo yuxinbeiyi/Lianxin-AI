@@ -51,6 +51,8 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
   const seekDragRef = useRef<number | null>(null);
   const seekTimerRef = useRef<number | undefined>(undefined);
   const volumeTimerRef = useRef<number | undefined>(undefined);
+  const eqRef = useRef<HTMLCanvasElement>(null);
+  const spectrumRef = useRef<number[] | null>(null);
 
   const playing = Boolean(music.active);
   const progress = seekDrag ?? (seekConfirm !== null && music.duration ? Math.min(100, (seekConfirm / music.duration) * 100) : (music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0));
@@ -86,6 +88,104 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
       box.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
     }
   }, [activeLyricIndex, tab]);
+
+  // Poll the backend spectrum (WASAPI loopback) while playing.
+  useEffect(() => {
+    if (!playing) {
+      spectrumRef.current = null;
+      return;
+    }
+    let alive = true;
+    let timer = 0;
+    const poll = async () => {
+      if (!alive) return;
+      try {
+        const res = await fetch(`${API_ORIGIN}/api/music/spectrum`);
+        if (!alive) return;
+        const data = await res.json();
+        if (alive && data && data.on && Array.isArray(data.bars)) {
+          spectrumRef.current = data.bars as number[];
+        } else if (alive) {
+          spectrumRef.current = null;
+        }
+      } catch {
+        if (alive) spectrumRef.current = null;
+      } finally {
+        if (alive) timer = window.setTimeout(poll, 40);
+      }
+    };
+    poll();
+    return () => { alive = false; window.clearTimeout(timer); spectrumRef.current = null; };
+  }, [playing]);
+
+  // Canvas waveform: real spectrum when available, simulated fallback otherwise.
+  useEffect(() => {
+    const canvas = eqRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = 224;
+    const H = 26;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const N = 28;
+    const sim = new Float32Array(N).fill(0.08);
+    let prev = new Float32Array(N).fill(0.05);
+    let raf = 0;
+    let last = performance.now();
+
+    const barPath = (x: number, y: number, w: number, h: number, r: number) => {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    };
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.12, (now - last) / 1000);
+      last = now;
+      ctx.clearRect(0, 0, W, H);
+      const live = playing ? spectrumRef.current : null;
+      const values = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        let target: number;
+        if (live && live.length === N) {
+          target = Math.min(1, Math.max(0, Number(live[i]) || 0));
+        } else if (playing) {
+          sim[i] += (0.08 + Math.random() * 0.92 - sim[i]) * Math.min(1, dt * 9);
+          target = sim[i];
+        } else {
+          target = 0.05;
+        }
+        values[i] = prev[i] + (target - prev[i]) * Math.min(1, dt * 14);
+      }
+      prev = values;
+      const gap = 1.5;
+      const bw = (W - gap * (N - 1)) / N;
+      for (let i = 0; i < N; i++) {
+        const bh = Math.max(2, values[i] * H);
+        const x = i * (bw + gap);
+        const y = H - bh;
+        const grad = ctx.createLinearGradient(0, y, 0, H);
+        grad.addColorStop(0, "#69d7c3");
+        grad.addColorStop(1, "rgba(61, 189, 169, 0.15)");
+        ctx.fillStyle = grad;
+        barPath(x, y, bw, bh, Math.min(2, bw / 2));
+        ctx.fill();
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); };
+  }, [playing]);
+
 
   const seekFromClientX = (clientX: number) => {
     if (!music.duration) return;
@@ -144,8 +244,12 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
   const wallpaperUrl = (u?: string) => (u ? `${API_ORIGIN}${u.startsWith("/") ? u : `/${u}`}` : "");
 
   const openWebPlayer = async () => {
-    try { await lianxinApi.musicEnsure(); } catch { /* 仍尝试打开 */ }
-    window.open("http://127.0.0.1:8765/", "_blank");
+    try {
+      const res = await lianxinApi.openPlayer();
+      if (!res.ok) console.error("打开 Web 播放器失败", res);
+    } catch (err) {
+      console.error("打开 Web 播放器失败", err);
+    }
   };
 
   const handleKillMpv = () => {
@@ -206,9 +310,7 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
             <span className="music-arm-head" />
           </div>
           <div className="music-eq">
-            {Array.from({ length: 18 }).map((_, i) => (
-              <span key={i} className={playing ? "is-playing" : ""} style={{ animationDelay: `${(i % 6) * 0.12}s` }} />
-            ))}
+            <canvas ref={eqRef} />
           </div>
         </div>
         <div className="music-meta">

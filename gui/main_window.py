@@ -893,11 +893,11 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self._btn_note)
 
         # Galgame 窗口按钮
-        self._galgame_btn = QPushButton("🎮 Galgame")
+        self._galgame_btn = QPushButton("🎮 桌宠")
         self._galgame_btn.setFixedSize(86, 24)
         self._galgame_btn.setFont(QFont("Microsoft YaHei UI", 8))
         self._galgame_btn.setCursor(Qt.PointingHandCursor)
-        self._galgame_btn.setToolTip("打开 Galgame 风格的角色立绘和对话窗口")
+        self._galgame_btn.setToolTip("打开桌宠模式的角色立绘和对话窗口")
         self._galgame_btn.setStyleSheet("""
             QPushButton {
                 background-color: #F0F0F8;

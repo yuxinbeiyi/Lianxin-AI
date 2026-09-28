@@ -156,7 +156,8 @@ def main() -> int:
             loading.setMinimumSize(280, 110)
             loading.setStyleSheet("QWidget { background: #151B2B; color: #E6EDF7; } QLabel { padding: 18px; font-size: 14px; }")
             loading_layout = QVBoxLayout(loading)
-            loading_label = QLabel(f"正在打开 {feature}…")
+            display_name = "桌宠模式" if feature == "galgame" else feature
+            loading_label = QLabel(f"正在打开 {display_name}…")
             loading_label.setAlignment(Qt.AlignCenter)
             loading_layout.addWidget(loading_label)
             loading.show()
@@ -198,27 +199,98 @@ def main() -> int:
                                 except (OSError, ValueError, KeyError) as exc:
                                     self.error.emit(str(exc))
 
+                        class GalgamePoller(QObject):
+                            """轮询当前会话，把莲心最新主动消息显示到桌宠对话窗。"""
+                            def __init__(self, win):
+                                super().__init__(win)
+                                self._win = win
+                                self._sid = None
+                                self._last_id = 0
+                                self._last_text = ""
+                                self._timer = QTimer(self)
+                                self._timer.timeout.connect(self._poll)
+                                self._timer.start(3000)
+
+                            def note_displayed(self, text: str):
+                                self._last_text = text
+
+                            def _poll(self):
+                                try:
+                                    with urllib.request.urlopen("http://127.0.0.1:8766/app/status", timeout=2) as response:
+                                        status = json.loads(response.read().decode("utf-8"))
+                                    sid = status.get("sessionId")
+                                    if not sid:
+                                        return
+                                    with urllib.request.urlopen(
+                                        f"http://127.0.0.1:8766/api/conversations/{sid}/messages", timeout=2
+                                    ) as response:
+                                        data = json.loads(response.read().decode("utf-8"))
+                                    items = data.get("items") or []
+                                    last_assistant = None
+                                    for item in items:
+                                        if item.get("role") == "assistant" and str(item.get("content") or "").strip():
+                                            last_assistant = item
+                                    if self._sid != sid:
+                                        self._sid = sid
+                                        if last_assistant is None:
+                                            self._last_id = 0
+                                            self._last_text = ""
+                                            return
+                                        self._last_id = int(last_assistant.get("id") or 0)
+                                        self._last_text = str(last_assistant.get("content") or "").strip()
+                                        return
+                                    if last_assistant is None:
+                                        return
+                                    mid = int(last_assistant.get("id") or 0)
+                                    content = str(last_assistant.get("content") or "").strip()
+                                    if mid > self._last_id:
+                                        self._last_id = mid
+                                        if content != self._last_text:
+                                            self._last_text = content
+                                            self._win.show_reply(content)
+                                except Exception:
+                                    pass
+
                         assets_dir = Path(__file__).resolve().parent / "gui" / "galgame" / "assets"
                         tachie = TachieWindow(assets_dir)
                         bridge = GalgameBridge(tachie)
+                        poller = GalgamePoller(window)
+
+                        def _move_dialog():
+                            screen = app.primaryScreen().availableGeometry()
+                            dx = tachie.x() - window.width() - 20
+                            if dx < screen.left():
+                                dx = screen.left() + 8
+                            dy = max(screen.top(), tachie.y() + tachie.height() - window.height())
+                            window.move(dx, dy)
+
+                        def _place_bottom_right():
+                            screen = app.primaryScreen().availableGeometry()
+                            tw = tachie.width() or 110
+                            th = tachie.height() or 150
+                            tachie.move(screen.right() - tw - 40, screen.bottom() - th - 60)
+                            _move_dialog()
+                            tachie.show()
+                            tachie.raise_()
+
                         window.message_submitted.connect(bridge.send)
-                        bridge.reply_ready.connect(window.show_reply)
+
+                        def _on_reply(text: str):
+                            window.show_reply(text)
+                            poller.note_displayed(text)
+
+                        bridge.reply_ready.connect(_on_reply)
                         bridge.error.connect(lambda message: window.set_status(f"聊天失败：{message}"))
                         tachie.toggle_dialog_requested.connect(
                             lambda: window.setVisible(not window.isVisible())
                         )
                         tachie.close_requested.connect(window.close)
                         tachie.close_requested.connect(app.quit)
-                        tachie.position_changed.connect(
-                            lambda x, y: window.move(int(x + tachie.width() + 20), int(y))
-                        )
-                        screen = app.primaryScreen().availableGeometry()
-                        tachie.move(screen.left() + 80, screen.top() + 80)
-                        window.move(tachie.x() + tachie.width() + 20, tachie.y())
-                        tachie.show()
-                        tachie.raise_()
+                        tachie.position_changed.connect(lambda x, y: _move_dialog())
+                        QTimer.singleShot(80, _place_bottom_right)
                         # Keep both top-level widgets and the bridge alive for the app lifetime.
-                        window._lianxin_galgame_objects = (tachie, bridge)
+                        window._lianxin_galgame_objects = (tachie, bridge, poller)
+
                     log.write("window=created\n")
                     log.flush()
                 except Exception:
