@@ -54,6 +54,7 @@ def _init_db(conn: sqlite3.Connection):
             role       TEXT    NOT NULL,
             content    TEXT    NOT NULL,
             timestamp  TEXT    NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         );
     """)
@@ -103,6 +104,11 @@ def _migrate_db(conn: sqlite3.Connection):
             conn.commit()
         except sqlite3.OperationalError:
             pass  # 列已存在，跳过
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'" )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # 旧数据没有 updated_at，用最后一条消息时间回填；空会话退回创建时间。
     conn.execute("""
@@ -183,14 +189,14 @@ class HistoryManager:
 
     # ── 消息管理 ─────────────────────────────────────────────
 
-    def save_message(self, session_id: int, role: str, content: str) -> int:
+    def save_message(self, session_id: int, role: str, content: str, metadata: dict | None = None) -> int:
         """保存一条消息（role: 'user' | 'assistant'）。"""
         with self._write_lock:
             conn = self._conn()
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cur = conn.execute(
-                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, now)
+                "INSERT INTO messages (session_id, role, content, timestamp, metadata_json) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, now, json.dumps(metadata or {}, ensure_ascii=False, default=str))
             )
             conn.execute(
                 "UPDATE sessions SET updated_at = ? WHERE id = ?",
@@ -198,6 +204,28 @@ class HistoryManager:
             )
             conn.commit()
             return int(cur.lastrowid)
+
+    def update_latest_message_metadata(self, session_id: int, role: str, metadata: dict) -> bool:
+        """Attach UI metadata to the newest message without changing legacy content."""
+        with self._write_lock:
+            cur = self._conn().execute(
+                "UPDATE messages SET metadata_json=? WHERE id=(SELECT id FROM messages WHERE session_id=? AND role=? ORDER BY id DESC LIMIT 1)",
+                (json.dumps(metadata or {}, ensure_ascii=False, default=str), int(session_id), str(role)),
+            )
+            self._conn().commit()
+            return bool(cur.rowcount)
+
+    @staticmethod
+    def _decode_message(row) -> dict:
+        item = dict(row)
+        raw = item.pop("metadata_json", "{}") or "{}"
+        try:
+            metadata = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            metadata = {}
+        if isinstance(metadata, dict):
+            item.update(metadata)
+        return item
 
     # ── 读取接口 ─────────────────────────────────────────────
 
@@ -436,31 +464,31 @@ class HistoryManager:
             )
             rows = list(cur.fetchall())
             rows.reverse()
-            return [dict(row) for row in rows]
+            return [self._decode_message(row) for row in rows]
         cur = conn.execute(
             "SELECT role, content, timestamp FROM messages "
             "WHERE session_id = ? ORDER BY id ASC",
             (session_id,)
         )
-        return [dict(row) for row in cur.fetchall()]
+        return [self._decode_message(row) for row in cur.fetchall()]
 
     def get_messages_with_ids(self, session_id: int, limit: int | None = None) -> list[dict]:
         """Return persisted chat messages with stable ids for memory provenance."""
         if limit is not None:
             rows = self._conn().execute(
-                """SELECT id, session_id, role, content, timestamp
+                """SELECT id, session_id, role, content, timestamp, metadata_json
                    FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?""",
                 (session_id, max(1, int(limit))),
             ).fetchall()
             rows = list(rows)
             rows.reverse()
-            return [dict(row) for row in rows]
+            return [self._decode_message(row) for row in rows]
         rows = self._conn().execute(
-            """SELECT id, session_id, role, content, timestamp
+            """SELECT id, session_id, role, content, timestamp, metadata_json
                FROM messages WHERE session_id=? ORDER BY id ASC""",
             (session_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_message(row) for row in rows]
 
     def get_latest_message_id(self, session_id: int) -> int:
         """Return the newest persisted message id in a session, or zero."""

@@ -316,6 +316,10 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
         if "search_conversation_history" in available:
             return "search_conversation_history"
 
+    if "memory_read" in route.capabilities and is_explicit_memory_search_request(request_text):
+        if "search_graph_memory" in available:
+            return "search_graph_memory"
+
     if "github" in route.capabilities:
         github_tool = _github_primary_tool(request_text)
         if github_tool in available:
@@ -474,6 +478,21 @@ def is_verifiable_recall_request(text: str) -> bool:
     return True
 
 
+def is_explicit_memory_search_request(text: str) -> bool:
+    """识别明确要求查询长期记忆的请求，避免仅依赖模型自行决定是否检索。"""
+    value = parse_request_context(text).routing_text
+    if not value:
+        return False
+    # 这些表达指向长期记忆，而不是普通的“还记得吗”闲聊。
+    return bool(re.search(
+        r"(?:查询|查一下|搜索|搜一下|找一下|检索|翻一下|回忆一下).{0,10}"
+        r"(?:自己|我的|你自己的)?(?:记忆|长期记忆|记忆库|存档|记忆记录)"
+        r"|(?:记忆|长期记忆|记忆库|存档).{0,8}(?:查询|查一下|搜索|检索|翻一下)",
+        value,
+        re.IGNORECASE,
+    ))
+
+
 def is_explicit_web_reread_request(text: str) -> bool:
     """判断用户是否明确要求重新取得网页原文。"""
     value = parse_request_context(text).routing_text
@@ -507,6 +526,13 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             RequestMode.TASK_DIRECT,
             frozenset({"memory_read"}),
             "要求核验历史聊天记录中的具体事件、时间或原话",
+        )
+
+    if is_explicit_memory_search_request(text):
+        return RequestRoute(
+            RequestMode.TASK_DIRECT,
+            frozenset({"memory_read"}),
+            "用户明确要求查询长期记忆",
         )
 
     if is_explicit_web_reread_request(text):

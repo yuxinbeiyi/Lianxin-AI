@@ -1,31 +1,48 @@
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
-  Activity, AlarmClock, ArrowUp, BookOpen, Bot, BrainCircuit, Check,
+  Activity, AlarmClock, ArrowUp, BookOpen, Bot, BrainCircuit, Camera, Check,
   CheckCircle2, ChevronDown, ChevronRight, Clock3, Command, FileText, FolderOpen,
   Gauge, Gem, Image, LayoutDashboard, Lightbulb, Maximize2, Menu,
   MessageCircle, Mic, Minimize2, Music2, Network, Pause, Play, Plus,
-  Search, Send, Settings, Sparkles, UserRound, Volume2, Waves, Wrench, X,
+  Search, Send, Settings, Sparkles, UserRound, Video, Volume2, Waves, Wrench, X,
 } from "lucide-react";
 import { managementGroups, primaryNavigation, demoMessages } from "./data/demo";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { lianxinApi, type AvatarState, type BackgroundState, type ChatStreamEvent, type LegacyFeature } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
+import { ToolPanel } from "./components/ToolPanel";
+import { TimeCapsuleWorkspace } from "./components/TimeCapsuleWorkspace";
+import { MusicWorkspace } from "./components/MusicWorkspace";
 
-type PanelId = "none" | "history" | "note" | "tasks" | "voice" | "proactive" | "management";
+type PanelId = "none" | "history" | "note" | "tasks" | "voice" | "proactive" | "management" | "tools";
 type Session = { id: number; title?: string; updated_at?: string; summary?: string; is_pinned?: number };
-type MusicState = { active?: boolean; name?: string; artist?: string; album?: string; progress?: number; duration?: number };
+type MusicState = { active?: boolean; playing?: boolean; paused?: boolean; name?: string; artist?: string; album?: string; coverUrl?: string; progress?: number; duration?: number; volume?: number; mode?: string; current_index?: number; playlist?: Array<{ id?: string; title?: string; artist?: string; duration?: number; index?: number }>; lyrics?: Array<{ time?: number; text?: string }>; style?: string; instrumental?: boolean };
 type FiveAxisState = { axes: Record<string, number>; mood: string };
 type ToolCallState = { id: string; name: string; args: string; status: "running" | "done" | "error"; preview?: string; elapsedMs?: number };
 type ToolRoundState = { round: number; calls: ToolCallState[] };
+type Attachment = { kind: "image" | "file"; fileName: string; dataUrl: string; size?: number };
+
+function restoreMessage(item: { id?: number; role: "user" | "assistant"; content: string; timestamp?: string; attachments?: Array<{ kind: "image" | "file"; fileName: string; url?: string; path?: string }> }, index: number): Message {
+  const attachment = item.attachments?.[0];
+  return { id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "", attachments: item.attachments, ...(attachment?.kind === "image" ? { imageUrl: attachment.url, imageName: attachment.fileName, imageStatus: "success" as const } : attachment?.kind === "file" ? { kind: "file" as const, fileName: attachment.fileName } : {}) };
+}
 
 const desktopWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
-function MessageAvatar({ role, compact = false, avatar }: { role: "user" | "assistant"; compact?: boolean; avatar?: AvatarState }) {
+function MessageAvatar({ role, compact = false, avatar, onInteraction, interacting = false }: { role: "user" | "assistant"; compact?: boolean; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean }) {
   const sizeClass = compact ? "avatar-small" : "avatar-chat";
+  const pressTimer = useRef<number | null>(null);
+  const clearPress = () => { if (pressTimer.current !== null) { window.clearTimeout(pressTimer.current); pressTimer.current = null; } };
+  const startPress = (event: MouseEvent<HTMLDivElement>) => {
+    if (role !== "assistant" || !onInteraction || (event.button !== 0 && event.button !== 2)) return;
+    clearPress();
+    pressTimer.current = window.setTimeout(() => { pressTimer.current = null; onInteraction(event.button === 0 ? "tap" : "headpat"); }, 650);
+  };
+  useEffect(() => clearPress, []);
   const configuredSize = avatar ? Math.max(30, Math.min(72, Math.round(avatar.size * (compact ? 0.63 : 0.63)))) : undefined;
   const avatarStyle = configuredSize ? { width: `${configuredSize}px`, height: `${configuredSize}px`, border: avatar?.border === false ? "0" : undefined } : undefined;
   if (role === "assistant") {
-    return <div className={`avatar ${sizeClass} assistant-avatar`} style={avatarStyle}><img src={avatar?.assistantDataUrl || "/lianxin-avatar.png"} alt="莲心" /></div>;
+    return <div className={`avatar ${sizeClass} assistant-avatar ${interacting ? "avatar-interacting" : ""}`} style={avatarStyle} onMouseDown={startPress} onMouseUp={clearPress} onMouseLeave={clearPress} onContextMenu={(event) => event.preventDefault()}><img src={avatar?.assistantDataUrl || "/lianxin-avatar.png"} alt="莲心聊天头像" /></div>;
   }
   return <div className={`avatar ${sizeClass} user-avatar`} style={avatarStyle}>{avatar?.userDataUrl ? <img src={avatar.userDataUrl} alt="我" /> : <span>我</span>}</div>;
 }
@@ -35,7 +52,7 @@ const managementFeatureMap: Record<string, LegacyFeature> = {
   "后台职责中心": "duty", "主动聊天": "proactive", "涟漪情感系统": "ripple", "人格枢控": "persona",
   "星图系统": "memory-constellation", "棱镜记忆系统": "prism-memory", "莲心自习室": "study-room",
   "时间胶囊": "time-capsule", "数据潮汐": "data-tide", "能力中枢": "capability", "视觉理解": "vision",
-  "语音转录": "voice-stt", "声音设置": "sound", "全局设置": "settings", "API Key": "api",
+  "语音转录": "voice-stt", "摄像头": "camera", "声音设置": "sound", "全局设置": "settings", "API Key": "api",
   "网络设置": "network", "QQ 聊天": "qq", "微信聊天": "wechat",
 };
 const legacyFeatureIds = new Set(Object.values(managementFeatureMap));
@@ -44,9 +61,9 @@ const iconMap: Record<string, typeof MessageCircle> = {
   message: MessageCircle, music: Music2, clock: Clock3, diamond: Gem, book: BookOpen, world: Network,
 };
 const managementIconMap: Record<string, typeof Settings> = {
-  "闹钟与提醒": AlarmClock, "任务运行中心": Gauge, "主动聊天": MessageCircle,
+  "闹钟与提醒": AlarmClock, "任务运行中心": Gauge, "主动聊天": MessageCircle, "后台职责中心": Bot,
   "涟漪情感系统": Waves, "人格枢控": UserRound, "星图系统": Network,
-  "能力中枢": BrainCircuit, "视觉理解": Image, "语音转录": Mic,
+  "能力中枢": BrainCircuit, "视觉理解": Image, "语音转录": Mic, "摄像头": Camera,
   "声音设置": Volume2, "全局设置": Settings, "API Key": Command,
   "网络设置": Network, "QQ 聊天": MessageCircle, "微信聊天": MessageCircle,
   "数据潮汐": Activity,
@@ -61,7 +78,7 @@ function TopBar({ onNewChat, onPanel, onLegacy, onMinimize, onMaximize, onClose,
   return <header className="topbar" data-tauri-drag-region onMouseDown={onDrag}>
     <div className="brand-block" data-tauri-drag-region><div className="brand-mark"><Sparkles size={24} /></div><div><div className="brand-name">莲心 <span>AI</span></div><div className="brand-status"><span className="status-dot" /> 在线</div></div></div>
     <div className="search-box" role="search"><Search size={17} /><span>搜索对话、记忆和功能</span><kbd>Ctrl K</kbd></div>
-    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("note")}><FileText size={16} />备忘本</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />Galgame 模式</button><button className="icon-button" title="全局设置" onClick={() => onPanel("management")}><Settings size={18} /></button></nav>
+    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("video-call")}><Video size={16} />视频通话</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />Galgame 模式</button><button className="icon-button" title="全局设置" onClick={() => onPanel("management")}><Settings size={18} /></button></nav>
     <div className="window-actions"><button className="icon-button" title="最小化" onClick={onMinimize}><Minimize2 size={16} /></button><button className="icon-button" title="最大化 / 还原" onClick={onMaximize}><Maximize2 size={16} /></button><button className="icon-button close-button" title="关闭莲心" onClick={onClose}><X size={17} /></button></div>
   </header>;
 }
@@ -72,9 +89,11 @@ function SideNavigation({ activeWorkspace, onWorkspaceChange, managementOpen, on
 
 function TaskCard() { return <div className="task-card"><div className="task-card-header"><span><LayoutDashboard size={15} />正在处理当前请求</span><span className="task-running"><Activity size={14} />运行中</span></div><div className="task-step is-done"><span className="step-icon"><Check size={12} /></span>分析用户问题</div><div className="task-step is-done"><span className="step-icon"><Check size={12} /></span>整理当前上下文</div><div className="task-step is-active"><span className="step-icon"><span /></span>生成回复</div></div>; }
 
-function MessageItem({ message, avatar }: { message: Message; avatar?: AvatarState }) {
+function MessageItem({ message, avatar, onInteraction, interacting, onQuote, onDelete }: { message: Message; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean; onQuote?: (message: Message) => void; onDelete?: (message: Message) => void }) {
   if (message.kind === "task") return <div className="message-row assistant-row"><MessageAvatar role="assistant" avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>莲心</strong><span>{message.time}</span></div><TaskCard /></div></div>;
-  return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-${index}`}>{line}</p>)}</div></div></div>;
+  if (message.imageUrl) return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble image-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><img src={message.imageUrl} alt={message.imageName || "发送的图片"} /><span className="image-file-name">{message.imageName || "图片"}</span>{message.imageStatus === "pending" && <span className="image-analysis-state">正在分析图片…</span>}{message.imageStatus === "error" && <span className="image-analysis-state is-error">图片分析失败</span>}{message.imageDescription && <p className="image-description">{message.imageDescription}</p>}</div></div></div>;
+  if (message.kind === "file") return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble file-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><FolderOpen size={18} /><span>{message.fileName || "文件附件"}</span>{message.fileSize ? <small>{Math.ceil(message.fileSize / 1024)} KB</small> : null}</div></div></div>;
+  return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`} onContextMenu={(event) => { event.preventDefault(); const action = window.prompt("输入 c 复制、q 引用、d 删除，直接取消关闭"); if (action?.toLowerCase() === "c") void navigator.clipboard?.writeText(message.content); if (action?.toLowerCase() === "q") onQuote?.(message); if (action?.toLowerCase() === "d") onDelete?.(message); }}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-${index}`}>{line}</p>)}<div className="message-actions"><button type="button" title="复制" onClick={() => void navigator.clipboard?.writeText(message.content)}>复制</button><button type="button" title="引用" onClick={() => onQuote?.(message)}>引用</button>{message.role === "assistant" && <button type="button" title="朗读" onClick={() => { const utterance = new SpeechSynthesisUtterance(message.content); utterance.lang = "zh-CN"; window.speechSynthesis.cancel(); window.speechSynthesis.speak(utterance); }}>朗读</button>}<button type="button" title="删除" onClick={() => onDelete?.(message)}>删除</button></div></div></div></div>;
 }
 
 function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
@@ -82,19 +101,31 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
   return <div className="tool-rounds">{rounds.map((round) => <section className="tool-round" key={round.round}><div className="tool-round-heading"><span><Wrench size={14} />莲心执行工具 · 第 {round.round} 轮</span><span>{round.calls.every((call) => call.status !== "running") ? "已完成" : "执行中"}</span></div>{round.calls.map((call) => <div className={`tool-call ${call.status}`} key={call.id}><span className="tool-call-icon">{call.status === "running" ? <span className="tool-spinner" /> : call.status === "error" ? <X size={13} /> : <CheckCircle2 size={14} />}</span><div className="tool-call-copy"><strong>{call.name}</strong><span>{call.status === "running" ? "正在执行…" : call.status === "error" ? "执行失败" : `已完成${call.elapsedMs ? ` · ${(call.elapsedMs / 1000).toFixed(1)}s` : ""}`}</span>{call.preview && <p>{call.preview}</p>}</div></div>)}</section>)}</div>;
 }
 
-function ChatWorkspace({ messages, toolRounds, avatar, onSend, busy, voiceActive, onVoice }: { messages: Message[]; toolRounds: ToolRoundState[]; avatar?: AvatarState; onSend: (text: string) => void; busy: boolean; voiceActive: boolean; onVoice: () => void }) {
+function ChatWorkspace({ messages, toolRounds, avatar, onSend, onCancel = () => { void lianxinApi.cancelChat(); }, onInteraction, interactionThinking, busy, voiceActive, onVoice, onOpenNote = () => undefined, onTools = () => window.dispatchEvent(new Event("open-tools")) }: { messages: Message[]; toolRounds: ToolRoundState[]; avatar?: AvatarState; onSend: (text: string, attachments: Attachment[], selection?: { forcedTool?: string; preferredTool?: string }) => void; onCancel?: () => void; onInteraction: (action: "tap" | "headpat") => void; interactionThinking: boolean; busy: boolean; voiceActive: boolean; onVoice: () => void; onOpenNote?: () => void; onTools?: () => void }) {
   const [draft, setDraft] = useState("");
-  const submit = () => { const text = draft.trim(); if (!text || busy) return; onSend(text); setDraft(""); };
-  return <section className="workspace chat-workspace"><div className="conversation-header"><div><span className="conversation-live" /><strong>默认对话</strong><span className="edit-title">✎</span></div><span className="conversation-meta">Python 核心 · {busy ? "正在回复" : "已连接"}</span></div><div className="message-viewport"><div className="message-list">{messages.length ? messages.map((message) => <MessageItem key={message.id} message={message} avatar={avatar} />) : <div className="empty-state"><Sparkles size={28} /><h3>开始和莲心聊天</h3><p>你的新会话会自动保存到历史记录。</p></div>}<ToolRounds rounds={toolRounds} />{busy && <div className="typing-indicator"><span /><span /><span />莲心正在思考…</div>}</div></div><div className="composer-wrap"><div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="和莲心聊点什么吧…" rows={2} /><div className="composer-toolbar"><div className="composer-tools"><button className="composer-tool"><Image size={16} />图片</button><button className="composer-tool"><FolderOpen size={16} />文件</button><button className="composer-tool"><Command size={16} />引用</button><button className="composer-tool"><FileText size={16} />备忘本</button></div><div className="composer-actions"><button className={`icon-button voice-button ${voiceActive ? "voice-active" : ""}`} title="语音聊天" onClick={onVoice}><Mic size={18} /></button><button className="send-button" onClick={submit} disabled={!draft.trim() || busy} title="发送"><Send size={18} /></button></div></div></div></div></section>;
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [autoSend, setAutoSend] = useState(false);
+  const [toolSelection, setToolSelection] = useState<{ forcedTool?: string; preferredTool?: string }>(() => { try { return JSON.parse(window.localStorage.getItem("lianxin-tool-selection") || "{}"); } catch { return {}; } });
+  const [toolsOpen, setToolsOpen] = useState(false);
+  useEffect(() => { const handler = (event: Event) => setToolSelection((event as CustomEvent).detail || {}); window.addEventListener("tool-selection", handler); return () => window.removeEventListener("tool-selection", handler); }, []);
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const allFileInput = useRef<HTMLInputElement | null>(null);
+  const addFiles = (files: FileList | File[]) => Array.from(files).forEach((file) => { const kind = file.type.startsWith("image/") ? "image" : "file"; const reader = new FileReader(); reader.onload = () => { const item = { kind, fileName: file.name, dataUrl: String(reader.result || ""), size: file.size } as Attachment; setAttachments((current) => [...current, item]); if (autoSend && !busy) window.setTimeout(() => onSend("看看这个附件", [item]), 0); }; reader.readAsDataURL(file); });
+  const submit = () => { const text = draft.trim(); if ((!text && !attachments.length) || busy) return; onSend(text || "看看这张图片", attachments, toolSelection); setDraft(""); setAttachments([]); };
+  const quote = (message: Message) => setDraft((current) => `${current ? `${current}\n` : ""}[引用] ${message.role === "user" ? "你" : "莲心"}：${message.content.slice(0, 200)}\n我的回复：`);
+  return <section className="workspace chat-workspace"><div className="conversation-header"><div><span className="conversation-live" /><strong>默认对话</strong><span className="edit-title">✎</span></div><span className="conversation-meta">Python 核心 · {busy || interactionThinking ? "正在回复" : "已连接"}</span></div><div className="message-viewport"><div className="message-list">{messages.length ? messages.filter((message) => !hiddenMessageIds.has(message.id)).map((message) => <MessageItem key={message.id} message={message} avatar={avatar} onInteraction={onInteraction} interacting={interactionThinking} onQuote={quote} onDelete={(item) => setHiddenMessageIds((current) => new Set(current).add(item.id))} />) : <div className="empty-state"><Sparkles size={28} /><h3>开始和莲心聊天</h3><p>你的新会话会自动保存到历史记录。</p></div>}<ToolRounds rounds={toolRounds} />{(busy || interactionThinking) && <div className="typing-indicator"><span /><span /><span />莲心正在思考…</div>}</div></div><div className="composer-wrap"><div className="composer" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } }}><div className="attachment-preview">{attachments.map((item, index) => <div className="attachment-thumb" key={`${item.fileName}-${index}`}>{item.kind === "image" ? <img src={item.dataUrl} alt={item.fileName} /> : <div className="file-thumb"><FolderOpen size={18} /></div>}<button type="button" title="移除附件" onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={12} /></button></div>)}</div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder="和莲心聊点什么吧…" rows={2} /><div className="composer-toolbar"><div className="composer-tools"><button type="button" className="composer-tool" onClick={() => fileInput.current?.click()}><Image size={16} />图片</button><input ref={fileInput} hidden type="file" accept="image/*" multiple onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }} /><button type="button" className="composer-tool" onClick={() => allFileInput.current?.click()}><FolderOpen size={16} />文件</button><input ref={allFileInput} hidden type="file" multiple onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }} /><button type="button" className="composer-tool" onClick={onTools}><Wrench size={16} />工具</button><button type="button" className="composer-tool" title="先选中消息后引用" onClick={() => setDraft((current) => `${current ? `${current}\n` : ""}[引用] `)}><Command size={16} />引用</button><label className="auto-send-control"><input type="checkbox" checked={autoSend} onChange={(event) => setAutoSend(event.target.checked)} />自动发送</label><button type="button" className="composer-tool" title="打开备忘本" onClick={onOpenNote}><FileText size={16} />备忘本</button></div><div className="composer-actions"><button className={`icon-button voice-button ${voiceActive ? "voice-active" : ""}`} title="语音聊天" onClick={onVoice}><Mic size={18} /></button><button className="send-button" onClick={busy ? onCancel : submit} disabled={interactionThinking || (!busy && !draft.trim() && !attachments.length)} title={busy ? "停止回复" : "发送"}>{busy ? <X size={18} /> : <Send size={18} />}</button></div></div></div></div></section>;
 }
 
-function StatusCard({ online, avatar }: { online: boolean; avatar?: AvatarState }) { return <section className="rail-card presence-card"><div className="rail-card-title"><span><Sparkles size={15} />莲心状态</span><ChevronDown size={15} /></div><div className="presence-body"><MessageAvatar role="assistant" compact avatar={avatar} /><div><strong>{online ? "陪伴中" : "离线模式"}</strong><span>{online ? "在线 · Python 核心已连接" : "启动 api_server.py 后接入"}</span></div><Activity size={20} className="presence-wave" /></div></section>; }
+function AvatarInteractionCard({ avatar }: { avatar?: AvatarState }) {
+  return <section className="rail-card avatar-interaction-card"><div className="rail-card-title"><span><Sparkles size={15} />莲心角色区</span><span className="avatar-hint">角色立绘</span></div><div className="character-stage"><img src={avatar?.characterDataUrl || "/lianxin-avatar.png"} alt="莲心角色立绘" /></div></section>;
+}
 
-function NowPlayingCard({ music, onControl }: { music: MusicState; onControl: (action: string) => void }) { const progress = music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0; return <section className="rail-card"><div className="rail-card-title"><span><Music2 size={15} />当前播放</span><ChevronDown size={15} /></div><div className="playing"><div className="album-art">{music.active ? <Play size={25} /> : <Music2 size={25} />}</div><div className="playing-copy"><strong>{music.active ? music.name || "未知歌曲" : "暂无播放"}</strong><span>{music.artist || "网易云音乐"}</span><div className="progress-line"><span style={{ width: `${progress}%` }} /></div></div></div><div className="player-controls"><button title="上一首" onClick={() => onControl("previous")}><ChevronRight size={16} className="previous-icon" /></button><button className="play-button" title={music.active ? "暂停" : "播放"} onClick={() => onControl("toggle")}>{music.active ? <Pause size={17} /> : <Play size={17} />}</button><button title="下一首" onClick={() => onControl("next")}><ChevronRight size={16} /></button></div></section>; }
+function NowPlayingCard({ music, onControl }: { music: MusicState; onControl: (action: string) => void }) { const progress = music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0; return <section className="rail-card"><div className="rail-card-title"><span><Music2 size={15} />当前播放</span><ChevronDown size={15} /></div><div className="playing"><div className="album-art">{music.coverUrl ? <img src={music.coverUrl} alt="cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} /> : (music.active ? <Play size={25} /> : <Music2 size={25} />)}</div><div className="playing-copy"><strong>{music.active ? music.name || "未知歌曲" : "暂无播放"}</strong><span>{music.artist || "网易云音乐"}</span><div className="progress-line"><span style={{ width: `${progress}%` }} /></div></div></div><div className="player-controls"><button title="上一首" onClick={() => onControl("previous")}><ChevronRight size={16} className="previous-icon" /></button><button className="play-button" title={music.active ? "暂停" : "播放"} onClick={() => onControl("toggle")}>{music.active ? <Pause size={17} /> : <Play size={17} />}</button><button title="下一首" onClick={() => onControl("next")}><ChevronRight size={16} /></button></div></section>; }
 
 function FiveAxisCard({ state }: { state: FiveAxisState }) { const items = [{ key: "connection", label: "连接需求", color: "#F3C878", signed: false }, { key: "pride", label: "骄傲", color: "#A992FF", signed: true }, { key: "valence", label: "情绪基调", color: "#72D7E8", signed: true }, { key: "arousal", label: "唤醒度", color: "#F49BBE", signed: true }, { key: "immersion", label: "沉浸度", color: "#86D6A6", signed: false }]; return <section className="rail-card axis-card"><div className="rail-card-title"><span><Activity size={15} />AI 主动意识 · 五轴状态</span><strong>{state.mood || "中性"}</strong></div>{items.map((item) => { const value = Math.max(item.signed ? -1 : 0, Math.min(1, Number(state.axes[item.key] ?? 0))); const width = item.signed ? Math.abs(value) * 50 : value * 100; return <div className="axis-row" key={item.key}><span className="axis-label">{item.label}</span><div className={`axis-track ${item.signed ? "is-signed" : ""}`}><span className="axis-fill" style={{ width: `${width}%`, left: item.signed && value < 0 ? `${50 - width}%` : item.signed ? "50%" : "0", background: item.color }} />{item.signed && <i />}</div><span className="axis-value">{item.signed ? value.toFixed(2) : value.toFixed(2)}</span></div>; })}<div className="axis-motive">基于莲心当前情绪与活动状态实时更新</div></section>; }
 
-function CompanionRail({ online, music, onControl, axis, avatar }: { online: boolean; music: MusicState; onControl: (action: string) => void; axis: FiveAxisState; avatar?: AvatarState }) { return <aside className="companion-rail"><StatusCard online={online} avatar={avatar} /><NowPlayingCard music={music} onControl={onControl} /><FiveAxisCard state={axis} /></aside>; }
+function CompanionRail({ music, onControl, axis, avatar }: { online?: boolean; music: MusicState; onControl: (action: string) => void; axis: FiveAxisState; avatar?: AvatarState }) { return <aside className="companion-rail"><AvatarInteractionCard avatar={avatar} /><NowPlayingCard music={music} onControl={onControl} /><FiveAxisCard state={axis} /></aside>; }
 
 function Overlay({ children, onClose }: { children: ReactNode; onClose: () => void }) { return <div className="overlay"><section className="overlay-panel"><button className="overlay-close" onClick={onClose}><X size={18} /></button>{children}</section></div>; }
 
@@ -117,12 +148,12 @@ function ProactivePanel({ onClose }: { onClose: () => void }) { const [enabled, 
 
 function ManagementPanel({ onClose, onVoice, onLegacy }: { onClose: () => void; onVoice: () => void; onLegacy: (feature: LegacyFeature) => void }) { const [modules, setModules] = useState<Array<{ id: string; label: string; available: boolean }>>([]); useEffect(() => { void lianxinApi.managementState().then((result) => setModules(result.modules)).catch(() => undefined); }, []); return <Overlay onClose={onClose}><div className="panel-heading"><div><span className="eyebrow">莲心系统</span><h2>管理中心</h2></div></div><div className="module-list">{modules.map((module) => { const legacy = legacyFeatureIds.has(module.id as LegacyFeature); return <button className="module-entry" key={`${module.id}-${module.label}`} onClick={() => module.id === "voice" ? onVoice() : legacy ? onLegacy(module.id as LegacyFeature) : undefined}><span><span className={`module-dot ${module.available ? "is-ready" : ""}`} />{module.label}</span><span>{legacy ? "原版窗口" : module.available ? "可用" : "未连接"}<ChevronRight size={15} /></span></button>; })}</div></Overlay>; }
 
-function Workspace({ workspace, music }: { workspace: WorkspaceId; music: MusicState }) { const item = primaryNavigation.find((entry) => entry.id === workspace)!; if (workspace === "music") return <section className="workspace placeholder-workspace"><div className="placeholder-icon"><Music2 /></div><p className="eyebrow">莲心空间</p><h1>音乐</h1><p>{music.active ? `正在播放：${music.name || "未知歌曲"} · ${music.artist || "未知歌手"}` : "当前没有检测到网易云音乐播放状态。"}</p><button className="secondary-button"><Play size={15} />打开网易云音乐</button></section>; return <section className="workspace placeholder-workspace"><div className="placeholder-icon"><Icon name={item.icon} /></div><p className="eyebrow">莲心空间</p><h1>{item.label}</h1><p>这里将逐步接入莲心现有的真实能力与数据。</p><button className="secondary-button"><ArrowUp size={15} />返回对话</button></section>; }
-
+function Workspace({ workspace, music, onControl, musicError, onDismissMusicError }: { workspace: WorkspaceId; music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; musicError?: string; onDismissMusicError?: () => void }) { if (workspace === "music") return <MusicWorkspace music={music} onControl={onControl} errorMsg={musicError} onDismissError={onDismissMusicError} />; const item = primaryNavigation.find((entry) => entry.id === workspace)!; return <section className="workspace placeholder-workspace"><div className="placeholder-icon"><Icon name={item.icon} /></div><p className="eyebrow">莲心空间</p><h1>{item.label}</h1><p>这里将逐步接入莲心现有的真实能力与数据。</p><button className="secondary-button"><ArrowUp size={15} />返回对话</button></section>; }
 export function App() {
-  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat"); const [managementOpen, setManagementOpen] = useState(false); const [messages, setMessages] = useState<Message[]>(demoMessages); const [backendOnline, setBackendOnline] = useState(false); const [busy, setBusy] = useState(false); const [panel, setPanel] = useState<PanelId>("none"); const [music, setMusic] = useState<MusicState>({}); const [axis, setAxis] = useState<FiveAxisState>({ axes: {}, mood: "中性" }); const [voiceActive, setVoiceActive] = useState(false); const [toolRounds, setToolRounds] = useState<ToolRoundState[]>([]); const [background, setBackground] = useState<BackgroundState>({ enabled: true, opacity: 0.22, fitMode: "cover", fingerprint: "" }); const [avatar, setAvatar] = useState<AvatarState>({ enabled: true, size: 60, gap: 10, border: true, fingerprint: "" });
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat"); const [managementOpen, setManagementOpen] = useState(false); const [messages, setMessages] = useState<Message[]>(demoMessages); const [interactionMessages, setInteractionMessages] = useState<Message[]>([]); const [backendOnline, setBackendOnline] = useState(false); const [busy, setBusy] = useState(false); const [interactionThinking, setInteractionThinking] = useState(false); const [panel, setPanel] = useState<PanelId>("none"); const [music, setMusic] = useState<MusicState>({}); const [musicError, setMusicError] = useState(""); const [axis, setAxis] = useState<FiveAxisState>({ axes: {}, mood: "中性" }); const [voiceActive, setVoiceActive] = useState(false); const [toolRounds, setToolRounds] = useState<ToolRoundState[]>([]); const [background, setBackground] = useState<BackgroundState>({ enabled: true, opacity: 0.22, fitMode: "cover", fingerprint: "" }); const [avatar, setAvatar] = useState<AvatarState>({ enabled: true, size: 60, gap: 10, border: true, fingerprint: "" });
   const workspaceLabel = useMemo(() => primaryNavigation.find((item) => item.id === activeWorkspace)?.label ?? "对话", [activeWorkspace]);
   useEffect(() => { const check = () => { void lianxinApi.status().then((status) => { setBackendOnline(status.online); if (status.sessionId) void lianxinApi.messages(status.sessionId).then((result) => { if (result.items.length) setMessages(result.items.map((item, index) => ({ id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "" }))); }).catch(() => undefined); }).catch(() => setBackendOnline(false)); void lianxinApi.musicState().then((state) => setMusic(state as MusicState)).catch(() => undefined); void lianxinApi.fiveAxis().then(setAxis).catch(() => undefined); }; check(); const timer = window.setInterval(check, 5000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { document.documentElement.style.setProperty("--lx-chat-mask", String(background.chatOpacity ?? 0.75)); }, [background.chatOpacity]);
   useEffect(() => {
     let disposed = false;
     const sync = async (includeData: boolean) => {
@@ -133,7 +164,7 @@ export function App() {
           const full = includeData ? next : await lianxinApi.background(true);
           if (!disposed) setBackground(full);
         } else {
-          setBackground((current) => ({ ...current, enabled: next.enabled, opacity: next.opacity, fitMode: next.fitMode }));
+          setBackground((current) => ({ ...current, enabled: next.enabled, opacity: next.opacity, chatOpacity: next.chatOpacity, fitMode: next.fitMode }));
         }
       } catch { /* The bundled fallback remains visible while the API is offline. */ }
     };
@@ -159,16 +190,22 @@ export function App() {
     const timer = window.setInterval(() => void sync(false), 2500);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [avatar.fingerprint]);
-  const openSession = (id: number) => void lianxinApi.selectSession(id).then(() => lianxinApi.messages(id)).then((result) => { setActiveWorkspace("chat"); setMessages(result.items.map((item, index) => ({ id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "" }))); }).catch(() => undefined);
-  const handleSend = async (text: string) => {
-    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content: text, time: "现在" }]);
+  const openSession = (id: number) => void lianxinApi.selectSession(id).then(() => lianxinApi.messages(id)).then((result) => { setActiveWorkspace("chat"); setInteractionMessages([]); setMessages(result.items.map(restoreMessage)); }).catch(() => undefined);
+  const handleSend = async (text: string, attachments: Attachment[] = [], selection: { forcedTool?: string; preferredTool?: string } = {}) => {
+    const messageTime = "现在";
+    const imageIds = attachments.map((_, index) => `image-${Date.now()}-${index}`);
+    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content: text, time: messageTime }, ...attachments.map((item, index) => item.kind === "image" ? ({ id: imageIds[index], role: "user" as const, content: "", time: messageTime, imageUrl: item.dataUrl, imageName: item.fileName, imageStatus: "pending" as const }) : ({ id: imageIds[index], role: "user" as const, content: "", time: messageTime, kind: "file" as const, fileName: item.fileName, fileSize: item.size }))]);
     setToolRounds([]);
     if (!backendOnline) return;
     setBusy(true);
     try {
       let reply = "";
-      for await (const event of lianxinApi.streamChat(text)) {
+      for await (const event of lianxinApi.streamChat(text, attachments, selection)) {
         if (event.type === "delta") reply += event.content ?? "";
+        if (event.type === "image_analysis_result" && typeof event.index === "number") {
+          const imageId = imageIds[event.index];
+          setMessages((current) => current.map((message) => message.id === imageId ? { ...message, imageStatus: event.error ? "error" : "success", imageDescription: event.description } : message));
+        }
         if (event.type === "tool_round_start") {
           setToolRounds((current) => current.some((round) => round.round === event.round) ? current : [...current, { round: event.round ?? current.length + 1, calls: [] }]);
         }
@@ -201,7 +238,20 @@ export function App() {
       setMessages((current) => [...current, { id: `error-${Date.now()}`, role: "assistant", content: `后端连接失败：${String(error)}`, time: "现在" }]);
     } finally { setBusy(false); }
   };
-  const handleNewChat = () => { setMessages([]); setToolRounds([]); if (backendOnline) void lianxinApi.newSession().catch(() => undefined); };
+  useEffect(() => {
+    let cursor = 0;
+    const poll = () => void lianxinApi.voiceEvents(cursor).then((result) => {
+      cursor = result.latest;
+      for (const event of result.items) {
+        if (event.type === "voice.transcript" && event.content?.trim()) void handleSend(event.content.trim());
+      }
+    }).catch(() => undefined);
+    const timer = window.setInterval(poll, 700);
+    return () => window.clearInterval(timer);
+  }, [backendOnline]);
+  useEffect(() => { const open = () => setPanel("tools"); window.addEventListener("open-tools", open); return () => window.removeEventListener("open-tools", open); }, []);
+  const handleCancel = () => { void lianxinApi.cancelChat(); setBusy(false); };
+  const handleNewChat = () => { setMessages([]); setInteractionMessages([]); setToolRounds([]); if (backendOnline) void lianxinApi.newSession().catch(() => undefined); };
   const toggleVoice = () => { if (!voiceActive) void lianxinApi.startVoice().then(() => setVoiceActive(true)).catch((error) => window.alert(String(error))); else void lianxinApi.stopVoice().then(() => setVoiceActive(false)); };
   const openLegacy = (feature: LegacyFeature) => { setPanel("none"); void lianxinApi.openLegacy(feature).catch((error) => window.alert(`原版窗口启动失败：${String(error)}`)); };
   const handleWorkspaceChange = (workspace: WorkspaceId) => {
@@ -209,7 +259,16 @@ export function App() {
     if (feature) { openLegacy(feature); return; }
     setActiveWorkspace(workspace);
   };
-  const controlMusic = (action: string) => void lianxinApi.musicControl(action).then((state) => setMusic(state as MusicState)).catch(() => undefined);
+  const controlMusic = (action: string, payload?: Record<string, unknown>) => void lianxinApi.musicControl(action, payload).then((state) => { setMusic(state as MusicState); setMusicError(""); }).catch((error) => setMusicError(String((error as Error)?.message ?? "音乐控制失败")));
+  const handleAvatarInteraction = (action: "tap" | "headpat") => {
+    if (interactionThinking || busy) return;
+    setInteractionThinking(true);
+    void lianxinApi.avatarAction(action).then((result) => {
+      if (!result.accepted) return;
+      const response = result.response;
+      if (response) setMessages((current) => [...current, { id: `avatar-${Date.now()}`, role: "assistant", content: response, time: "现在" }]);
+    }).catch(() => undefined).finally(() => setInteractionThinking(false));
+  };
   const handleDrag = (event: MouseEvent<HTMLElement>) => {
     if (!desktopWindow || event.button !== 0 || (event.target as HTMLElement).closest("button, input, textarea, a")) return;
     void desktopWindow.startDragging().catch((error) => console.warn("窗口拖拽失败", error));
@@ -219,5 +278,8 @@ export function App() {
   const handleMaximize = () => { if (desktopWindow) void desktopWindow.toggleMaximize().catch(() => undefined); };
   const handleClose = () => { if (desktopWindow) void desktopWindow.close().catch(() => undefined); };
   const wallpaperStyle = { opacity: background.enabled ? Math.max(0, Math.min(1, background.opacity)) : 0, ...(background.dataUrl ? { backgroundImage: `url(${background.dataUrl})`, backgroundSize: background.fitMode === "stretch" ? "100% 100%" : background.fitMode } : {}) };
-  return <div className="app-shell"><div className="wallpaper" style={{ opacity: background.enabled ? 1 : 0 }}><div className="wallpaper-image" style={wallpaperStyle} /></div><div className="app-surface"><TopBar onNewChat={handleNewChat} onPanel={setPanel} onLegacy={openLegacy} onMinimize={handleMinimize} onMaximize={handleMaximize} onClose={handleClose} onDrag={handleDrag} /><div className="app-body"><SideNavigation activeWorkspace={activeWorkspace} onWorkspaceChange={handleWorkspaceChange} managementOpen={managementOpen} onManagementToggle={() => setManagementOpen((open) => !open)} onPanel={setPanel} onLegacy={openLegacy} avatar={avatar} /><main className="main-stage"><div className="workspace-title-mobile"><Menu size={17} />{workspaceLabel}</div>{activeWorkspace === "chat" ? <ChatWorkspace messages={messages} toolRounds={toolRounds} avatar={avatar} onSend={handleSend} busy={busy} voiceActive={voiceActive} onVoice={() => setPanel("voice")} /> : <Workspace workspace={activeWorkspace} music={music} />}</main><CompanionRail online={backendOnline} music={music} onControl={controlMusic} axis={axis} avatar={avatar} /></div></div><button className="resize-grip" title="调整窗口大小" onMouseDown={handleResize} aria-label="调整窗口大小" />{panel === "history" && <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} />}{panel === "note" && <NotePanel onClose={() => setPanel("none")} />}{panel === "tasks" && <TaskPanel onClose={() => setPanel("none")} />}{panel === "voice" && <VoicePanel active={voiceActive} onClose={() => setPanel("none")} onToggle={toggleVoice} />}{panel === "proactive" && <ProactivePanel onClose={() => setPanel("none")} />}{panel === "management" && <ManagementPanel onClose={() => setPanel("none")} onVoice={() => setPanel("voice")} onLegacy={openLegacy} />}</div>;
+  const selectedTools = (() => { try { return JSON.parse(window.localStorage.getItem("lianxin-tool-selection") || "{}"); } catch { return {}; } })();
+  if (activeWorkspace === "time-capsule") return <div className="app-shell"><div className="wallpaper" style={{ opacity: background.enabled ? 1 : 0 }}><div className="wallpaper-image" style={wallpaperStyle} /></div><div className="app-surface"><TopBar onNewChat={handleNewChat} onPanel={setPanel} onLegacy={openLegacy} onMinimize={handleMinimize} onMaximize={handleMaximize} onClose={handleClose} onDrag={handleDrag} /><div className="app-body"><SideNavigation activeWorkspace={activeWorkspace} onWorkspaceChange={handleWorkspaceChange} managementOpen={managementOpen} onManagementToggle={() => setManagementOpen((open) => !open)} onPanel={setPanel} onLegacy={openLegacy} avatar={avatar} /><main className="main-stage"><TimeCapsuleWorkspace /></main><CompanionRail online={backendOnline} music={music} onControl={controlMusic} axis={axis} avatar={avatar} /></div></div></div>;
+  if (panel === "tools") return <ToolPanel selected={selectedTools} onSelect={(selection) => { window.localStorage.setItem("lianxin-tool-selection", JSON.stringify(selection)); window.dispatchEvent(new CustomEvent("tool-selection", { detail: selection })); }} onClose={() => setPanel("none")} />;
+  return <div className="app-shell"><div className="wallpaper" style={{ opacity: background.enabled ? 1 : 0 }}><div className="wallpaper-image" style={wallpaperStyle} /></div><div className="app-surface"><TopBar onNewChat={handleNewChat} onPanel={setPanel} onLegacy={openLegacy} onMinimize={handleMinimize} onMaximize={handleMaximize} onClose={handleClose} onDrag={handleDrag} /><div className="app-body"><SideNavigation activeWorkspace={activeWorkspace} onWorkspaceChange={handleWorkspaceChange} managementOpen={managementOpen} onManagementToggle={() => setManagementOpen((open) => !open)} onPanel={setPanel} onLegacy={openLegacy} avatar={avatar} /><main className="main-stage"><div className="workspace-title-mobile"><Menu size={17} />{workspaceLabel}</div>{activeWorkspace === "chat" ? <ChatWorkspace messages={messages} toolRounds={toolRounds} avatar={avatar} onSend={handleSend} onInteraction={handleAvatarInteraction} interactionThinking={interactionThinking} busy={busy} voiceActive={voiceActive} onVoice={() => setPanel("voice")} /> : <Workspace workspace={activeWorkspace} music={music} onControl={controlMusic} musicError={musicError} onDismissMusicError={() => setMusicError("")} />}</main><CompanionRail online={backendOnline} music={music} onControl={controlMusic} axis={axis} avatar={avatar} /></div></div><button className="resize-grip" title="调整窗口大小" onMouseDown={handleResize} aria-label="调整窗口大小" />{panel === "history" && <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} />}{panel === "note" && <NotePanel onClose={() => setPanel("none")} />}{panel === "tasks" && <TaskPanel onClose={() => setPanel("none")} />}{panel === "voice" && <VoicePanel active={voiceActive} onClose={() => setPanel("none")} onToggle={toggleVoice} />}{panel === "proactive" && <ProactivePanel onClose={() => setPanel("none")} />}{panel === "management" && <ManagementPanel onClose={() => setPanel("none")} onVoice={() => setPanel("voice")} onLegacy={openLegacy} />}</div>;
 }

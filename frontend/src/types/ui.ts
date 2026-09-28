@@ -12,5 +12,12 @@ export type Message = {
   role: "user" | "assistant";
   content: string;
   time: string;
-  kind?: "text" | "task" | "result";
+  kind?: "text" | "task" | "result" | "file";
+  imageUrl?: string;
+  imageName?: string;
+  imageStatus?: "pending" | "success" | "error";
+  imageDescription?: string;
+  fileName?: string;
+  fileSize?: number;
+  attachments?: Array<{ kind: "image" | "file"; fileName: string; path?: string }>;
 };
