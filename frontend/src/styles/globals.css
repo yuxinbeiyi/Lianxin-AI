@@ -368,3 +368,6 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 
 .music-progress-track { cursor: pointer; }
 .music-volume input[type="range"] { touch-action: none; }
+
+.debug-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 16px; }
+.debug-actions .secondary-button { flex: 0 0 auto; }

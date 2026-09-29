@@ -84,7 +84,8 @@ def _grab_vision_panel_frame():
     try:
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        if app is None:
+        if app is None or not isinstance(app, QApplication):
+            # 无 GUI 后端（如 api_server 只建 QCoreApplication）没有视觉感知面板，静默跳过
             return False, None
         for widget in app.topLevelWidgets():
             panel = getattr(widget, "_vision_panel", None)

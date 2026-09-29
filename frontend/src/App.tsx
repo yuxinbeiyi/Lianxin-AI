@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
-  Activity, AlarmClock, ArrowUp, BookOpen, Bot, BrainCircuit, Camera, Check,
+  Activity, AlarmClock, ArrowUp, BookOpen, Bot, BrainCircuit, Check,
   CheckCircle2, ChevronDown, ChevronRight, Clock3, Command, FileText, FolderOpen,
   Gauge, Gem, Image, LayoutDashboard, Lightbulb, Maximize2, Menu,
   MessageCircle, Mic, Minimize2, Music2, Network, Pause, Play, Plus,
@@ -43,7 +43,7 @@ function MessageAvatar({ role, compact = false, avatar, onInteraction, interacti
   const avatarStyle = configuredSize ? { width: `${configuredSize}px`, height: `${configuredSize}px`, border: avatar?.border === false ? "0" : undefined } : undefined;
   if (role === "assistant") {
     const talkingClass = talking ? "avatar-talking" : "";
-    return <div className={`avatar ${sizeClass} assistant-avatar ${interacting ? "avatar-interacting" : ""}`} style={avatarStyle} onMouseDown={startPress} onMouseUp={clearPress} onMouseLeave={clearPress} onContextMenu={(event) => event.preventDefault()}><img src={avatar?.assistantDataUrl || "/lianxin-avatar.png"} alt="莲心聊天头像" /></div>;
+    return <div className={`avatar ${sizeClass} assistant-avatar ${interacting ? "avatar-interacting" : ""} ${talkingClass}`} style={avatarStyle} onMouseDown={startPress} onMouseUp={clearPress} onMouseLeave={clearPress} onContextMenu={(event) => event.preventDefault()}><img src={avatar?.assistantDataUrl || "/lianxin-avatar.png"} alt="莲心聊天头像" /></div>;
   }
   return <div className={`avatar ${sizeClass} user-avatar`} style={avatarStyle}>{avatar?.userDataUrl ? <img src={avatar.userDataUrl} alt="我" /> : <span>我</span>}</div>;
 }
@@ -53,7 +53,7 @@ const managementFeatureMap: Record<string, LegacyFeature> = {
   "后台职责中心": "duty", "主动聊天": "proactive", "涟漪情感系统": "ripple", "人格枢控": "persona",
   "星图系统": "memory-constellation", "棱镜记忆系统": "prism-memory", "莲心自习室": "study-room",
   "时间胶囊": "time-capsule", "数据潮汐": "data-tide", "能力中枢": "capability", "视觉理解": "vision",
-  "语音转录": "voice-stt", "摄像头": "camera", "声音设置": "sound", "全局设置": "settings", "API Key": "api",
+  "语音转录": "voice-stt", "声音设置": "sound", "全局设置": "settings", "API Key": "api",
   "网络设置": "network", "QQ 聊天": "qq", "微信聊天": "wechat",
 };
 const legacyFeatureIds = new Set(Object.values(managementFeatureMap));
@@ -64,7 +64,7 @@ const iconMap: Record<string, typeof MessageCircle> = {
 const managementIconMap: Record<string, typeof Settings> = {
   "闹钟与提醒": AlarmClock, "任务运行中心": Gauge, "主动聊天": MessageCircle, "后台职责中心": Bot,
   "涟漪情感系统": Waves, "人格枢控": UserRound, "星图系统": Network,
-  "能力中枢": BrainCircuit, "视觉理解": Image, "语音转录": Mic, "摄像头": Camera,
+  "能力中枢": BrainCircuit, "视觉理解": Image, "语音转录": Mic,
   "声音设置": Volume2, "全局设置": Settings, "API Key": Command,
   "网络设置": Network, "QQ 聊天": MessageCircle, "微信聊天": MessageCircle,
   "数据潮汐": Activity,
@@ -79,7 +79,7 @@ function TopBar({ onNewChat, onPanel, onLegacy, onMinimize, onMaximize, onClose,
   return <header className="topbar" data-tauri-drag-region onMouseDown={onDrag}>
     <div className="brand-block" data-tauri-drag-region><div className="brand-mark"><Sparkles size={24} /></div><div><div className="brand-name">莲心 <span>AI</span></div><div className="brand-status"><span className="status-dot" /> 在线</div></div></div>
     <div className="search-box" role="search"><Search size={17} /><span>搜索对话、记忆和功能</span><kbd>Ctrl K</kbd></div>
-    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("video-call")}><Video size={16} />视频通话</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />桌宠模式</button><button className="icon-button" title="全局设置" onClick={() => onPanel("management")}><Settings size={18} /></button></nav>
+    <nav className="top-actions"><button className="top-action" onClick={() => onLegacy("history")}><Clock3 size={16} />历史记录</button><button className="top-action" onClick={onNewChat}><Plus size={17} />新建对话</button><button className="top-action" onClick={() => onLegacy("video-call")}><Video size={16} />视频通话</button><button className="mode-button" onClick={() => onLegacy("galgame")}><Sparkles size={16} />桌宠模式</button></nav>
     <div className="window-actions"><button className="icon-button" title="最小化" onClick={onMinimize}><Minimize2 size={16} /></button><button className="icon-button" title="最大化 / 还原" onClick={onMaximize}><Maximize2 size={16} /></button><button className="icon-button close-button" title="关闭莲心" onClick={onClose}><X size={17} /></button></div>
   </header>;
 }
@@ -109,9 +109,9 @@ function ImageMessageContent({ message }: { message: Message }) {
   </>;
 }
 
-function MessageItem({ message, avatar, onInteraction, interacting, onQuote, onDelete }: { message: Message; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean; onQuote?: (message: Message) => void; onDelete?: (message: Message) => void }) {
+function MessageItem({ message, avatar, onInteraction, interacting, talking = false, onQuote, onDelete }: { message: Message; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean; talking?: boolean; onQuote?: (message: Message) => void; onDelete?: (message: Message) => void }) {
   if (message.kind === "task") return <div className="message-row assistant-row"><MessageAvatar role="assistant" avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>莲心</strong><span>{message.time}</span></div><TaskCard /></div></div>;
-  if (message.imageUrl) return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble image-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><ImageMessageContent message={message} /></div></div></div>;
+  if (message.imageUrl) return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div>{message.content.trim() && <div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-text-${index}`}>{line}</p>)}</div>}<div className={`message-bubble image-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><ImageMessageContent message={message} /></div></div></div>;
   if (message.kind === "file") return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble file-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><FolderOpen size={18} /><span>{message.fileName || "文件附件"}</span>{message.fileSize ? <small>{Math.ceil(message.fileSize / 1024)} KB</small> : null}</div></div></div>;
   return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`} onContextMenu={(event) => { event.preventDefault(); const action = window.prompt("输入 c 复制、q 引用、d 删除，直接取消关闭"); if (action?.toLowerCase() === "c") void navigator.clipboard?.writeText(message.content); if (action?.toLowerCase() === "q") onQuote?.(message); if (action?.toLowerCase() === "d") onDelete?.(message); }}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-${index}`}>{line}</p>)}<div className="message-actions"><button type="button" title="复制" onClick={() => void navigator.clipboard?.writeText(message.content)}>复制</button><button type="button" title="引用" onClick={() => onQuote?.(message)}>引用</button>{message.role === "assistant" && <button type="button" title="朗读" onClick={() => void lianxinApi.speak(message.content).catch(() => undefined)}>朗读</button>}<button type="button" title="删除" onClick={() => onDelete?.(message)}>删除</button></div></div></div></div>;
 }
@@ -164,7 +164,7 @@ function TaskPanel({ onClose }: { onClose: () => void }) { const [data, setData]
 
 function VoicePanel({ active, onClose, onToggle }: { active: boolean; onClose: () => void; onToggle: () => void }) { const [events, setEvents] = useState<Array<{ id: number; type: string; state?: string; content?: string; error?: string }>>([]); useEffect(() => { let cursor = 0; const poll = () => void lianxinApi.voiceEvents(cursor).then((result) => { if (result.items.length) { cursor = result.latest; setEvents((current) => [...current, ...result.items].slice(-20)); } }).catch(() => undefined); const timer = window.setInterval(poll, 800); poll(); return () => window.clearInterval(timer); }, []); return <Overlay onClose={onClose}><div className="panel-heading"><div><span className="eyebrow">能力与感知</span><h2>语音聊天</h2></div><button className={`secondary-button ${active ? "danger-action" : ""}`} onClick={onToggle}>{active ? "停止监听" : "开始监听"}</button></div><div className={`voice-state ${active ? "is-active" : ""}`}><Mic size={30} /><strong>{active ? "正在监听麦克风" : "语音聊天未启动"}</strong><span>{active ? "说话结束后会自动转录并发送给莲心" : "启动后才会访问麦克风"}</span></div><div className="voice-events">{events.length ? events.map((event) => <div className="log-entry" key={event.id}><span className="log-ok">{event.type.replace("voice.", "")}</span><span>{event.content || event.state || event.error || ""}</span></div>) : <p className="muted-copy">暂无语音事件。</p>}</div></Overlay>; }
 
-function ProactivePanel({ onClose }: { onClose: () => void }) { const [enabled, setEnabled] = useState(false); const [loading, setLoading] = useState(true); useEffect(() => { void lianxinApi.proactiveState().then((state) => { setEnabled(state.desktopEnabled); setLoading(false); }).catch(() => setLoading(false)); }, []); const toggle = () => { const next = !enabled; setEnabled(next); void lianxinApi.toggleProactive(next).catch(() => setEnabled(!next)); }; return <Overlay onClose={onClose}><div className="panel-heading"><div><span className="eyebrow">运行与任务</span><h2>主动聊天</h2></div><button className="secondary-button" disabled={loading} onClick={toggle}>{enabled ? "已启用" : "已停用"}</button></div><div className="setting-row"><div><strong>桌面主动聊天</strong><span>沿用原有 ProactiveChatScheduler 的时间权重、冷却和活动延迟策略。</span></div><button className={`toggle ${enabled ? "is-on" : ""}`} onClick={toggle} aria-label="切换主动聊天"><span /></button></div><p className="muted-copy">默认保持停用。启用后，莲心会依照现有调度器策略主动发起聊天。</p></Overlay>; }
+function ProactivePanel({ onClose }: { onClose: () => void }) { const [enabled, setEnabled] = useState(false); const [running, setRunning] = useState(false); const [loading, setLoading] = useState(true); const [triggering, setTriggering] = useState(false); useEffect(() => { const sync = () => { void lianxinApi.proactiveState().then((state) => { setEnabled(state.desktopEnabled); setLoading(false); }).catch(() => setLoading(false)); void lianxinApi.proactiveStatus().then((state) => setRunning(Boolean(state.running))).catch(() => undefined); }; sync(); const timer = window.setInterval(sync, 3000); return () => window.clearInterval(timer); }, []); const toggle = () => { const next = !enabled; setEnabled(next); void lianxinApi.toggleProactive(next).catch(() => setEnabled(!next)); }; const trigger = (mode: string) => { if (triggering) return; setTriggering(true); void lianxinApi.proactiveTrigger(mode).catch(() => undefined).finally(() => setTriggering(false)); }; return <Overlay onClose={onClose}><div className="panel-heading"><div><span className="eyebrow">运行与任务</span><h2>主动聊天</h2></div><button className="secondary-button" disabled={loading} onClick={toggle}>{enabled ? "已启用" : "已停用"}</button></div><div className="setting-row"><div><strong>桌面主动聊天</strong><span>沿用原有 ProactiveChatScheduler 的时间权重、冷却和活动延迟策略。</span></div><button className={`toggle ${enabled ? "is-on" : ""}`} onClick={toggle} aria-label="切换主动聊天"><span /></button></div><div className="setting-row"><div><strong>调试触发</strong><span>{running ? "莲心正在生成主动消息…" : "手动触发一轮主动聊天，验证调度链路是否可用。"}</span></div></div><div className="debug-actions"><button className="secondary-button" disabled={triggering || running} onClick={() => trigger("normal")}>{triggering ? "触发中…" : "立即触发（调试）"}</button><button className="secondary-button" disabled={triggering || running} onClick={() => trigger("screenshot")}>截图观察</button><button className="secondary-button" disabled={triggering || running} onClick={() => trigger("camera")}>摄像头观察</button><button className="secondary-button" disabled={triggering || running} onClick={() => trigger("bilibili")}>B站冲浪</button></div><p className="muted-copy">默认保持停用。启用后，莲心会依照现有调度器策略主动发起聊天。</p></Overlay>; }
 
 function ManagementPanel({ onClose, onVoice, onLegacy }: { onClose: () => void; onVoice: () => void; onLegacy: (feature: LegacyFeature) => void }) { const [modules, setModules] = useState<Array<{ id: string; label: string; available: boolean }>>([]); useEffect(() => { void lianxinApi.managementState().then((result) => setModules(result.modules)).catch(() => undefined); }, []); return <Overlay onClose={onClose}><div className="panel-heading"><div><span className="eyebrow">莲心系统</span><h2>管理中心</h2></div></div><div className="module-list">{modules.map((module) => { const legacy = legacyFeatureIds.has(module.id as LegacyFeature); return <button className="module-entry" key={`${module.id}-${module.label}`} onClick={() => module.id === "voice" ? onVoice() : legacy ? onLegacy(module.id as LegacyFeature) : undefined}><span><span className={`module-dot ${module.available ? "is-ready" : ""}`} />{module.label}</span><span>{legacy ? "原版窗口" : module.available ? "可用" : "未连接"}<ChevronRight size={15} /></span></button>; })}</div></Overlay>; }
 
@@ -176,15 +176,44 @@ export function App() {
   useEffect(() => { document.documentElement.classList.toggle("tts-active", ttsSpeaking); }, [ttsSpeaking]);
   const workspaceLabel = useMemo(() => primaryNavigation.find((item) => item.id === activeWorkspace)?.label ?? "对话", [activeWorkspace]);
   useEffect(() => { let first = true; const check = () => { void lianxinApi.status().then((status) => { setBackendOnline(status.online); if (first && status.sessionId) { console.info("[IMAGE_FLOW] status", { sessionId: status.sessionId, online: status.online }); void lianxinApi.messages(status.sessionId).then((result) => { const attachments = result.items.reduce((count, item) => count + (item.attachments?.length ?? 0), 0); console.info("[IMAGE_FLOW] restore", { sessionId: status.sessionId, items: result.items.length, attachments }); if (result.items.length) setMessages(result.items.map(restoreMessage)); }).catch((error) => console.warn("[IMAGE_FLOW] restore failed", error)); } first = false; }).catch((error) => { console.warn("[IMAGE_FLOW] status failed", error); setBackendOnline(false); }); void lianxinApi.musicState().then((state) => setMusic(state as MusicState)).catch(() => undefined); void lianxinApi.fiveAxis().then(setAxis).catch(() => undefined); }; check(); const timer = window.setInterval(check, 5000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => {
+    let disposed = false;
+    let sessionId: number | null = null;
+    let cursor = 0;
+    const sync = async () => {
+      if (busy) return;
+      try {
+        const status = await lianxinApi.status();
+        if (!status.sessionId || disposed) return;
+        const changed = sessionId !== status.sessionId;
+        if (changed) { sessionId = status.sessionId; cursor = 0; }
+        const result = await lianxinApi.messages(status.sessionId, cursor);
+        if (disposed) return;
+        if (changed && !result.items.length) { setMessages([]); return; }
+        if (!result.items.length) return;
+        const restored = result.items.map(restoreMessage);
+        cursor = Math.max(cursor, ...result.items.map((item) => Number(item.id || 0)));
+        setMessages((current) => {
+          const byId = new Map(current.map((message) => [message.id, message]));
+          if (changed) byId.clear();
+          for (const message of restored) byId.set(message.id, message);
+          return Array.from(byId.values()).sort((left, right) => Number(left.id) - Number(right.id));
+        });
+      } catch { /* The existing optimistic chat remains visible while the bridge is unavailable. */ }
+    };
+    void sync();
+    const timer = window.setInterval(() => void sync(), 1200);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [busy]);
   useEffect(() => { document.documentElement.style.setProperty("--lx-chat-mask", String(background.chatOpacity ?? 0.75)); }, [background.chatOpacity]);
   useEffect(() => {
     const onClick = (event: globalThis.MouseEvent) => {
       const button = (event.target as HTMLElement).closest("button");
       if (!button) return;
       const label = `${button.title} ${button.textContent || ""} ${button.className}`;
+      if (/发送|send-button/.test(label)) return;
       let sound = "ButtonAll.mp3";
-      if (/发送|send-button/.test(label)) sound = "Send message.mp3";
-      else if (/工具|图片|文件|附件|composer-tool/.test(label)) sound = "ToolBox1.mp3";
+      if (/工具|图片|文件|附件|composer-tool/.test(label)) sound = "ToolBox1.mp3";
       else if (/备忘/.test(label)) sound = "MemoBook.mp3";
       else if (/音乐|music-|播放|上一首|下一首/.test(label)) sound = "ButtonMusic.mp3";
       else if (/拍一拍|摸一摸/.test(label)) sound = "拍一拍.mp3";
@@ -233,6 +262,8 @@ export function App() {
   const handleSend = async (text: string, attachments: Attachment[] = [], selection: { forcedTool?: string; preferredTool?: string } = {}) => {
     const messageTime = "现在";
     const imageIds = attachments.map((_, index) => `image-${Date.now()}-${index}`);
+    void lianxinApi.playSound("ButtonAll.mp3").catch(() => undefined);
+    void lianxinApi.stopSpeaking().catch(() => undefined);
     setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content: text, time: messageTime }, ...attachments.map((item, index) => item.kind === "image" ? ({ id: imageIds[index], role: "user" as const, content: "", time: messageTime, imageUrl: item.dataUrl, imageName: item.fileName, imageStatus: "pending" as const }) : ({ id: imageIds[index], role: "user" as const, content: "", time: messageTime, kind: "file" as const, fileName: item.fileName, fileSize: item.size }))]);
     setToolRounds([]);
     if (!backendOnline) return;

@@ -3178,11 +3178,12 @@ class AgentCore:
 
         if route.is_light:
             # 日常聊天只保留最近四轮，并截断上一次长任务的原始输出。
-            for history_item in self.history[-8:]:
+            for history_index, history_item in enumerate(self.history[-8:]):
                 compact_item = dict(history_item)
                 content = str(compact_item.get("content", ""))
                 max_chars = 420 if compact_item.get("role") == "user" else 520
-                if len(content) > max_chars:
+                is_current_request = history_index == len(self.history[-8:]) - 1
+                if len(content) > max_chars and not is_current_request:
                     compact_item["content"] = content[:max_chars] + "[此前长内容已省略]"
                 if (
                     request_context.is_quote_reply

@@ -34,6 +34,22 @@ def _configure_webengine(feature: str) -> None:
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{existing_flags} --disable-gpu".strip()
 
 
+def _http_proactive_trigger(mode: str):
+    """POST /api/proactive/trigger 向 api_server 触发主动聊天（方案 B 的跨进程触发通道）。"""
+    try:
+        payload = json.dumps({"mode": mode}, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:8766/api/proactive/trigger",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10):
+            pass
+    except Exception as exc:
+        print(f"[预警] HTTP 触发失败: {exc}", file=sys.stderr)
+
+
 def build_window(feature: str):
     if feature == "ripple":
         from gui.ripple_constellation_web import RippleConstellationWebWindow
@@ -64,7 +80,11 @@ def build_window(feature: str):
     if feature == "proactive":
         from gui.proactive_dialog import ProactiveDialog
         from utils.proactive_chat import ProactiveChatScheduler
-        return ProactiveDialog(ProactiveChatScheduler())
+        dialog = ProactiveDialog(ProactiveChatScheduler())
+        # 不再用原本的局部调度，而是转发给后端 api_server 的常驻主动运行时（方案 B）
+        dialog.debug_trigger.connect(lambda: _http_proactive_trigger("normal"))
+        dialog.debug_observe_signal.connect(_http_proactive_trigger)
+        return dialog
     if feature == "alarm":
         from gui.alarm_dialog import AlarmDialog
         from utils.alarm_manager import AlarmManager
@@ -195,28 +215,41 @@ def main() -> int:
                                     )
                                     with urllib.request.urlopen(request, timeout=120) as response:
                                         result = json.loads(response.read().decode("utf-8"))
-                                    self.reply_ready.emit(str(result.get("message", {}).get("content", "")))
+                                    reply = str(result.get("message", {}).get("content", ""))
+                                    if reply.strip():
+                                        tts_payload = json.dumps({"text": reply}, ensure_ascii=False).encode("utf-8")
+                                        tts_request = urllib.request.Request(
+                                            "http://127.0.0.1:8766/api/tts/speak",
+                                            data=tts_payload,
+                                            headers={"Content-Type": "application/json"},
+                                            method="POST",
+                                        )
+                                        with urllib.request.urlopen(tts_request, timeout=10):
+                                            pass
+                                    self.reply_ready.emit(reply)
                                 except (OSError, ValueError, KeyError) as exc:
                                     self.error.emit(str(exc))
 
                         class GalgamePoller(QObject):
                             """轮询当前会话，把莲心最新主动消息显示到桌宠对话窗。"""
-                            def __init__(self, win):
+                            def __init__(self, win, tachie):
                                 super().__init__(win)
                                 self._win = win
+                                self._tachie = tachie
                                 self._sid = None
                                 self._last_id = 0
                                 self._last_text = ""
+                                self._tts_speaking = False
                                 self._timer = QTimer(self)
                                 self._timer.timeout.connect(self._poll)
-                                self._timer.start(3000)
+                                self._timer.start(500)
 
                             def note_displayed(self, text: str):
                                 self._last_text = text
 
                             def _poll(self):
                                 try:
-                                    with urllib.request.urlopen("http://127.0.0.1:8766/app/status", timeout=2) as response:
+                                    with urllib.request.urlopen("http://127.0.0.1:8766/api/app/status", timeout=2) as response:
                                         status = json.loads(response.read().decode("utf-8"))
                                     sid = status.get("sessionId")
                                     if not sid:
@@ -248,13 +281,24 @@ def main() -> int:
                                         if content != self._last_text:
                                             self._last_text = content
                                             self._win.show_reply(content)
+                                    with urllib.request.urlopen("http://127.0.0.1:8766/api/tts/status", timeout=2) as response:
+                                        tts = json.loads(response.read().decode("utf-8"))
+                                    speaking = bool(tts.get("speaking"))
+                                    if speaking != self._tts_speaking:
+                                        self._tts_speaking = speaking
+                                        if speaking:
+                                            self._tachie.stop_breathing()
+                                            self._tachie.start_talking()
+                                        else:
+                                            self._tachie.stop_talking()
+                                            self._tachie.start_breathing()
                                 except Exception:
                                     pass
 
                         assets_dir = Path(__file__).resolve().parent / "gui" / "galgame" / "assets"
                         tachie = TachieWindow(assets_dir)
                         bridge = GalgameBridge(tachie)
-                        poller = GalgamePoller(window)
+                        poller = GalgamePoller(window, tachie)
 
                         def _move_dialog():
                             screen = app.primaryScreen().availableGeometry()

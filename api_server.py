@@ -38,7 +38,6 @@ def _image_flow_log(message: str) -> None:
                 handle.write(line)
     except OSError:
         pass
-    print(line, end="", flush=True)
 
 
 LEGACY_FEATURES = {
@@ -161,6 +160,7 @@ class LianxinBridge:
         self._voice_lock = threading.RLock()
         self._voice_events = deque(maxlen=100)
         self._proactive = None
+        self._proactive_runtime = None
         self._avatar_lock = threading.RLock()
         self._avatar_last_trigger = 0.0
         self._avatar_busy = False
@@ -199,8 +199,21 @@ class LianxinBridge:
     def sessions(self) -> list[dict]:
         return self.agent().get_history_manager().get_sessions()
 
-    def messages(self, session_id: int) -> list[dict]:
+    def messages(self, session_id: int, after: int = 0) -> list[dict]:
         items = self.agent().get_history_manager().get_messages_with_ids(session_id)
+        if int(after or 0) > 0:
+            items = [item for item in items if int(item.get("id") or 0) > int(after)]
+        # The attachment bridge uses these markers internally so the model can
+        # distinguish an image caption from the user's accompanying text. They
+        # are transport syntax, never visible chat content.
+        for item in items:
+            if item.get("role") != "user":
+                continue
+            content = str(item.get("content") or "")
+            prefix = "[用户附加文字]"
+            suffix = "[用户附加文字结束]"
+            if content.startswith(prefix) and content.endswith(suffix):
+                item["content"] = content[len(prefix):-len(suffix)].strip()
         attachment_count = sum(len(item.get("attachments", []) or []) for item in items)
         description_count = sum(
             1 for item in items for attachment in (item.get("attachments", []) or [])
@@ -232,6 +245,7 @@ class LianxinBridge:
     def chat(self, text: str) -> dict:
         if not text.strip():
             raise ValueError("消息不能为空")
+        self._proactive_user_activity()
         with self._chat_lock:
             agent = self.agent()
             self._busy = True
@@ -287,6 +301,7 @@ class LianxinBridge:
         attachments = list(attachments or [])
         if not text.strip() and not attachments:
             raise ValueError("message or image attachment is required")
+        self._proactive_user_activity()
         from queue import Queue
 
         events = Queue()
@@ -382,7 +397,7 @@ class LianxinBridge:
                                         "fileName": str(attachment.get("fileName") or "image"),
                                         "error": error_text, "description": error_text})
                     user_text = text.strip()
-                    if user_text:
+                    if attachments and user_text:
                         user_text = f"[用户附加文字]\n{user_text}\n[用户附加文字结束]"
                     agent_text = "\n\n".join(context_parts + ([user_text] if user_text else []))
                     if not agent_text.strip():
@@ -456,7 +471,13 @@ class LianxinBridge:
             raise ValueError("朗读内容不能为空")
         self.stop_speaking()
         from voice.speaker import VoiceSpeaker
-        speaker = VoiceSpeaker(voice=voice or "zh-CN-XiaoxiaoNeural")
+        if not voice:
+            try:
+                from config import get_tts_config
+                voice = str(get_tts_config().get("edge_tts_voice") or "zh-CN-XiaoxiaoNeural")
+            except Exception:
+                voice = "zh-CN-XiaoxiaoNeural"
+        speaker = VoiceSpeaker(voice=voice)
         def run():
             voice_manager = self._voice
             if voice_manager is not None:
@@ -1065,23 +1086,60 @@ class LianxinBridge:
             return self.voice_state()
 
     def proactive(self) -> dict:
+        scheduler = self.get_proactive_scheduler()
+        return {"desktopEnabled": scheduler.desktop_enabled, "qqEnabled": scheduler.qq_enabled,
+                "musicFeedbackEnabled": scheduler.music_feedback_enabled,
+                "minIntervalMinutes": scheduler.min_interval_minutes,
+                "frequency": scheduler.frequency}
+
+    def get_proactive_scheduler(self):
         with self._lock:
             if self._proactive is None:
                 from utils.proactive_chat import ProactiveChatScheduler
                 self._proactive = ProactiveChatScheduler()
-            scheduler = self._proactive
-            return {"desktopEnabled": scheduler.desktop_enabled, "qqEnabled": scheduler.qq_enabled,
-                    "musicFeedbackEnabled": scheduler.music_feedback_enabled,
-                    "minIntervalMinutes": scheduler.min_interval_minutes,
-                    "frequency": scheduler.frequency}
+            return self._proactive
 
     def set_proactive(self, enabled: bool) -> dict:
-        with self._lock:
-            if self._proactive is None:
-                self.proactive()
-            self._proactive.desktop_enabled = bool(enabled)
-            self._proactive.save_settings()
+        scheduler = self.get_proactive_scheduler()
+        scheduler.desktop_enabled = bool(enabled)
+        scheduler.save_settings()
         return self.proactive()
+
+    def proactive_runtime(self):
+        with self._lock:
+            if self._proactive_runtime is None:
+                self._proactive_runtime = LianxinProactiveRuntime(self)
+            return self._proactive_runtime
+
+    def start_proactive_runtime(self):
+        self.proactive_runtime().start()
+
+    def stop_proactive_runtime(self):
+        runtime = getattr(self, "_proactive_runtime", None)
+        if runtime is not None:
+            runtime.stop()
+
+    def proactive_trigger(self, mode: str = "normal", action: str = "") -> dict:
+        return self.proactive_runtime().trigger(str(mode), str(action))
+
+    def proactive_status(self) -> dict:
+        runtime = getattr(self, "_proactive_runtime", None)
+        if runtime is None:
+            return {"ready": False, "running": False}
+        return runtime.status()
+
+    def append_agent_context(self, content: str):
+        agent = self.agent()
+        if agent is not None:
+            agent.history.append({"role": "assistant", "content": content})
+
+    def _proactive_user_activity(self):
+        runtime = getattr(self, "_proactive_runtime", None)
+        if runtime is not None:
+            try:
+                runtime.notify_user_message()
+            except Exception:
+                pass
 
     def management(self) -> dict:
         return {"modules": [
@@ -1101,7 +1159,6 @@ class LianxinBridge:
             {"id": "capability", "label": "能力中枢", "available": True},
             {"id": "vision", "label": "视觉理解", "available": True},
             {"id": "voice-stt", "label": "语音转录", "available": True},
-            {"id": "camera", "label": "摄像头", "available": True},
             {"id": "voice", "label": "语音聊天", "available": True, "state": self.voice_state()},
             {"id": "sound", "label": "声音设置", "available": True},
             {"id": "settings", "label": "全局设置", "available": True},
@@ -1213,6 +1270,245 @@ class LianxinBridge:
         }
 
 
+# 方案 B：复用原有 DutyScheduler + ProactiveDuty 链路，挂到 api_server 常驻运行时
+# 复用 DutyScheduler + ProactiveDuty + ProactivePresentationController 完整后台链路
+# 呈现层改为「写会话历史 + TTS」，前端轮询 /api/conversations 显示
+
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
+
+
+class _ProactiveTriggerRelay(QObject):
+    """跨线程触发中继：HTTP handler 线程 emit，槽在 Qt 线程执行"""
+    trigger_requested = pyqtSignal(str, str)   # mode, action
+    user_message_requested = pyqtSignal()
+
+
+class _HeadlessProactiveChatWidget:
+    """无 GUI 聊天控件替身，供呈现控制器调用（headless）"""
+
+    def __init__(self, bridge):
+        self._bridge = bridge
+
+    def add_ai_message(self, text):
+        # 呈现由 controller 经 history_context_func 写入会话历史
+        pass
+
+    def add_system_tip(self, text):
+        bridge_log.log("主动", str(text))
+
+    def add_image_message(self, *_args, **_kwargs):
+        pass
+
+    def add_mooyu_data_sources(self, sources):
+        pass
+
+    def isVisible(self):
+        return False
+
+
+class _ProactiveRuntimeThread(QThread):
+    """QThread carrier so DutyScheduler QTimer (60s master tick) works."""
+    def __init__(self, runtime):
+        super().__init__()
+        self._runtime = runtime
+    def run(self):
+        self._runtime._run()
+
+
+class LianxinProactiveRuntime:
+    """在 api_server 内常驻的主动聊天运行时。
+
+    在独立 Qt 线程里承载 DutyScheduler、QTimer/QThread；
+    HTTP 触发请求经中继转发到 Qt 线程执行。
+    """
+
+    def __init__(self, bridge):
+        self._bridge = bridge
+        self._thread = None
+        self._ready = threading.Event()
+        self._relay = None
+        self._duty_scheduler = None
+        self._scheduler = None
+
+    # 运行生命周期
+
+    def start(self):
+        if self._thread and self._thread.isRunning():
+            return
+        self._thread = _ProactiveRuntimeThread(self)
+        self._thread.start()
+        self._ready.wait(timeout=60)
+
+    def _run(self):
+        from PyQt5.QtCore import QEventLoop
+        from utils.proactive_chat import ProactiveChatScheduler  # noqa: F401
+        from utils.duty_scheduler import DutyScheduler, ProactiveDuty, register_duty
+        from gui.proactive_controller import ProactivePresentationController
+        from utils.settings import get_settings
+
+        bridge = self._bridge
+        scheduler = bridge.get_proactive_scheduler()
+        chat_widget = _HeadlessProactiveChatWidget(bridge)
+
+        duty = DutyScheduler()
+        duty.setup(
+            proactive_scheduler=scheduler,
+            reminder_manager=None,
+            global_settings=get_settings(),
+            session_id_func=lambda: bridge.agent()._session_id if bridge.agent() else 0,
+            history_manager_func=lambda: bridge.agent().get_history_manager() if bridge.agent() else None,
+            qq_bridge_func=lambda: None,
+            todo_manager=None,
+            agent=lambda: bridge.agent() if bridge.agent() else None,
+            chat_widget=chat_widget,
+            speak_func=lambda text: self._safe_speak(bridge, text),
+            is_shoulder_available=lambda: False,
+            proactive_dialog=None,
+        )
+        register_duty(duty, ProactiveDuty())
+
+        controller = ProactivePresentationController(
+            scheduler=scheduler,
+            chat_widget=chat_widget,
+            history_manager_func=lambda: bridge.agent().get_history_manager() if bridge.agent() else None,
+            session_id_func=lambda: bridge.agent()._session_id if bridge.agent() else 0,
+            history_context_func=lambda content: bridge.append_agent_context(content),
+            speak_func=lambda text: self._safe_speak(bridge, text),
+            is_minimized_func=lambda: False,
+            flash_taskbar_func=lambda *_args, **_kwargs: None,
+            qq_bridge_func=lambda: None,
+            dialog_func=lambda: None,
+            next_track_func=lambda: None,
+        )
+
+        duty.proactive_response.connect(controller.handle_proactive_response)
+        duty.proactive_error.connect(controller.handle_proactive_error)
+        duty.proactive_coordination.connect(lambda msg: bridge_log.log("主动", str(msg)))
+        duty.proactive_observation_text.connect(controller.handle_observation_result)
+        duty.proactive_observation_image.connect(controller.handle_observation_image)
+        duty.proactive_behavior_selected.connect(controller.set_behavior)
+        duty.slack_response.connect(controller.handle_slack_response)
+        duty.slack_error.connect(controller.handle_slack_error)
+        duty.slack_action_selected.connect(controller.set_slack_action)
+        duty.mooyu_data_sources.connect(controller.handle_mooyu_data_sources)
+        duty.mooyu_duty_data_source.connect(controller.handle_mooyu_duty_data_source)
+
+        relay = _ProactiveTriggerRelay()
+        relay.trigger_requested.connect(self._on_trigger)
+        relay.user_message_requested.connect(self._on_user_message)
+        # pre-warm agent so the first _tick does not block the event loop 10-12s
+        try:
+            bridge.agent()
+        except Exception:
+            pass
+        duty.start()
+
+        self._duty_scheduler = duty
+        self._scheduler = scheduler
+        self._relay = relay
+        self._ready.set()
+
+        loop = QEventLoop()
+        self._loop = loop
+        loop.exec_()
+
+    # 触发入口
+
+    def trigger(self, mode: str = "normal", action: str = "") -> dict:
+        relay = self._relay
+        if relay is None or not self._ready.is_set():
+            return {"ok": False, "error": "主动聊天运行时尚未就绪"}
+        relay.trigger_requested.emit(str(mode), str(action))
+        return {"ok": True}
+
+    def notify_user_message(self):
+        relay = self._relay
+        if relay is not None:
+            relay.user_message_requested.emit()
+
+    def status(self) -> dict:
+        duty = self._duty_scheduler
+        if duty is None:
+            return {"ready": False, "running": False}
+        running = False
+        try:
+            for item in duty.get_all_statuses():
+                if item.name == "proactive":
+                    running = bool(item.is_running)
+        except Exception:
+            pass
+        return {"ready": True, "running": running}
+
+    def stop(self):
+        loop = getattr(self, "_loop", None)
+        if loop is not None:
+            try:
+                loop.quit()
+            except Exception:
+                pass
+        duty = self._duty_scheduler
+        if duty is not None:
+            try:
+                duty.stop()
+            except Exception:
+                pass
+
+    # Qt 线程内触发的槽函数
+
+    def _on_trigger(self, mode: str, action: str):
+        duty = self._duty_scheduler
+        scheduler = self._scheduler
+        if duty is None or scheduler is None:
+            return
+        try:
+            if mode == "bilibili":
+                duty.manual_trigger("proactive", force_observe="bilibili")
+            elif mode == "slack" or (mode or "").startswith("slack:"):
+                slack_action = action
+                if not slack_action and (mode or "").startswith("slack:"):
+                    slack_action = mode.split(":", 1)[1]
+                duty.manual_trigger("proactive", force_behavior="slack", force_action=slack_action)
+            elif mode in ("screenshot", "camera"):
+                duty.manual_trigger("proactive", force_observe=mode)
+            else:
+                # 对齐 main_window._on_proactive_debug 的默认触发逻辑
+                if not (scheduler.desktop_enabled or scheduler.qq_enabled):
+                    bridge_log.log("主动", "请先开启桌面或 QQ 主动聊天再触发")
+                    return
+                duty.manual_trigger("proactive")
+        except Exception as exc:
+            bridge_log.log("主动", f"触发失败: {exc}")
+
+    def _on_user_message(self):
+        duty = self._duty_scheduler
+        scheduler = self._scheduler
+        if duty is not None:
+            try:
+                duty.on_user_message()
+            except Exception:
+                pass
+        if scheduler is not None:
+            try:
+                scheduler.notify_user_active()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _safe_speak(bridge, text):
+        try:
+            import pygame
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except Exception:
+            pass
+        try:
+            bridge.speak(str(text))
+        except Exception as exc:
+            bridge_log.log("主动", f"TTS 失败: {exc}")
+
+
+
+
 bridge = LianxinBridge()
 
 
@@ -1278,7 +1574,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"items": items})
             if path.startswith("/api/conversations/") and path.endswith("/messages"):
                 sid = int(path.split("/")[3])
-                return self._send({"items": bridge.messages(sid)})
+                query = parse_qs(urlparse(self.path).query)
+                after = int((query.get("after") or [0])[0] or 0)
+                return self._send({"items": bridge.messages(sid, after=after)})
             if path == "/api/note":
                 return self._send({"content": read_note()})
             if path == "/api/tasks":
@@ -1352,6 +1650,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_state((query.get("day") or [""])[0]))
             if path == "/api/proactive/state":
                 return self._send(bridge.proactive())
+            if path == "/api/proactive/status":
+                return self._send(bridge.proactive_status())
             if path == "/api/management/state":
                 return self._send(bridge.management())
             if path == "/api/settings/background":
@@ -1441,6 +1741,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_seal(str(body.get("day", "")), str(body.get("content", ""))))
             if path == "/api/proactive/toggle":
                 return self._send(bridge.set_proactive(bool(body.get("enabled"))))
+            if path == "/api/proactive/trigger":
+                return self._send(bridge.proactive_trigger(
+                    str(body.get("mode") or "normal"), str(body.get("action") or "")))
             if path == "/api/legacy/open":
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
@@ -1550,6 +1853,32 @@ def main():
         bridge_log.log("启动", f"读取 LLM provider 配置失败: {exc}")
     _start_desktop_hotkey()
     bridge_log.log("启动", "桌面热键 Ctrl+Alt+X 注册完成")
+    try:
+        from PyQt5.QtCore import QCoreApplication
+        if QCoreApplication.instance() is None:
+            _QT_APP_HOLD = QCoreApplication([])
+            globals()["_QT_APP_HOLD"] = _QT_APP_HOLD  # keep Qt app alive; silences early Qt warnings in skills/MCP threads
+    except Exception as exc:
+        bridge_log.log("启动", f"QCoreApplication 初始化失败: {exc}")
+    try:
+        from brain.skill_manager import discover_skills, activate_all_skills
+        discover_skills()
+        activate_all_skills()
+        bridge_log.log("启动", "技能已激活")
+    except Exception as exc:
+        bridge_log.log("启动", f"技能激活失败: {exc}")
+    try:
+        from brain.mcp.mcp_manager import get_mcp_manager
+        _mcp_mgr = get_mcp_manager()
+        _mcp_mgr.initialize()
+        bridge_log.log("启动", "MCP 服务扫描已启动")
+    except Exception as exc:
+        bridge_log.log("启动", f"MCP 初始化失败: {exc}")
+    try:
+        bridge.start_proactive_runtime()
+        bridge_log.log("主动", "主动聊天运行时已启动")
+    except Exception as exc:
+        bridge_log.log("主动", f"主动聊天运行时启动失败: {exc}")
     threading.Thread(target=_cover_cleanup_loop, name="cover-cache-cleanup", daemon=True).start()
     threading.Thread(target=_memory_heartbeat_loop, name="memory-heartbeat", daemon=True).start()
     threading.Thread(target=_watchdog_loop, name="bridge-watchdog", daemon=True).start()
@@ -1561,6 +1890,10 @@ def main():
         pass
     finally:
         server.server_close()
+        try:
+            bridge.stop_proactive_runtime()
+        except Exception:
+            pass
     bridge_log.log("退出", "后端已关闭")
 
 

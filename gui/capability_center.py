@@ -14,6 +14,7 @@ from PyQt5.QtGui import QFont
 
 class CapabilityCenter(QDialog):
     tool_requested = pyqtSignal(str, str)
+    refresh_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,7 +77,38 @@ class CapabilityCenter(QDialog):
         self._skill_seen = set()
         self._mcp_seen = set()
         self._build_ui()
+        self.refresh_requested.connect(self._refresh_all)
+        self._ensure_initialized()
         self._refresh_all()
+
+    def _ensure_initialized(self):
+        # 兼容新版经 legacy_ui_launcher 独立进程打开：补齐技能激活与 MCP 扫描。
+        # 旧版由 main.py 启动时执行，子进程需要在这里补齐，否则 Skills 0/N、MCP 0/0。
+        try:
+            from brain.skill_manager import discover_skills, activate_all_skills
+            discover_skills()
+            activate_all_skills()
+        except Exception as exc:
+            print("[能力中心] Skills 初始化失败: %s" % exc)
+
+        def _scan_mcp():
+            try:
+                from brain.mcp.mcp_manager import get_mcp_manager
+                mgr = get_mcp_manager()
+                mgr.initialize()
+                if getattr(mgr, "_scan_ready", None) is not None:
+                    mgr._scan_ready.wait(45)
+            except Exception as exc:
+                print("[能力中心] MCP 初始化失败: %s" % exc)
+            finally:
+                try:
+                    self.refresh_requested.emit()
+                except Exception:
+                    pass
+
+        import threading
+        threading.Thread(target=_scan_mcp, daemon=True).start()
+
 
     def closeEvent(self, event):
         """关闭窗口时自动保存技能和 MCP 配置"""
