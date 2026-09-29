@@ -22,14 +22,14 @@ type ToolCallState = { id: string; name: string; args: string; status: "running"
 type ToolRoundState = { round: number; calls: ToolCallState[] };
 type Attachment = { kind: "image" | "file"; fileName: string; dataUrl: string; size?: number };
 
-function restoreMessage(item: { id?: number; role: "user" | "assistant"; content: string; timestamp?: string; attachments?: Array<{ kind: "image" | "file"; fileName: string; url?: string; path?: string }> }, index: number): Message {
+function restoreMessage(item: { id?: number; role: "user" | "assistant"; content: string; timestamp?: string; attachments?: Array<{ kind: "image" | "file"; fileName: string; url?: string; path?: string; description?: string }> }, index: number): Message {
   const attachment = item.attachments?.[0];
-  return { id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "", attachments: item.attachments, ...(attachment?.kind === "image" ? { imageUrl: attachment.url, imageName: attachment.fileName, imageStatus: "success" as const } : attachment?.kind === "file" ? { kind: "file" as const, fileName: attachment.fileName } : {}) };
+  return { id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "", attachments: item.attachments, ...(attachment?.kind === "image" ? { imageUrl: attachment.url, imageName: attachment.fileName, imageStatus: "success" as const, imageDescription: attachment.description } : attachment?.kind === "file" ? { kind: "file" as const, fileName: attachment.fileName } : {}) };
 }
 
 const desktopWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null;
 
-function MessageAvatar({ role, compact = false, avatar, onInteraction, interacting = false }: { role: "user" | "assistant"; compact?: boolean; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean }) {
+function MessageAvatar({ role, compact = false, avatar, onInteraction, interacting = false, talking = false }: { role: "user" | "assistant"; compact?: boolean; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean; talking?: boolean }) {
   const sizeClass = compact ? "avatar-small" : "avatar-chat";
   const pressTimer = useRef<number | null>(null);
   const clearPress = () => { if (pressTimer.current !== null) { window.clearTimeout(pressTimer.current); pressTimer.current = null; } };
@@ -42,6 +42,7 @@ function MessageAvatar({ role, compact = false, avatar, onInteraction, interacti
   const configuredSize = avatar ? Math.max(30, Math.min(72, Math.round(avatar.size * (compact ? 0.63 : 0.63)))) : undefined;
   const avatarStyle = configuredSize ? { width: `${configuredSize}px`, height: `${configuredSize}px`, border: avatar?.border === false ? "0" : undefined } : undefined;
   if (role === "assistant") {
+    const talkingClass = talking ? "avatar-talking" : "";
     return <div className={`avatar ${sizeClass} assistant-avatar ${interacting ? "avatar-interacting" : ""}`} style={avatarStyle} onMouseDown={startPress} onMouseUp={clearPress} onMouseLeave={clearPress} onContextMenu={(event) => event.preventDefault()}><img src={avatar?.assistantDataUrl || "/lianxin-avatar.png"} alt="莲心聊天头像" /></div>;
   }
   return <div className={`avatar ${sizeClass} user-avatar`} style={avatarStyle}>{avatar?.userDataUrl ? <img src={avatar.userDataUrl} alt="我" /> : <span>我</span>}</div>;
@@ -89,11 +90,30 @@ function SideNavigation({ activeWorkspace, onWorkspaceChange, managementOpen, on
 
 function TaskCard() { return <div className="task-card"><div className="task-card-header"><span><LayoutDashboard size={15} />正在处理当前请求</span><span className="task-running"><Activity size={14} />运行中</span></div><div className="task-step is-done"><span className="step-icon"><Check size={12} /></span>分析用户问题</div><div className="task-step is-done"><span className="step-icon"><Check size={12} /></span>整理当前上下文</div><div className="task-step is-active"><span className="step-icon"><span /></span>生成回复</div></div>; }
 
+function ImageMessageContent({ message }: { message: Message }) {
+  const [expanded, setExpanded] = useState(false);
+  const description = message.imageDescription || "";
+  const collapsible = description.length > 100;
+  const visibleDescription = expanded || !collapsible ? description : `${description.slice(0, 100)}...`;
+  return <>
+    <img src={message.imageUrl} alt={message.imageName || "发送的图片"} />
+    <span className="image-file-name">{message.imageName || "图片"}</span>
+    {message.imageStatus === "pending" && <span className="image-analysis-state">正在分析图片…</span>}
+    {message.imageStatus === "error" && <span className="image-analysis-state is-error">图片分析失败</span>}
+    {description && <div className="image-description-wrap">
+      <p className="image-description">{visibleDescription}</p>
+      {collapsible && <button type="button" className="image-description-toggle" onClick={() => setExpanded((value) => !value)}>
+        {expanded ? "收起 ▴" : "展开 ▾"}
+      </button>}
+    </div>}
+  </>;
+}
+
 function MessageItem({ message, avatar, onInteraction, interacting, onQuote, onDelete }: { message: Message; avatar?: AvatarState; onInteraction?: (action: "tap" | "headpat") => void; interacting?: boolean; onQuote?: (message: Message) => void; onDelete?: (message: Message) => void }) {
   if (message.kind === "task") return <div className="message-row assistant-row"><MessageAvatar role="assistant" avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>莲心</strong><span>{message.time}</span></div><TaskCard /></div></div>;
-  if (message.imageUrl) return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble image-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><img src={message.imageUrl} alt={message.imageName || "发送的图片"} /><span className="image-file-name">{message.imageName || "图片"}</span>{message.imageStatus === "pending" && <span className="image-analysis-state">正在分析图片…</span>}{message.imageStatus === "error" && <span className="image-analysis-state is-error">图片分析失败</span>}{message.imageDescription && <p className="image-description">{message.imageDescription}</p>}</div></div></div>;
+  if (message.imageUrl) return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble image-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><ImageMessageContent message={message} /></div></div></div>;
   if (message.kind === "file") return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble file-message-bubble ${message.role === "user" ? "user-bubble" : ""}`}><FolderOpen size={18} /><span>{message.fileName || "文件附件"}</span>{message.fileSize ? <small>{Math.ceil(message.fileSize / 1024)} KB</small> : null}</div></div></div>;
-  return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`} onContextMenu={(event) => { event.preventDefault(); const action = window.prompt("输入 c 复制、q 引用、d 删除，直接取消关闭"); if (action?.toLowerCase() === "c") void navigator.clipboard?.writeText(message.content); if (action?.toLowerCase() === "q") onQuote?.(message); if (action?.toLowerCase() === "d") onDelete?.(message); }}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-${index}`}>{line}</p>)}<div className="message-actions"><button type="button" title="复制" onClick={() => void navigator.clipboard?.writeText(message.content)}>复制</button><button type="button" title="引用" onClick={() => onQuote?.(message)}>引用</button>{message.role === "assistant" && <button type="button" title="朗读" onClick={() => { const utterance = new SpeechSynthesisUtterance(message.content); utterance.lang = "zh-CN"; window.speechSynthesis.cancel(); window.speechSynthesis.speak(utterance); }}>朗读</button>}<button type="button" title="删除" onClick={() => onDelete?.(message)}>删除</button></div></div></div></div>;
+  return <div className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}><MessageAvatar role={message.role} avatar={avatar} onInteraction={message.role === "assistant" ? onInteraction : undefined} interacting={interacting && message.role === "assistant"} /><div className="message-column"><div className="message-meta"><strong>{message.role === "user" ? "你" : "莲心"}</strong><span>{message.time}</span></div><div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`} onContextMenu={(event) => { event.preventDefault(); const action = window.prompt("输入 c 复制、q 引用、d 删除，直接取消关闭"); if (action?.toLowerCase() === "c") void navigator.clipboard?.writeText(message.content); if (action?.toLowerCase() === "q") onQuote?.(message); if (action?.toLowerCase() === "d") onDelete?.(message); }}>{message.content.split("\n").map((line, index) => <p key={`${message.id}-${index}`}>{line}</p>)}<div className="message-actions"><button type="button" title="复制" onClick={() => void navigator.clipboard?.writeText(message.content)}>复制</button><button type="button" title="引用" onClick={() => onQuote?.(message)}>引用</button>{message.role === "assistant" && <button type="button" title="朗读" onClick={() => void lianxinApi.speak(message.content).catch(() => undefined)}>朗读</button>}<button type="button" title="删除" onClick={() => onDelete?.(message)}>删除</button></div></div></div></div>;
 }
 
 function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
@@ -151,9 +171,28 @@ function ManagementPanel({ onClose, onVoice, onLegacy }: { onClose: () => void; 
 function Workspace({ workspace, music, onControl, musicError, onDismissMusicError }: { workspace: WorkspaceId; music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; musicError?: string; onDismissMusicError?: () => void }) { if (workspace === "music") return <MusicWorkspace music={music} onControl={onControl} errorMsg={musicError} onDismissError={onDismissMusicError} />; const item = primaryNavigation.find((entry) => entry.id === workspace)!; return <section className="workspace placeholder-workspace"><div className="placeholder-icon"><Icon name={item.icon} /></div><p className="eyebrow">莲心空间</p><h1>{item.label}</h1><p>这里将逐步接入莲心现有的真实能力与数据。</p><button className="secondary-button"><ArrowUp size={15} />返回对话</button></section>; }
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat"); const [managementOpen, setManagementOpen] = useState(false); const [messages, setMessages] = useState<Message[]>(demoMessages); const [interactionMessages, setInteractionMessages] = useState<Message[]>([]); const [backendOnline, setBackendOnline] = useState(false); const [busy, setBusy] = useState(false); const [interactionThinking, setInteractionThinking] = useState(false); const [panel, setPanel] = useState<PanelId>("none"); const [music, setMusic] = useState<MusicState>({}); const [musicError, setMusicError] = useState(""); const [axis, setAxis] = useState<FiveAxisState>({ axes: {}, mood: "中性" }); const [voiceActive, setVoiceActive] = useState(false); const [toolRounds, setToolRounds] = useState<ToolRoundState[]>([]); const [background, setBackground] = useState<BackgroundState>({ enabled: true, opacity: 0.22, fitMode: "cover", fingerprint: "" }); const [avatar, setAvatar] = useState<AvatarState>({ enabled: true, size: 60, gap: 10, border: true, fingerprint: "" });
+  const [ttsSpeaking, setTtsSpeaking] = useState(false);
+  useEffect(() => { const sync = () => void lianxinApi.ttsStatus().then((state) => setTtsSpeaking(state.speaking)).catch(() => undefined); sync(); const timer = window.setInterval(sync, 500); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { document.documentElement.classList.toggle("tts-active", ttsSpeaking); }, [ttsSpeaking]);
   const workspaceLabel = useMemo(() => primaryNavigation.find((item) => item.id === activeWorkspace)?.label ?? "对话", [activeWorkspace]);
-  useEffect(() => { const check = () => { void lianxinApi.status().then((status) => { setBackendOnline(status.online); if (status.sessionId) void lianxinApi.messages(status.sessionId).then((result) => { if (result.items.length) setMessages(result.items.map((item, index) => ({ id: String(item.id ?? index), role: item.role, content: item.content, time: item.timestamp?.slice(11, 16) || "" }))); }).catch(() => undefined); }).catch(() => setBackendOnline(false)); void lianxinApi.musicState().then((state) => setMusic(state as MusicState)).catch(() => undefined); void lianxinApi.fiveAxis().then(setAxis).catch(() => undefined); }; check(); const timer = window.setInterval(check, 5000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { let first = true; const check = () => { void lianxinApi.status().then((status) => { setBackendOnline(status.online); if (first && status.sessionId) void lianxinApi.messages(status.sessionId).then((result) => { if (result.items.length) setMessages(result.items.map(restoreMessage)); }).catch(() => undefined); first = false; }).catch(() => setBackendOnline(false)); void lianxinApi.musicState().then((state) => setMusic(state as MusicState)).catch(() => undefined); void lianxinApi.fiveAxis().then(setAxis).catch(() => undefined); }; check(); const timer = window.setInterval(check, 5000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { document.documentElement.style.setProperty("--lx-chat-mask", String(background.chatOpacity ?? 0.75)); }, [background.chatOpacity]);
+  useEffect(() => {
+    const onClick = (event: globalThis.MouseEvent) => {
+      const button = (event.target as HTMLElement).closest("button");
+      if (!button) return;
+      const label = `${button.title} ${button.textContent || ""} ${button.className}`;
+      let sound = "ButtonAll.mp3";
+      if (/发送|send-button/.test(label)) sound = "Send message.mp3";
+      else if (/工具|图片|文件|附件|composer-tool/.test(label)) sound = "ToolBox1.mp3";
+      else if (/备忘/.test(label)) sound = "MemoBook.mp3";
+      else if (/音乐|music-|播放|上一首|下一首/.test(label)) sound = "ButtonMusic.mp3";
+      else if (/拍一拍|摸一摸/.test(label)) sound = "拍一拍.mp3";
+      void lianxinApi.playSound(sound).catch(() => undefined);
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
   useEffect(() => {
     let disposed = false;
     const sync = async (includeData: boolean) => {
@@ -234,6 +273,10 @@ export function App() {
         if (event.type === "error") throw new Error(event.error || "聊天请求失败");
       }
       setMessages((current) => [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: reply, time: "现在" }]);
+      if (reply.trim()) {
+        void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
+        void lianxinApi.speak(reply).catch(() => undefined);
+      }
     } catch (error) {
       setMessages((current) => [...current, { id: `error-${Date.now()}`, role: "assistant", content: `后端连接失败：${String(error)}`, time: "现在" }]);
     } finally { setBusy(false); }

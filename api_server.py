@@ -152,6 +152,8 @@ class LianxinBridge:
         self._avatar_stats = None
         self._tts_lock = threading.RLock()
         self._tts_worker = None
+        self._call_sound = None
+        self._call_channel = None
         self._netease_spawn_lock = threading.Lock()
         self._netease_proc = None
         self._watched_song = None
@@ -301,17 +303,20 @@ class LianxinBridge:
                 try:
                     context_parts = []
                     stored_paths = []
+                    descriptions = []
                     for index, attachment in enumerate(attachments):
                         if str(attachment.get("kind") or "image") == "file":
                             try:
                                 file_path = self._store_file_attachment(attachment)
                                 stored_paths.append(file_path)
+                                descriptions.append("")
                                 context_parts.append(
                                     f"[用户发送了文件]\n文件名：{attachment.get('fileName', '附件')}\n已保存路径：{file_path}\n"
                                     "如果需要读取文件内容，请使用可用的文件读取工具。"
                                 )
                             except Exception as exc:
                                 stored_paths.append("")
+                                descriptions.append("")
                                 context_parts.append(f"[文件附件保存失败] {exc}")
                             events.put({"type": "file_attachment_saved", "index": index,
                                         "fileName": str(attachment.get("fileName") or "attachment")})
@@ -324,10 +329,10 @@ class LianxinBridge:
                             from brain.vision import describe_image
                             description = describe_image(
                                 str(image_path),
-                                prompt=text.strip() or "请详细描述这张图片里的内容，并指出其中值得注意的文字、人物、物体和场景。",
                             )
+                            descriptions.append(description)
                             context_parts.append(
-                                f"[用户发送了图片，视觉分析结果如下]\n{description}\n[图片描述结束]"
+                                f"[用户发了一张图片，视觉分析结果如下]\n{description}\n[图片描述结束]"
                             )
                             events.put({"type": "image_analysis_result", "index": index,
                                         "fileName": str(attachment.get("fileName") or "image"),
@@ -335,11 +340,15 @@ class LianxinBridge:
                         except Exception as exc:
                             stored_paths.append("")
                             error_text = str(exc)
+                            descriptions.append(error_text)
                             context_parts.append(f"[图片分析失败] {error_text}")
                             events.put({"type": "image_analysis_result", "index": index,
                                         "fileName": str(attachment.get("fileName") or "image"),
                                         "error": error_text, "description": error_text})
-                    agent_text = "\n\n".join(context_parts + ([text] if text.strip() else []))
+                    user_text = text.strip()
+                    if user_text:
+                        user_text = f"[用户附加文字]\n{user_text}\n[用户附加文字结束]"
+                    agent_text = "\n\n".join(context_parts + ([user_text] if user_text else []))
                     if not agent_text.strip():
                         agent_text = "请根据你看到的图片自然地回应。"
                     response = agent.chat(
@@ -350,20 +359,29 @@ class LianxinBridge:
                         on_tool_call=on_tool_call,
                         on_tool_result=on_tool_result,
                     )
-                    events.put({
-                        "type": "completed", "sessionId": agent._session_id,
-                        "message": {"role": "assistant", "content": response or ""},
-                    })
                     if attachments:
                         metadata = {"attachments": [
                             {"kind": str(item.get("kind") or "image"),
                              "fileName": str(item.get("fileName") or "attachment"),
-                             "path": str(path)}
-                            for item, path in zip(attachments, stored_paths)
+                             "path": str(path),
+                             "description": descriptions[index] if index < len(descriptions) else ""}
+                            for index, (item, path) in enumerate(zip(attachments, stored_paths))
                         ]}
                         agent.get_history_manager().update_latest_message_metadata(
                             agent._session_id, "user", metadata
                         )
+                        visible_text = text.strip() or "看看这张图片"
+                        agent.get_history_manager().update_latest_message_content(
+                            agent._session_id, "user", visible_text
+                        )
+                        for history_item in reversed(getattr(agent, "history", [])):
+                            if history_item.get("role") == "user":
+                                history_item["content"] = visible_text
+                                break
+                    events.put({
+                        "type": "completed", "sessionId": agent._session_id,
+                        "message": {"role": "assistant", "content": response or ""},
+                    })
                 except Exception as exc:
                     events.put({"type": "error", "error": str(exc)})
                 finally:
@@ -389,9 +407,19 @@ class LianxinBridge:
         from voice.speaker import VoiceSpeaker
         speaker = VoiceSpeaker(voice=voice or "zh-CN-XiaoxiaoNeural")
         def run():
+            voice_manager = self._voice
+            if voice_manager is not None:
+                voice_manager.pause_vad()
+                with self._voice_lock:
+                    self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "speaking"})
             try:
                 speaker.speak(str(text))
             finally:
+                if voice_manager is not None:
+                    voice_manager.resume_vad()
+                    with self._voice_lock:
+                        self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "idle"})
+                    threading.Timer(2.5, lambda: self.play_sound("StartSpeak.mp3")).start()
                 with self._tts_lock:
                     if self._tts_worker is speaker:
                         self._tts_worker = None
@@ -412,6 +440,53 @@ class LianxinBridge:
             except Exception:
                 pass
         return {"speaking": False}
+
+    def tts_state(self) -> dict:
+        with self._tts_lock:
+            return {"speaking": self._tts_worker is not None}
+
+    def play_sound(self, name: str) -> dict:
+        allowed = {
+            "ButtonAll.mp3", "ButtonMusic.mp3", "lianxinSend.mp3", "Send message.mp3",
+            "ToolBox1.mp3", "MemoBook.mp3", "OpenDiary.mp3", "DaiJiMoShi.mp3",
+            "StartSpeak.mp3", "拍一拍.mp3", "FinishedClock.mp3", "write.mp3",
+            "page1.mp3", "page2.mp3",
+        }
+        if name not in allowed:
+            raise ValueError("不允许播放的音效文件")
+        from utils.sound import play_sound
+        play_sound(name)
+        return {"played": True, "name": name}
+
+    def start_call_sound(self) -> dict:
+        try:
+            import pygame
+            from utils.resource_path import get_asset_path
+            from utils.settings import get_settings
+            self.stop_call_sound()
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            path = get_asset_path("sound", "等待接通电话.mp3")
+            if not path.exists():
+                return {"playing": False}
+            self._call_sound = pygame.mixer.Sound(str(path))
+            self._call_sound.set_volume(get_settings().sfx_volume)
+            self._call_channel = self._call_sound.play(loops=-1)
+            return {"playing": True}
+        except Exception:
+            self._call_sound = None
+            self._call_channel = None
+            return {"playing": False}
+
+    def stop_call_sound(self) -> dict:
+        if self._call_channel is not None:
+            try:
+                self._call_channel.stop()
+            except Exception:
+                pass
+        self._call_channel = None
+        self._call_sound = None
+        return {"playing": False}
 
     def background_state(self, include_data: bool = True) -> dict:
         """Expose the legacy wallpaper settings to the WebView as a data URL."""
@@ -911,8 +986,14 @@ class LianxinBridge:
                 self._voice_events.append({"id": time.time_ns(), "type": "voice.state", "state": state})
             def on_transcript(text):
                 self._voice_events.append({"id": time.time_ns(), "type": "voice.transcript", "content": text})
-            manager = VoiceDuplexManager(on_state_change=on_state, on_transcript=on_transcript)
+            def on_stt_ready(ready):
+                if ready:
+                    self.stop_call_sound()
+                self._voice_events.append({"id": time.time_ns(), "type": "voice.stt", "state": "ready" if ready else "error"})
+            manager = VoiceDuplexManager(on_state_change=on_state, on_transcript=on_transcript, on_stt_ready=on_stt_ready)
+            self.start_call_sound()
             if not manager.start():
+                self.stop_call_sound()
                 raise RuntimeError("语音输入启动失败：WebRTC VAD 或麦克风不可用")
             self._voice = manager
             return self.voice_state()
@@ -929,6 +1010,7 @@ class LianxinBridge:
             if self._voice is not None:
                 self._voice.stop()
                 self._voice = None
+            self.stop_call_sound()
             return self.voice_state()
 
     def proactive(self) -> dict:
@@ -1294,6 +1376,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.speak(str(body.get("text", "")), str(body.get("voice", ""))))
             if path == "/api/tts/stop":
                 return self._send(bridge.stop_speaking())
+            if path == "/api/tts/status":
+                return self._send(bridge.tts_state())
+            if path == "/api/sound/play":
+                return self._send(bridge.play_sound(str(body.get("name", ""))))
+            if path == "/api/sound/call-wait/start":
+                return self._send(bridge.start_call_sound())
+            if path == "/api/sound/call-wait/stop":
+                return self._send(bridge.stop_call_sound())
             if path == "/api/time-capsule/save":
                 return self._send(bridge.time_capsule_save(str(body.get("day", "")), str(body.get("content", ""))))
             if path == "/api/time-capsule/seal":
@@ -1425,4 +1515,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

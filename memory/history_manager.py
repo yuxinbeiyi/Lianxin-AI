@@ -215,6 +215,44 @@ class HistoryManager:
             self._conn().commit()
             return bool(cur.rowcount)
 
+    def update_latest_message_content(self, session_id: int, role: str, content: str) -> bool:
+        """Replace the newest message text while preserving attachment metadata."""
+        with self._write_lock:
+            cur = self._conn().execute(
+                "UPDATE messages SET content=? WHERE id=(SELECT id FROM messages WHERE session_id=? AND role=? ORDER BY id DESC LIMIT 1)",
+                (str(content), int(session_id), str(role)),
+            )
+            self._conn().commit()
+            return bool(cur.rowcount)
+
+    def clear_session_attachments(self, session_id: int) -> list[str]:
+        """Remove attachment metadata from a session and return its stored paths."""
+        paths: list[str] = []
+        with self._write_lock:
+            conn = self._conn()
+            rows = conn.execute(
+                "SELECT id, metadata_json FROM messages WHERE session_id=?",
+                (int(session_id),),
+            ).fetchall()
+            for row in rows:
+                raw = row["metadata_json"] or "{}"
+                try:
+                    metadata = json.loads(raw) if isinstance(raw, str) else raw
+                except (TypeError, ValueError):
+                    metadata = {}
+                attachments = metadata.get("attachments", []) if isinstance(metadata, dict) else []
+                for attachment in attachments if isinstance(attachments, list) else []:
+                    if isinstance(attachment, dict) and attachment.get("path"):
+                        paths.append(str(attachment["path"]))
+                if isinstance(metadata, dict) and "attachments" in metadata:
+                    metadata.pop("attachments", None)
+                    conn.execute(
+                        "UPDATE messages SET metadata_json=? WHERE id=?",
+                        (json.dumps(metadata, ensure_ascii=False, default=str), int(row["id"])),
+                    )
+            conn.commit()
+        return paths
+
     @staticmethod
     def _decode_message(row) -> dict:
         item = dict(row)

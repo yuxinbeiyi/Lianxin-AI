@@ -993,6 +993,7 @@ class AgentCore:
     def new_session(self):
         """开启全新会话：重置内存历史，在数据库创建新 session。"""
         previous_session_id = self._session_id
+        self._clear_session_attachments(previous_session_id)
         self.history = []
         self._session_id = self._history_mgr.new_session(
             channel=self._source_channel,
@@ -1020,6 +1021,23 @@ class AgentCore:
             _get_emotion_mgr().reset_session()
         except Exception:
             pass
+
+    def _clear_session_attachments(self, session_id: int) -> None:
+        """清理明确结束的会话附件；重启和历史切换不会进入这里。"""
+        try:
+            paths = self._history_mgr.clear_session_attachments(session_id)
+            image_root = (Path.home() / ".lianxin" / "images").resolve()
+            for raw_path in paths:
+                path = Path(raw_path).expanduser()
+                try:
+                    resolved = path.resolve()
+                    if image_root not in resolved.parents or not resolved.is_file():
+                        continue
+                    resolved.unlink()
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("会话图片清理失败 %s: %s", raw_path, exc)
+        except Exception as exc:
+            logger.warning("会话附件清理失败，保留新会话创建流程: %s", exc)
 
 
 
