@@ -24,6 +24,23 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 
+_IMAGE_FLOW_LOG = Path(__file__).resolve().parent / "logs" / "image_flow_diagnostic.log"
+_IMAGE_FLOW_LOG_LOCK = threading.Lock()
+
+
+def _image_flow_log(message: str) -> None:
+    """Write bounded image-flow diagnostics without recording image bytes or full text."""
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [IMAGE_FLOW] {message}\n"
+    try:
+        _IMAGE_FLOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _IMAGE_FLOW_LOG_LOCK:
+            with _IMAGE_FLOW_LOG.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+    except OSError:
+        pass
+    print(line, end="", flush=True)
+
+
 LEGACY_FEATURES = {
     "ripple", "persona", "memory-constellation", "prism-memory",
     "history", "note", "workflow", "duty", "proactive", "alarm", "reminder",
@@ -184,6 +201,15 @@ class LianxinBridge:
 
     def messages(self, session_id: int) -> list[dict]:
         items = self.agent().get_history_manager().get_messages_with_ids(session_id)
+        attachment_count = sum(len(item.get("attachments", []) or []) for item in items)
+        description_count = sum(
+            1 for item in items for attachment in (item.get("attachments", []) or [])
+            if str(attachment.get("description") or "").strip()
+        )
+        _image_flow_log(
+            f"messages_response session={session_id} items={len(items)} "
+            f"attachments={attachment_count} descriptions={description_count}"
+        )
         for item in items:
             for attachment in item.get("attachments", []) or []:
                 path = str(attachment.get("path") or "")
@@ -265,6 +291,12 @@ class LianxinBridge:
 
         events = Queue()
         agent = self.agent()
+        trace_id = uuid.uuid4().hex[:12]
+        _image_flow_log(
+            f"request trace={trace_id} session={getattr(agent, '_session_id', None)} "
+            f"text_chars={len(str(text or '').strip())} attachments={len(attachments)} "
+            f"kinds={[str(item.get('kind') or 'image') for item in attachments]}"
+        )
         pending_tool_round = [None]
 
         def on_round_start(round_num):
@@ -331,6 +363,10 @@ class LianxinBridge:
                                 str(image_path),
                             )
                             descriptions.append(description)
+                            _image_flow_log(
+                                f"vision trace={trace_id} index={index} path={image_path} "
+                                f"description_chars={len(description)}"
+                            )
                             context_parts.append(
                                 f"[用户发了一张图片，视觉分析结果如下]\n{description}\n[图片描述结束]"
                             )
@@ -351,6 +387,15 @@ class LianxinBridge:
                     agent_text = "\n\n".join(context_parts + ([user_text] if user_text else []))
                     if not agent_text.strip():
                         agent_text = "请根据你看到的图片自然地回应。"
+                    from brain.request_context import parse_request_context
+                    request_context = parse_request_context(agent_text)
+                    _image_flow_log(
+                        f"agent_input trace={trace_id} session={getattr(agent, '_session_id', None)} "
+                        f"agent_chars={len(agent_text)} image_blocks={len(request_context.image_descriptions)} "
+                        f"routing_chars={len(request_context.routing_text)} "
+                        f"original_text_present={bool(text.strip())} "
+                        f"routing_preview={request_context.routing_text[:80]!r}"
+                    )
                     response = agent.chat(
                         agent_text,
                         forced_tool=forced_tool or None,
@@ -378,6 +423,12 @@ class LianxinBridge:
                             if history_item.get("role") == "user":
                                 history_item["content"] = visible_text
                                 break
+                        _image_flow_log(
+                            f"persist trace={trace_id} session={getattr(agent, '_session_id', None)} "
+                            f"paths={len([path for path in stored_paths if path])} "
+                            f"descriptions={len([value for value in descriptions if value])} "
+                            f"visible_text_chars={len(visible_text)}"
+                        )
                     events.put({
                         "type": "completed", "sessionId": agent._session_id,
                         "message": {"role": "assistant", "content": response or ""},
@@ -1227,7 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"items": items})
             if path.startswith("/api/conversations/") and path.endswith("/messages"):
                 sid = int(path.split("/")[3])
-                return self._send({"items": bridge.agent().get_history_manager().get_messages_with_ids(sid)})
+                return self._send({"items": bridge.messages(sid)})
             if path == "/api/note":
                 return self._send({"content": read_note()})
             if path == "/api/tasks":
