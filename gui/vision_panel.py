@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QGroupBox, QGridLayout, QWidget, QInputDialog, QMessageBox,
     QComboBox, QSpinBox,
 )
-from PyQt5.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 import sys
 import traceback
@@ -84,6 +84,7 @@ class VisionPanel(QDialog):
         self._first_frame_logged = False
         self._loader_thread = None
         self._loader = None
+        self._close_requested = False
 
         # 加载手势配置
         saved_cooldown = self._load_gesture_config()
@@ -433,6 +434,10 @@ class VisionPanel(QDialog):
         self._runtime_log("VisionWorker loaded: success=%s error=%s" % (bool(worker and not error), error or ""))
         self.btn_start.setEnabled(True)
         self.btn_start.setText("启动")
+        if self._close_requested:
+            self._runtime_log("VisionWorker discarded because panel close was requested")
+            self._thread = None
+            return
         if error:
             self._append_log(f"❌ 加载 VisionWorker 失败：{error}")
             QMessageBox.critical(self, "加载失败", f"无法加载视觉模块：{error}")
@@ -851,10 +856,34 @@ class VisionPanel(QDialog):
 
     def closeEvent(self, event):
         """关闭窗口时停止识别"""
-        self._stop_vision()
+        if self._close_requested:
+            event.accept()
+            return
+
+        running_loader = self._loader_thread is not None and self._loader_thread.isRunning()
+        running_vision = self._thread is not None and self._thread.isRunning()
+        if running_loader or running_vision:
+            # Do not block the GUI while InsightFace/MediaPipe is loading or
+            # while the current camera frame is being processed.  Hide first,
+            # then finish destruction when both worker threads have stopped.
+            self._close_requested = True
+            self._runtime_log("close requested; hiding panel and waiting asynchronously")
+            self.hide()
+            self._stop_vision()
+            event.ignore()
+            QTimer.singleShot(50, self._finish_close_when_stopped)
+            return
+
         if self._face_tracking_controller is not None:
             self._face_tracking_controller.request_stop()
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(3000)
         event.accept()
+
+    def _finish_close_when_stopped(self):
+        running_loader = self._loader_thread is not None and self._loader_thread.isRunning()
+        running_vision = self._thread is not None and self._thread.isRunning()
+        if running_loader or running_vision:
+            QTimer.singleShot(100, self._finish_close_when_stopped)
+            return
+        self._runtime_log("all vision threads stopped; closing panel")
+        self._close_requested = False
+        self.close()
