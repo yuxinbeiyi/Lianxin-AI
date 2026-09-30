@@ -84,6 +84,166 @@ _CONSTELLATION_BRIDGE_SHIM = """<script>
 })();
 </script>"""
 
+_RIPPLE_BRIDGE_SHIM = """<script>
+(function () {
+  var base = '/api/ripple';
+  window.lianxinBridge = {
+    refreshSnapshot: function (cb) {
+      fetch(base + '/snapshot').then(function (r) { return r.json(); }).then(function (d) { cb(JSON.stringify(d)); }).catch(function (e) { cb(JSON.stringify({ error: String(e) })); });
+    },
+    simulateEmotion: function (name, cb) {
+      fetch(base + '/simulate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: name }) }).then(function (r) { return r.json(); }).then(function (d) { cb(JSON.stringify(d)); }).catch(function (e) { cb(JSON.stringify({ ok: false, reason: String(e) })); });
+    },
+    restoreEmotionSimulation: function (cb) {
+      fetch(base + '/restore', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) { cb(JSON.stringify(d)); }).catch(function (e) { cb(JSON.stringify({ ok: false, reason: String(e) })); });
+    },
+    configureEmotion: function (raw, cb) {
+      fetch(base + '/configure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: raw }) }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
+    },
+    clearEmotionSimulation: function (cb) {
+      fetch(base + '/clear', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
+    },
+    toggleFullscreen: function (cb) {
+      var full = false;
+      if (!document.fullscreenElement) { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); full = true; }
+      else { if (document.exitFullscreen) document.exitFullscreen(); }
+      if (cb) cb(full);
+    }
+  };
+})();
+</script>"""
+
+_DATA_TIDE_BRIDGE_SHIM = """<script>
+(function () {
+  function request(path, options) {
+    return fetch('/api/data-tide/' + path, options || {}).then(function (response) {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    });
+  }
+  var bridge = {
+    get_initial_state: function (cb) { request('state').then(function (data) { cb(JSON.stringify(data)); }); },
+    refresh: function (cb) { request('state').then(function (data) { cb(JSON.stringify(data)); }); },
+    get_journey_page: function (offset, limit, categories, day, cb) {
+      var query = new URLSearchParams({ offset: offset || 0, limit: limit || 20, categories: categories || '[]', day: day || '' });
+      request('journey?' + query.toString()).then(function (data) { cb(JSON.stringify(data)); });
+    },
+    export_metrics: function (format, cb) {
+      request('export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: format || 'json' }) }).then(function (data) { cb(JSON.stringify(data)); });
+    },
+    mark_unlocks_read: function (ids, cb) {
+      request('mark-read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids || '[]' }) }).then(function (data) { cb(JSON.stringify(data)); });
+    },
+    request_close: function () {},
+    request_minimize: function () {},
+    request_fullscreen: function () {}
+  };
+  window.qt = { webChannelTransport: {} };
+  window.QWebChannel = function (transport, callback) { callback({ objects: { achievementBridge: bridge } }); };
+})();
+</script>"""
+
+_STUDY_ROOM_BRIDGE_SHIM = """<script>
+(function () {
+  var listeners = {};
+  var signal = function (name) {
+    return { connect: function (callback) { (listeners[name] = listeners[name] || []).push(callback); } };
+  };
+  var call = function (method, args, callback) {
+    fetch('/api/study-room/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) })
+      .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+      .then(function (data) { if (callback) callback(data.result); })
+      .catch(function (error) { console.warn('[StudyRoom HTTP]', error); if (callback) callback(null); });
+  };
+  var bridge = new Proxy({
+    timer_tick: signal('timer_tick'), phase_changed: signal('phase_changed'), tasks_changed: signal('tasks_changed'),
+    statistics_changed: signal('statistics_changed'), companion_message: signal('companion_message'),
+    focus_completed: signal('focus_completed'), clock_changed: signal('clock_changed')
+  }, { get: function (target, name) { return target[name] || function () {
+    var args = Array.prototype.slice.call(arguments), callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    call(name, args, callback);
+  }; } });
+  var last = '', lastPhase = '';
+  function poll() {
+    call('get_initial_state', [], function (raw) {
+      if (!raw) return;
+      try {
+        var state = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        var snapshot = JSON.stringify(state);
+        if (snapshot === last) return;
+        last = snapshot;
+        var phase = (state.timer || {}).phase || 'idle';
+        if (phase !== lastPhase) {
+          lastPhase = phase;
+          (listeners.phase_changed || []).forEach(function (fn) { fn(phase); });
+        }
+        (listeners.clock_changed || []).forEach(function (fn) { fn(JSON.stringify(state.clock || {})); });
+        (listeners.timer_tick || []).forEach(function (fn) { fn(JSON.stringify(state.timer || {})); });
+        (listeners.tasks_changed || []).forEach(function (fn) { fn(JSON.stringify(state.tasks || [])); });
+        (listeners.statistics_changed || []).forEach(function (fn) { fn(JSON.stringify(state.stats || {})); });
+      } catch (error) { console.warn('[StudyRoom state]', error); }
+    });
+  }
+  window.qt = { webChannelTransport: {} };
+  window.QWebChannel = function (transport, callback) { callback({ objects: { studyBridge: bridge } }); };
+  setInterval(poll, 1000);
+})();
+</script>"""
+
+_TIME_CAPSULE_BRIDGE_SHIM = """<script>
+(function () {
+  var listeners = {};
+  var signal = function (name) { return { connect: function (callback) { (listeners[name] = listeners[name] || []).push(callback); } }; };
+  var call = function (method, args, callback) {
+    fetch('/api/time-capsule/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) })
+      .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+      .then(function (data) { if (callback) callback(data.result); })
+      .catch(function (error) { console.warn('[TimeCapsule HTTP]', error); if (callback) callback(null); });
+  };
+  var bridge = new Proxy({
+    state_changed: signal('state_changed'), page_state_changed: signal('page_state_changed'), page_invalidated: signal('page_invalidated'),
+    tree_reply_ready: signal('tree_reply_ready'), generation_completed: signal('generation_completed'), companion_ready: signal('companion_ready')
+  }, { get: function (target, name) { return target[name] || function () {
+    var args = Array.prototype.slice.call(arguments), callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    call(name, args, callback);
+  }; } });
+  function poll() { call('get_initial_state', [], function (raw) { if (!raw) return; (listeners.state_changed || []).forEach(function (fn) { fn(raw); }); }); }
+  window.qt = { webChannelTransport: {} };
+  window.QWebChannel = function (transport, callback) { callback({ objects: { capsuleBridge: bridge } }); };
+  setInterval(poll, 1500);
+})();
+</script>"""
+
+_STUDY_ROOM_EMBEDDED_STYLE = """<style>
+html { font-size: 13px; }
+body { font-size: 13px; }
+.sidebar { flex-basis: 208px; min-width: 208px; padding: 22px 16px 14px; }
+.brand { font-size: 18px; }.brand-mark { width: 32px; height: 32px; flex-basis: 32px; }
+.brand-note { margin: 10px 4px 22px; font-size: 12px; }.nav { gap: 6px; }
+.nav-item { height: 46px; padding: 0 13px; gap: 10px; font-size: 13px; }.nav-item span { font-size: 18px; }
+.topbar { min-height: 52px; font-size: 12px; }.main-content { font-size: 13px; }
+.welcome h1, .section-heading h2 { font-size: 24px; }.welcome p, .section-heading p { font-size: 13px; }
+.space-card-head strong { font-size: 16px; }.space-card-head small { font-size: 12px; }
+.space-wallpaper-card, .space-note-board, .space-event-board { padding: 16px; }
+.wallpaper-option { width: 128px; min-width: 128px; }.wallpaper-option img { height: 68px; }
+</style>"""
+
+_TIME_CAPSULE_EMBEDDED_STYLE = """<style>
+:root { --font-size-h1: 26px; --font-size-h2: 21px; --font-size-h3: 17px; --font-size-body: 13px; --font-size-small: 12px; --font-size-caption: 11px; --font-size-label: 12px; }
+.app-shell { grid-template: 60px 1fr 36px / 190px 1fr; }
+.topbar { padding: 0 18px 0 24px; }.sidebar { padding: 22px 12px; }
+.brand { padding: 0 6px 22px; text-align: left; }.brand h1, .brand p, .c-sidebar-item span, .version { display: block; }
+.c-sidebar-item { justify-content: flex-start; padding: 0 14px; gap: 10px; }
+.tree-compose textarea, .tree-note { font-size: 15px; }.tree-compose textarea::placeholder { font-size: 14px; }
+.paper-editor, .paper-reading { font-size: 16px; padding: 24px; }.detail-content { font-size: 15px; }
+</style>"""
+
+
+def _study_room_wallpaper_url(path: Path) -> str:
+    return "/api/study-room/wallpaper?path=" + quote(str(path.resolve()), safe="")
+
+
+
 
 
 # ---------- ????????? Tauri CSP ??????? ----------
@@ -211,6 +371,11 @@ class LianxinBridge:
         self._netease_spawn_lock = threading.Lock()
         self._netease_proc = None
         self._watched_song = None
+        self._study_room_bridge = None
+        self._time_capsule_bridge = None
+        self._study_room_lock = threading.RLock()
+        self._time_capsule_lock = threading.RLock()
+        self._diary_workers = set()
 
     def agent(self):
         with self._lock:
@@ -1372,6 +1537,240 @@ class LianxinBridge:
         except Exception:
             return {"ok": False}
 
+    def ripple_snapshot(self) -> dict:
+        payload = self.memory_constellation_snapshot()
+        try:
+            from brain.emotional import get_manager
+            manager = get_manager()
+            emotion = manager.get_debug_info()
+            emotion["motive"] = manager.get_proactive_motive()
+            emotion["tone_guidance"] = manager.build_prompt_snippet()
+            payload["emotion"] = emotion
+        except Exception as exc:
+            payload["emotion"] = {"error": str(exc), "version": 3}
+        payload["ripple"] = {
+            "schema": 1,
+            "title": "涟漪星图",
+            "description": "情绪状态、关系变化与长期记忆的可追溯视图",
+        }
+        return payload
+
+    def ripple_simulate(self, scenario: str) -> dict:
+        try:
+            from brain.emotional import get_manager
+            result = get_manager().simulate_scenario(str(scenario or ""))
+            return result
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    def ripple_restore(self) -> dict:
+        try:
+            from brain.emotional import get_manager
+            return get_manager().restore_simulation()
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc)}
+
+    def ripple_configure(self, raw_config: str) -> dict:
+        try:
+            payload = json.loads(raw_config or "{}")
+            from brain.emotional import get_manager
+            get_manager().configure_settings(
+                semantic_analysis=payload.get("semantic_analysis"),
+                significant_memory_threshold=payload.get("significant_memory_threshold"),
+                proactive_motive_enabled=payload.get("proactive_motive_enabled"),
+                saga_bias_scale=payload.get("saga_bias_scale"),
+                dynamics=payload.get("dynamics"),
+            )
+            return {"ok": True}
+        except Exception:
+            return {"ok": False}
+
+    def ripple_clear(self) -> dict:
+        try:
+            from brain.emotional import get_manager
+            get_manager().clear_simulation_events()
+            return {"ok": True}
+        except Exception:
+            return {"ok": False}
+
+    def data_tide_state(self) -> dict:
+        from config import get_user_name
+        from gui.achievement.service import AchievementService
+        state = AchievementService().state()
+        state["user_name"] = get_user_name()
+        return state
+
+    def data_tide_journey(self, offset: int, limit: int, categories: str, day: str) -> dict:
+        try:
+            parsed = json.loads(str(categories or "[]"))
+            if not isinstance(parsed, list):
+                parsed = []
+            from gui.achievement.service import AchievementService
+            return AchievementService().journey_page(offset, limit, parsed, str(day or ""))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return {"items": [], "total": 0, "error": str(exc)}
+
+    def data_tide_export(self, export_format: str) -> dict:
+        try:
+            from gui.achievement.service import AchievementService
+            return {"ok": True, "path": AchievementService().export_metrics(str(export_format or "json"))}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def data_tide_mark_read(self, raw_ids: str) -> dict:
+        try:
+            ids = json.loads(str(raw_ids or "[]"))
+            if not isinstance(ids, list):
+                raise ValueError("achievement ids must be a list")
+            from gui.achievement.service import AchievementService
+            AchievementService().mark_unlocks_read(ids)
+            return {"ok": True}
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return {"ok": False}
+
+    def study_room_rpc(self, method: str, args: list) -> dict:
+        allowed = {
+            "get_initial_state", "get_space", "save_space_settings", "update_note", "get_statistics", "get_report",
+            "start_focus", "toggle_pause", "stop_focus", "add_task", "toggle_task", "complete_task", "delete_task",
+            "update_task", "refresh_statistics", "set_statistics_active", "save_settings", "minimize_window",
+            "toggle_fullscreen", "set_focus_fullscreen", "close_window",
+        }
+        return self._qt_bridge_rpc("study", method, args, allowed)
+
+    def time_capsule_rpc(self, method: str, args: list) -> dict:
+        allowed = {
+            "get_initial_state", "get_day", "get_page_state", "get_corridor_page", "get_museum_page", "get_tree_page",
+            "save_user_content", "seal_day", "request_diary_generation", "toggle_day_favorite", "add_trace", "add_collection",
+            "import_photos", "import_collection_file", "import_collection_path", "import_collection_data", "open_collection",
+            "toggle_collection_favorite", "add_tree_note", "request_tree_reply", "mark_tree_notifications_read", "mark_tree_thread_read",
+            "toggle_tree_favorite", "toggle_tree_archive", "search", "get_settings", "open_media_directory", "get_default_media_directory",
+            "save_settings", "save_settings_payload", "visit_diary", "invite_lianxin", "request_close", "request_minimize", "request_fullscreen",
+        }
+        return self._qt_bridge_rpc("time-capsule", method, args, allowed)
+
+    def _qt_bridge_rpc(self, kind: str, method: str, args: list, allowed: set[str]) -> dict:
+        if method not in allowed:
+            return {"ok": False, "error": "bridge method is not allowed"}
+        if not isinstance(args, list):
+            return {"ok": False, "error": "bridge args must be a list"}
+        if kind == "study":
+            with self._study_room_lock:
+                if self._study_room_bridge is None:
+                    from gui.study_room.bridge import StudyRoomBridge
+                    self._study_room_bridge = StudyRoomBridge()
+                target = self._study_room_bridge
+        else:
+            with self._time_capsule_lock:
+                if self._time_capsule_bridge is None:
+                    from gui.time_capsule.bridge import TimeCapsuleBridge
+                    self._time_capsule_bridge = TimeCapsuleBridge()
+                    self._time_capsule_bridge.generation_requested.connect(
+                        self._start_time_capsule_diary_generation
+                    )
+                target = self._time_capsule_bridge
+        try:
+            if kind == "study" and method == "get_initial_state":
+                timer = getattr(target, "timer", None)
+                qt_timer = getattr(timer, "_timer", None)
+                if timer is not None and qt_timer is not None and timer.active and qt_timer.isActive():
+                    timer._on_tick()
+            result = getattr(target, method)(*args)
+            if kind == "study" and method in {"get_initial_state", "get_space", "save_space_settings"}:
+                result = self._study_room_http_payload(result)
+            return {"ok": True, "result": result}
+        except TypeError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @staticmethod
+    def _study_room_http_payload(raw):
+        """Replace legacy file URLs so an HTTP iframe can load study wallpapers."""
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
+            return raw
+
+        def replace_space_urls(space):
+            if not isinstance(space, dict):
+                return
+            for item in space.get("wallpapers", []):
+                if not isinstance(item, dict):
+                    continue
+                candidate = str(item.get("id") or "")
+                if candidate and candidate != "default":
+                    item["url"] = _study_room_wallpaper_url(Path(candidate))
+
+        if isinstance(payload, dict):
+            replace_space_urls(payload.get("space"))
+            replace_space_urls(payload)
+        return json.dumps(payload, ensure_ascii=False) if isinstance(raw, str) else payload
+
+    def shutdown_web_bridges(self) -> None:
+        with self._study_room_lock:
+            if self._study_room_bridge is not None:
+                self._study_room_bridge.shutdown()
+                self._study_room_bridge = None
+        with self._time_capsule_lock:
+            self._time_capsule_bridge = None
+            self._diary_workers.clear()
+
+    def _start_time_capsule_diary_generation(self, date_str: str) -> None:
+        """Reuse the existing DiaryWorker chain for iframe-triggered generation."""
+        try:
+            from brain.interaction_events import InteractionEventStore
+            from config import get_diary_config
+            from utils.diary import DiaryWorker
+
+            history = self.agent().get_history_manager()
+            messages = [
+                {"role": item["role"], "content": item["content"]}
+                for item in history.get_messages_by_date(str(date_str), owner_only=True)
+            ]
+            config = get_diary_config()
+            enabled_features = {
+                "desktop": config.get("reference_chat", True),
+                "tree_hole": config.get("reference_tree_hole", True),
+                "study_room": config.get("reference_study_room", True),
+                "time_capsule": config.get("reference_time_capsule", True),
+            }
+            events = InteractionEventStore().list_for_date(str(date_str), limit=80)
+            events = [event for event in events if enabled_features.get(event.get("feature", ""), True)]
+            events = [event for event in events if event.get("importance") != "noise"]
+            events.sort(key=lambda event: (event.get("importance") != "important", event.get("occurred_at", "")))
+            messages.extend(
+                {"role": "system", "source_event_id": event["id"],
+                 "content": f"[{event['importance']}][{event['feature']}] {event.get('summary') or event.get('content')}"}
+                for event in events if event.get("event_type") != "diary_saved"
+            )
+            if not messages:
+                self._emit_time_capsule_generation(str(date_str), False, "当天没有可用于生成日记的内容")
+                return
+            maximum = int(config.get("max_messages", 30))
+            selected = messages[:maximum] if config.get("direction") == "earliest" else messages[-maximum:]
+            worker = DiaryWorker(str(date_str), selected)
+            self._diary_workers.add(worker)
+            worker.finished.connect(
+                lambda success, result, current=worker: self._on_time_capsule_diary_finished(
+                    current, str(date_str), bool(success), str(result)
+                )
+            )
+            worker.start()
+        except Exception as exc:
+            self._emit_time_capsule_generation(str(date_str), False, str(exc))
+
+    def _on_time_capsule_diary_finished(self, worker, date_str: str, success: bool, result: str) -> None:
+        self._diary_workers.discard(worker)
+        self._emit_time_capsule_generation(date_str, success, "" if success else result)
+
+    def _emit_time_capsule_generation(self, date_str: str, success: bool, error: str) -> None:
+        with self._time_capsule_lock:
+            capsule = self._time_capsule_bridge
+        if capsule is not None:
+            capsule.generation_completed.emit(str(date_str), bool(success), str(error or ""))
+            capsule.emit_state(str(date_str))
+            capsule.emit_page_state("today")
+
     def open_legacy_window(self, feature: str) -> dict:
         if feature not in LEGACY_FEATURES:
             raise ValueError(f"不支持的原版界面: {feature}")
@@ -1799,6 +2198,166 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         return
 
+    def _ripple_page(self):
+        asset_dir = Path(__file__).resolve().parent / "assets" / "ripple_constellation"
+        try:
+            template = (asset_dir / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": "ripple html missing: %s" % exc}, 404)
+        payload = bridge.ripple_snapshot()
+        injected = "<script>window.LIANXIN_MEMORY_DATA=" + json.dumps(payload, ensure_ascii=False, default=str) + ";</script>"
+        html = template.replace("<!-- LIANXIN_DATA -->", injected)
+        html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        shim = _RIPPLE_BRIDGE_SHIM
+        html = html.replace("<script src=\"app.js\"></script>", injected + shim + "<script src=\"app.js\"></script>")
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+    def _ripple_asset(self, rel: str):
+        asset_dir = Path(__file__).resolve().parent / "assets" / "ripple_constellation"
+        target = (asset_dir / rel).resolve()
+        if asset_dir not in target.parents or not target.is_file():
+            return self._send({"error": "ripple asset not found"}, 404)
+        raw = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+    def _data_tide_page(self):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "achievement" / "web"
+        try:
+            template = (asset_dir / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": "data-tide html missing: %s" % exc}, 404)
+        html = template.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        html = html.replace('<script src="app.js"></script>', _DATA_TIDE_BRIDGE_SHIM + '<script src="app.js"></script>')
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+    def _data_tide_asset(self, rel: str):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "achievement" / "web"
+        target = (asset_dir / rel).resolve()
+        if asset_dir not in target.parents or not target.is_file():
+            return self._send({"error": "data-tide asset not found"}, 404)
+        raw = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+    def _study_room_page(self):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "study_room" / "web"
+        try:
+            template = (asset_dir / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": "study-room html missing: %s" % exc}, 404)
+        html = template.replace('</head>', _STUDY_ROOM_EMBEDDED_STYLE + '</head>')
+        html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        html = html.replace('<script src="app.js?v=20260726-16"></script>', _STUDY_ROOM_BRIDGE_SHIM + '<script src="app.js?v=20260726-16"></script>')
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+    def _study_room_asset(self, rel: str):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "study_room" / "web"
+        target = (asset_dir / rel).resolve()
+        if asset_dir not in target.parents or not target.is_file():
+            return self._send({"error": "study-room asset not found"}, 404)
+        raw = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+    def _study_room_wallpaper(self, raw_path: str):
+        try:
+            target = Path(raw_path).expanduser().resolve()
+            from utils.resource_path import get_asset_path
+            built_in_root = get_asset_path("自习室").resolve()
+            from PyQt5.QtCore import QSettings
+            configured = Path(str(QSettings("Lianxin", "StudyRoom").value("space_wallpaper", "default"))).expanduser().resolve()
+        except Exception:
+            return self._send({"error": "wallpaper not found"}, 404)
+
+        allowed = target.is_file() and (
+            target == built_in_root or built_in_root in target.parents or target == configured
+        )
+        if not allowed:
+            return self._send({"error": "wallpaper not found"}, 404)
+
+        raw = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "image/jpeg")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+    def _time_capsule_page(self):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "time_capsule" / "web"
+        try:
+            template = (asset_dir / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": "time-capsule html missing: %s" % exc}, 404)
+        html = template.replace('</head>', _TIME_CAPSULE_EMBEDDED_STYLE + '</head>')
+        html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        html = html.replace('<script src="app.js?v=20260728-4"></script>', _TIME_CAPSULE_BRIDGE_SHIM + '<script src="app.js?v=20260728-4"></script>')
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+    def _time_capsule_asset(self, rel: str):
+        asset_dir = Path(__file__).resolve().parent / "gui" / "time_capsule" / "web"
+        target = (asset_dir / rel).resolve()
+        if asset_dir not in target.parents or not target.is_file():
+            return self._send({"error": "time-capsule asset not found"}, 404)
+        raw = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1940,6 +2499,39 @@ class Handler(BaseHTTPRequestHandler):
                 return self._memory_constellation_page()
             if path.startswith("/api/memory-constellation/"):
                 return self._memory_constellation_asset(path[len("/api/memory-constellation/"):])
+            if path == "/api/ripple/snapshot":
+                return self._send(bridge.ripple_snapshot())
+            if path == "/api/ripple/html":
+                return self._ripple_page()
+            if path.startswith("/api/ripple/"):
+                return self._ripple_asset(path[len("/api/ripple/"):])
+            if path == "/api/data-tide/state":
+                return self._send(bridge.data_tide_state())
+            if path == "/api/data-tide/journey":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.data_tide_journey(
+                    int((query.get("offset") or [0])[0]),
+                    int((query.get("limit") or [20])[0]),
+                    (query.get("categories") or ["[]"])[0],
+                    (query.get("day") or [""])[0],
+                ))
+            if path == "/api/data-tide/html":
+                return self._data_tide_page()
+            if path.startswith("/api/data-tide/"):
+                return self._data_tide_asset(path[len("/api/data-tide/"):])
+            if path == "/api/study-room/html":
+                return self._study_room_page()
+            if path == "/api/study-room/wallpaper":
+                query = parse_qs(urlparse(self.path).query)
+                return self._study_room_wallpaper((query.get("path") or [""])[0])
+            if path.startswith("/api/study-room/"):
+                return self._study_room_asset(path[len("/api/study-room/"):])
+            if path == "/api/time-capsule/html":
+                return self._time_capsule_page()
+            if path.startswith("/api/time-capsule/"):
+                return self._time_capsule_asset(path[len("/api/time-capsule/"):])
+
+
 
             return self._send({"error": "Not found"}, 404)
         except Exception as exc:
@@ -2020,6 +2612,24 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("mode") or "normal"), str(body.get("action") or "")))
             if path == "/api/memory-constellation/review":
                 return self._send(bridge.memory_constellation_review(str(body.get("id", ""))))
+            if path == "/api/ripple/simulate":
+                return self._send(bridge.ripple_simulate(str(body.get("scenario", ""))))
+            if path == "/api/ripple/restore":
+                return self._send(bridge.ripple_restore())
+            if path == "/api/ripple/configure":
+                return self._send(bridge.ripple_configure(str(body.get("config", ""))))
+            if path == "/api/ripple/clear":
+                return self._send(bridge.ripple_clear())
+            if path == "/api/data-tide/export":
+                return self._send(bridge.data_tide_export(str(body.get("format", "json"))))
+            if path == "/api/data-tide/mark-read":
+                return self._send(bridge.data_tide_mark_read(str(body.get("ids", "[]"))))
+            if path == "/api/study-room/rpc":
+                return self._send(bridge.study_room_rpc(str(body.get("method", "")), body.get("args", [])))
+            if path == "/api/time-capsule/rpc":
+                return self._send(bridge.time_capsule_rpc(str(body.get("method", "")), body.get("args", [])))
+
+
             if path == "/api/legacy/open":
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
@@ -2168,6 +2778,10 @@ def main():
         server.server_close()
         try:
             bridge.stop_proactive_runtime()
+        except Exception:
+            pass
+        try:
+            bridge.shutdown_web_bridges()
         except Exception:
             pass
     bridge_log.log("退出", "后端已关闭")
