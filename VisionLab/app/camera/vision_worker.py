@@ -37,10 +37,13 @@ class VisionWorker(QObject):
 
     @pyqtSlot()
     def run(self):
+        print("[VisionWorker] run entered", flush=True)
         if not self.camera.start():
+            print(f"[VisionWorker] camera start failed: {self.camera.error}", flush=True)
             self.started.emit(False, self.camera.error)
             self.stopped.emit()
             return
+        print(f"[VisionWorker] camera started: {self.camera.width}x{self.camera.height}", flush=True)
         self.database.open()
         self._video_started_at = time.monotonic()
         if self.enabled["gesture"] and not self.gesture.start():
@@ -53,8 +56,10 @@ class VisionWorker(QObject):
             self.event_ready.emit(f"人脸推理设备：{self.face.provider or 'CPU'}")
         if self.enabled["companion"] and not self.pose.start():
             self.event_ready.emit(f"姿态检测不可用：{self.pose.error}")
+            self.enabled["companion"] = False
         self._stop = False
         self.started.emit(True, "")
+        print("[VisionWorker] camera loop started", flush=True)
         consecutive_errors = 0
         while not self._stop:
             try:
@@ -69,12 +74,12 @@ class VisionWorker(QObject):
                                "face_confidence": 0.0, "identity": "UNKNOWN"}
                 companion_state = "未启用"
                 pose_status = {"pose_present": False, "pose_confidence": 0.0}
-                if self.enabled["face"]:
+                if self.enabled["face"] and self.face.initialized:
                     frame, face_status = self.face.process(frame)
                 if self.enabled["face"] or self.enabled["companion"]:
-                    if self.enabled["companion"]:
+                    if self.enabled["companion"] and self.pose.initialized:
                         frame, pose_status = self.pose.process(frame)
-                    if self.enabled["face"]:
+                    if self.enabled["face"] and self.face.initialized:
                         # 人脸识别优先，避免未更新的状态或姿态误判身份。
                         present = face_status.get("identity") == "USER"
                         identity = face_status.get("identity", "UNKNOWN")
@@ -98,7 +103,7 @@ class VisionWorker(QObject):
                             self.database.add_presence_time(work_duration, left_at=None)
                 else:
                     work_duration = 0.0
-                if self.enabled["gesture"]:
+                if self.enabled["gesture"] and self.gesture.initialized:
                     frame, gesture_status = self.gesture.process(frame)
                     # 手势事件触发：检查 should_trigger 标志
                     if gesture_status.get("should_trigger", False) and gesture_status["gesture"] != "NONE":
@@ -114,6 +119,8 @@ class VisionWorker(QObject):
                 status = {
                     "camera": f"{self.camera.width}x{self.camera.height}",
                     "fps": round(self.camera.fps, 1),
+                    "initializing": False,
+                    "provider": self.face.provider if self.face.initialized else "",
                     "face": "未启用" if not self.enabled["face"] else "待接入",
                     "gesture": "未启用" if not self.enabled["gesture"] else gesture_status["gesture"],
                     "gesture_confidence": gesture_status["gesture_confidence"],
@@ -148,15 +155,28 @@ class VisionWorker(QObject):
                     self.event_ready.emit(f"视觉识别异常，已自动停止：{exc}")
                     break
                 time.sleep(0.2)
-        pending_presence = self.companion.flush_session()
-        if pending_presence > 0:
-            self.database.add_presence_time(pending_presence, left_at=None)
+        print("[VisionWorker] stopping resources", flush=True)
+        try:
+            pending_presence = self.companion.flush_session()
+            if pending_presence > 0:
+                self.database.add_presence_time(pending_presence, left_at=None)
+        except Exception as exc:
+            print(f"[VisionWorker] presence cleanup failed: {exc}", flush=True)
+
         self._video_started_at = None
-        self.camera.stop()
-        self.gesture.stop()
-        self.face.stop()
-        self.database.close()
-        self.pose.stop()
+        cleanup_steps = (
+            ("camera", self.camera.stop),
+            ("gesture", self.gesture.stop),
+            ("face", self.face.stop),
+            ("database", self.database.close),
+            ("pose", self.pose.stop),
+        )
+        for name, cleanup in cleanup_steps:
+            try:
+                cleanup()
+            except Exception as exc:
+                print(f"[VisionWorker] {name} cleanup failed: {exc}", flush=True)
+        print("[VisionWorker] resources stopped", flush=True)
         self.stopped.emit()
 
     @pyqtSlot()

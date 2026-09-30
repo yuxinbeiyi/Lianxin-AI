@@ -9,10 +9,35 @@ from PyQt5.QtWidgets import (
     QTextEdit, QGroupBox, QGridLayout, QWidget, QInputDialog, QMessageBox,
     QComboBox, QSpinBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 import sys
+import traceback
 from pathlib import Path
+
+
+class _VisionLoader(QObject):
+    loaded = pyqtSignal(object, str)
+
+    def __init__(self, target_thread, parent=None):
+        super().__init__(parent)
+        self._target_thread = target_thread
+
+    @pyqtSlot()
+    def load(self):
+        worker = None
+        error = ""
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "VisionLab"))
+            from app.camera.vision_worker import VisionWorker
+            worker = VisionWorker()
+            # VisionWorker is constructed in this loader thread.  Moving it
+            # here, before notifying the GUI thread, keeps Qt's affinity rule
+            # intact and lets QThread.started invoke run() reliably.
+            worker.moveToThread(self._target_thread)
+        except Exception as exc:
+            error = f"{exc}\n{traceback.format_exc()}"
+        self.loaded.emit(worker, error)
 
 
 class VisionPanel(QDialog):
@@ -55,6 +80,10 @@ class VisionPanel(QDialog):
         self._frame_busy = False   # 主线程帧处理忙标志（丢帧防积压）
         self._face_tracking_controller = None
         self._oled_panel = None
+        self._runtime_log_path = Path(__file__).resolve().parents[1] / "logs" / "vision_panel_runtime.log"
+        self._first_frame_logged = False
+        self._loader_thread = None
+        self._loader = None
 
         # 加载手势配置
         saved_cooldown = self._load_gesture_config()
@@ -361,7 +390,17 @@ class VisionPanel(QDialog):
     def _start_vision(self):
         """启动视觉识别"""
         if self._thread is not None:
+            self._runtime_log("start ignored: vision thread already exists")
             return
+        self._runtime_log(
+            "start requested: device=%s face=%s gesture=%s companion=%s"
+            % (
+                self.face_device_combo.currentText(),
+                self.check_face.isChecked(),
+                self.check_gesture.isChecked(),
+                self.check_companion.isChecked(),
+            )
+        )
 
         # 重模块（cv2/insightface/mediapipe）导入与 worker 构造放到后台线程，
         # 避免在主线程阻塞 7 秒级。
@@ -369,34 +408,38 @@ class VisionPanel(QDialog):
         self.btn_start.setText("加载中…")
         self._append_log("正在加载视觉模块…")
 
-        import threading
+        # Create the actual vision thread before loading the worker.  The
+        # loader moves the worker from its own thread to this target thread.
+        self._thread = QThread(self)
+        self._loader_thread = QThread(self)
+        self._loader = _VisionLoader(self._thread)
+        self._loader.moveToThread(self._loader_thread)
+        self._loader_thread.started.connect(self._loader.load)
+        self._loader.loaded.connect(self._on_vision_loaded, Qt.QueuedConnection)
+        self._loader.loaded.connect(self._loader_thread.quit)
+        self._loader_thread.finished.connect(self._loader.deleteLater)
+        self._loader_thread.finished.connect(self._clear_loader)
+        self._runtime_log("VisionWorker Qt loader started")
+        self._loader_thread.start()
 
-        def _load():
-            error = ""
-            worker = None
-            try:
-                sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "VisionLab"))
-                from app.camera.vision_worker import VisionWorker
-                worker = VisionWorker()
-            except Exception as e:
-                error = str(e)
-            self._vision_loaded.emit(worker, error)
-
-        threading.Thread(target=_load, daemon=True).start()
+    def _clear_loader(self):
+        self._runtime_log("VisionWorker Qt loader finished")
+        self._loader = None
+        self._loader_thread = None
 
     @pyqtSlot(object, str)
     def _on_vision_loaded(self, worker, error):
         """后台加载完成后，在主线程完成视觉线程装配。"""
+        self._runtime_log("VisionWorker loaded: success=%s error=%s" % (bool(worker and not error), error or ""))
         self.btn_start.setEnabled(True)
         self.btn_start.setText("启动")
         if error:
             self._append_log(f"❌ 加载 VisionWorker 失败：{error}")
             QMessageBox.critical(self, "加载失败", f"无法加载视觉模块：{error}")
             return
-        if self._thread is not None:
+        if self._worker is not None:
             return
 
-        self._thread = QThread(self)
         self._worker = worker
 
         # 设置设备
@@ -411,11 +454,10 @@ class VisionPanel(QDialog):
             "companion": self.check_companion.isChecked(),
         }
         self._worker.set_gesture_cooldown(self.cooldown_spinbox.value())
+        self._runtime_log("worker configured: device=%s enabled=%s" % (device, self._worker.enabled))
         from brain.runtime_status import set_status
         set_status("vision", running=True, health="启动中", camera="", fps=0.0,
                    features=dict(self._worker.enabled), provider=device)
-
-        self._worker.moveToThread(self._thread)
 
         # 连接信号
         self._thread.started.connect(self._worker.run)
@@ -429,6 +471,7 @@ class VisionPanel(QDialog):
 
         # 启动线程
         self._thread.start()
+        self._runtime_log("vision QThread started; worker affinity transferred by loader")
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -514,6 +557,7 @@ class VisionPanel(QDialog):
 
     def _stop_vision(self):
         """停止视觉识别"""
+        self._runtime_log("stop requested")
         if self._worker is not None:
             self._worker.stop()
 
@@ -640,6 +684,9 @@ class VisionPanel(QDialog):
     def _on_frame_ready(self, frame):
         """接收并显示视频帧"""
         # 上一帧还没处理完则丢弃当前帧，避免信号队列积压耗尽内存。
+        if not self._first_frame_logged:
+            self._first_frame_logged = True
+            self._runtime_log("first video frame received: shape=%s" % (getattr(frame, "shape", None),))
         if self._frame_busy:
             return
         self._frame_busy = True
@@ -738,6 +785,7 @@ class VisionPanel(QDialog):
 
     @pyqtSlot(bool, str)
     def _on_started(self, success, message):
+        self._runtime_log("worker started signal: success=%s message=%s" % (success, message or ""))
         if success:
             try:
                 from utils.accompany_stats import AccompanyStats
@@ -757,6 +805,7 @@ class VisionPanel(QDialog):
 
     @pyqtSlot()
     def _on_stopped(self):
+        self._runtime_log("worker stopped signal")
         try:
             from utils.accompany_stats import AccompanyStats
             AccompanyStats().end_video_session()
@@ -783,6 +832,18 @@ class VisionPanel(QDialog):
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{timestamp}] {message}")
+        self._runtime_log(message)
+
+    def _runtime_log(self, message):
+        """把视觉子进程关键状态写入独立日志，便于新版界面排障。"""
+        try:
+            self._runtime_log_path.parent.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime
+            stamp = datetime.now().isoformat(timespec="seconds")
+            with self._runtime_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp}] {message}\n")
+        except Exception:
+            pass
 
     def get_current_frame(self):
         """获取当前帧（供"看看你面前的是谁"工具调用）"""
