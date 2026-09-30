@@ -379,3 +379,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .bubble-context-menu { position: fixed; z-index: 1201; min-width: 128px; padding: 6px; border: 1px solid rgba(157,214,205,.22); border-radius: 12px; background: rgba(18,37,46,.95); box-shadow: 0 12px 32px rgba(0,0,0,.35); backdrop-filter: blur(14px); display: flex; flex-direction: column; gap: 2px; }
 .bubble-context-menu button { display: flex; align-items: center; width: 100%; padding: 8px 12px; color: var(--lx-text); border: 0; border-radius: 8px; background: transparent; font-size: 12px; text-align: left; }
 .bubble-context-menu button:hover { color: var(--lx-accent); background: rgba(105,215,195,.14); }
+
+/* 星图系统 iframe 面板（换壳不改底） */
+.constellation-overlay { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(2,9,12,.72); backdrop-filter: blur(10px); }
+.constellation-frame-wrap { position: relative; width: min(1400px, 96vw); height: 92vh; overflow: hidden; border: 1px solid var(--lx-border-strong); border-radius: 18px; background: #020410; box-shadow: 0 24px 80px rgba(0,0,0,.45); }
+.constellation-frame { display: block; width: 100%; height: 100%; border: 0; background: #020410; }
+.constellation-frame-wrap .overlay-close { top: 16px; right: 16px; z-index: 5; background: rgba(4,10,24,.7); }

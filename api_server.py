@@ -48,6 +48,42 @@ LEGACY_FEATURES = {
     "video-call",
 }
 WEBENGINE_FEATURES = {"ripple", "memory-constellation", "study-room", "time-capsule", "data-tide"}
+_CONSTELLATION_BRIDGE_SHIM = """<script>
+(function () {
+  var base = '/api/memory-constellation';
+  function showMessages(text) {
+    var old = document.getElementById('lianxin-constellation-modal');
+    if (old) old.remove();
+    var box = document.createElement('div');
+    box.id = 'lianxin-constellation-modal';
+    box.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:99999;width:min(720px,92vw);max-height:72vh;overflow:auto;padding:18px 20px;background:#0a1220;color:#cfe3e0;border:1px solid rgba(157,214,205,.35);border-radius:12px;font:13px/1.7 "Segoe UI",sans-serif;white-space:pre-wrap;box-shadow:0 18px 50px rgba(0,0,0,.5);';
+    var close = document.createElement('button');
+    close.textContent = '\u5173\u95ed';
+    close.style.cssText = 'position:absolute;top:8px;right:10px;border:0;background:transparent;color:#9dd6cd;cursor:pointer;font-size:13px;';
+    close.onclick = function () { box.remove(); };
+    box.appendChild(close);
+    box.appendChild(document.createTextNode(text));
+    document.body.appendChild(box);
+  }
+  window.lianxinBridge = {
+    refreshSnapshot: function (cb) {
+      fetch(base + '/snapshot').then(function (r) { return r.json(); }).then(function (d) { cb(JSON.stringify(d)); }).catch(function (e) { cb(JSON.stringify({ error: String(e) })); });
+    },
+    openOriginalMessages: function (idsStr) {
+      fetch(base + '/messages?ids=' + encodeURIComponent(idsStr)).then(function (r) { return r.json(); }).then(function (d) { showMessages(d.text || ''); }).catch(function (e) { showMessages('\u8bfb\u53d6\u5931\u8d25\uff1a' + e); });
+    },
+    queueMemoryReview: function (id, cb) {
+      fetch(base + '/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
+    },
+    toggleFullscreen: function () {
+      if (!document.fullscreenElement) { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); return true; }
+      if (document.exitFullscreen) document.exitFullscreen();
+      return false;
+    }
+  };
+})();
+</script>"""
+
 
 
 # ---------- ????????? Tauri CSP ??????? ----------
@@ -1209,6 +1245,133 @@ class LianxinBridge:
             {"id": "python-api", "label": "Python 核心 API", "available": True},
         ]}
 
+
+    def memory_constellation_snapshot(self) -> dict:
+        from brain.memory_narrative import list_entity_profiles, list_episodes, list_sagas, list_narrative_events, get_last_narrative_run
+        from config import get_user_name
+        entities = list_entity_profiles(300)
+        episodes = list_episodes(300)
+        sagas = list_sagas(100)
+        try:
+            from brain.graph_memory import list_all_facts
+            facts_by_category = list_all_facts() or {}
+        except Exception:
+            facts_by_category = {}
+        facts = []
+        for category, rows in facts_by_category.items():
+            for row in rows or []:
+                item = dict(row)
+                item["category"] = category
+                item["kind"] = "fact"
+                item["label"] = item.get("content") or "\u672a\u547d\u540d\u8bb0\u5fc6"
+                facts.append(item)
+        source_ids = {}
+        try:
+            from brain.graph_memory import get_fact_fragments
+            def collect_fact_ids(item):
+                fact_ids = []
+                if item.get("kind") == "fact" and str(item.get("id", "")).isdigit():
+                    fact_ids.append(int(item["id"]))
+                for key in ("source_fact_ids", "fragment_ids"):
+                    try:
+                        values = json.loads(item.get(key, "[]") or "[]")
+                        if key == "source_fact_ids":
+                            fact_ids.extend(int(v) for v in values)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                return fact_ids
+            def collect_sources(item):
+                ids = []
+                for fact_id in collect_fact_ids(item):
+                    for fragment in get_fact_fragments(fact_id, include_inactive=True):
+                        ids.extend(int(v) for v in fragment.get("source_message_ids", []) if str(v).isdigit())
+                return sorted(set(ids))
+            for item in entities:
+                source_ids["entity:" + str(item.get('id'))] = collect_sources(item)
+                source_ids.setdefault(str(item.get("id")), source_ids["entity:" + str(item.get('id'))])
+            for item in episodes:
+                source_ids["episode:" + str(item.get('id'))] = collect_sources(item)
+                source_ids.setdefault(str(item.get("id")), source_ids["episode:" + str(item.get('id'))])
+            for item in facts:
+                source_ids["fact:" + str(item.get('id'))] = collect_sources(item)
+                source_ids.setdefault(str(item.get("id")), source_ids["fact:" + str(item.get('id'))])
+            for saga in sagas:
+                try:
+                    episode_ids = [int(v) for v in json.loads(saga.get("episode_ids", "[]") or "[]")]
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    episode_ids = []
+                source_ids["saga:" + str(saga.get('id'))] = sorted({sid for eid in episode_ids for sid in source_ids.get("episode:" + str(eid), source_ids.get(str(eid), []))})
+                source_ids.setdefault(str(saga.get("id")), source_ids["saga:" + str(saga.get('id'))])
+        except Exception:
+            pass
+        try:
+            from brain.persona.manager import PersonaManager
+            assistant_name = PersonaManager().get_snapshot().profile.assistant_name or "\u83b2\u5fc3"
+        except Exception:
+            assistant_name = "\u83b2\u5fc3"
+        try:
+            from brain.memory_maintenance import get_last_maintenance_run
+            maintenance = get_last_maintenance_run()
+        except Exception:
+            maintenance = None
+        try:
+            from brain.memory_quality import get_memory_statistics
+            health = get_memory_statistics()
+        except Exception:
+            health = {}
+        try:
+            from brain.memory_diagnostics import get_memory_diagnostic_stats
+            diagnostics = get_memory_diagnostic_stats()
+        except Exception:
+            diagnostics = {}
+        return {
+            "entities": entities, "episodes": episodes, "sagas": sagas, "facts": facts,
+            "events": list_narrative_events(80), "source_ids": source_ids,
+            "core": {"user": get_user_name() or "\u4e3b\u4eba", "assistant": assistant_name},
+            "model": get_last_narrative_run() or {"status": "\u672a\u8fd0\u884c"},
+            "maintenance": maintenance or {"status": "\u672a\u8fd0\u884c", "stats": {}},
+            "health": health,
+            "diagnostics": diagnostics,
+        }
+
+    def memory_constellation_messages(self, raw_ids: str) -> dict:
+        try:
+            ids = sorted({int(value) for value in json.loads(raw_ids or "[]") if str(value).isdigit()})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            ids = []
+        try:
+            from brain.graph_memory import _get_conn
+            if not ids:
+                return {"text": "\u8be5\u8bb0\u5fc6\u6ca1\u6709\u53ef\u5b9a\u4f4d\u7684\u539f\u59cb\u6d88\u606f\u7f16\u53f7\u3002"}
+            placeholders = ",".join("?" for _ in ids)
+            rows = _get_conn().execute(
+                "SELECT id,session_id,role,content,timestamp FROM messages WHERE id IN (" + placeholders + ") ORDER BY timestamp,id",
+                tuple(ids),
+            ).fetchall()
+            text = "\n\n".join(
+                "[" + str(row['timestamp'] or '') + "] #" + str(row['id']) + " " + str(row['role'] or '') + "\n" + str(row['content'] or '')
+                for row in rows
+            ) or "\u539f\u59cb\u6d88\u606f\u5df2\u4e0d\u5b58\u5728\u3002"
+            return {"text": text}
+        except Exception as exc:
+            return {"text": "\u8bfb\u53d6\u539f\u59cb\u6d88\u606f\u5931\u8d25\uff1a" + str(exc)}
+
+    def memory_constellation_review(self, raw_id: str) -> dict:
+        try:
+            fact_id = int(raw_id)
+            if fact_id <= 0:
+                return {"ok": False}
+            from brain.graph_memory import _get_conn
+            conn = _get_conn()
+            cur = conn.execute(
+                "UPDATE memory_facts SET review_status='needs_confirmation', quality_updated_at=datetime('now','localtime') WHERE id=? AND status='active'",
+                (fact_id,),
+            )
+            conn.commit()
+            return {"ok": cur.rowcount > 0}
+        except Exception:
+            return {"ok": False}
+
     def open_legacy_window(self, feature: str) -> dict:
         if feature not in LEGACY_FEATURES:
             raise ValueError(f"不支持的原版界面: {feature}")
@@ -1600,6 +1763,43 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def _memory_constellation_page(self):
+        asset_dir = Path(__file__).resolve().parent / "assets" / "memory_constellation"
+        try:
+            template = (asset_dir / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": "constellation html missing: %s" % exc}, 404)
+        payload = bridge.memory_constellation_snapshot()
+        injected = "<script>window.LIANXIN_MEMORY_DATA=" + json.dumps(payload, ensure_ascii=False, default=str) + ";</script>"
+        html = template.replace("<!-- LIANXIN_DATA -->", injected)
+        html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        shim = _CONSTELLATION_BRIDGE_SHIM
+        html = html.replace("<script src=\"app.js\"></script>", shim + "<script src=\"app.js\"></script>")
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+        return
+
+    def _memory_constellation_asset(self, rel: str):
+        asset_dir = Path(__file__).resolve().parent / "assets" / "memory_constellation"
+        target = (asset_dir / rel).resolve()
+        if asset_dir not in target.parents or not target.is_file():
+            return self._send({"error": "constellation asset not found"}, 404)
+        raw = target.read_bytes()
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1730,6 +1930,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.five_axis())
             if path == "/api/tasks/snapshot":
                 return self._send(bridge.task_snapshot())
+            if path == "/api/memory-constellation/snapshot":
+                return self._send(bridge.memory_constellation_snapshot())
+            if path == "/api/memory-constellation/messages":
+                query = parse_qs(urlparse(self.path).query)
+                ids = (query.get("ids") or [""])[0]
+                return self._send(bridge.memory_constellation_messages(ids))
+            if path == "/api/memory-constellation/html":
+                return self._memory_constellation_page()
+            if path.startswith("/api/memory-constellation/"):
+                return self._memory_constellation_asset(path[len("/api/memory-constellation/"):])
+
             return self._send({"error": "Not found"}, 404)
         except Exception as exc:
             return self._send({"error": str(exc)}, 500)
@@ -1807,6 +2018,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proactive/trigger":
                 return self._send(bridge.proactive_trigger(
                     str(body.get("mode") or "normal"), str(body.get("action") or "")))
+            if path == "/api/memory-constellation/review":
+                return self._send(bridge.memory_constellation_review(str(body.get("id", ""))))
             if path == "/api/legacy/open":
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
