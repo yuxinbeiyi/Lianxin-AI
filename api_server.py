@@ -214,6 +214,18 @@ class LianxinBridge:
             suffix = "[用户附加文字结束]"
             if content.startswith(prefix) and content.endswith(suffix):
                 item["content"] = content[len(prefix):-len(suffix)].strip()
+
+        # Internal proactive source labels (proactive/slack/observe) belong to model
+        # context, never to the chat bubbles. Strip them for display.
+        import re as _re
+        _proactive_label = _re.compile(r"^\s*(?:\[(?:\u4e3b\u52a8|\u6478\u9c7c|\u89c2\u5bdf)\]\s*)+")
+        for item in items:
+            if item.get("role") != "assistant":
+                continue
+            content = str(item.get("content") or "")
+            stripped = _proactive_label.sub("", content)
+            if stripped != content:
+                item["content"] = stripped.strip()
         attachment_count = sum(len(item.get("attachments", []) or []) for item in items)
         description_count = sum(
             1 for item in items for attachment in (item.get("attachments", []) or [])
@@ -727,13 +739,6 @@ class LianxinBridge:
             pass
         with self._avatar_lock:
             self._avatar_busy = False
-        try:
-            history = self.agent().get_history_manager()
-            session_id = getattr(self.agent(), "_session_id", None)
-            if session_id is not None:
-                history.save_message(session_id, "assistant", response)
-        except Exception:
-            pass
         result = {"action": action, "accepted": True, "sound": sound_ok, "response": response, "counterAction": counter_action}
         if sound_error:
             result["soundError"] = sound_error
@@ -1296,8 +1301,28 @@ class _HeadlessProactiveChatWidget:
     def add_system_tip(self, text):
         bridge_log.log("主动", str(text))
 
-    def add_image_message(self, *_args, **_kwargs):
-        pass
+    def add_image_message(self, image_path, desc="", full_text="", is_ai=False):
+        """Headless：把观察图片作为 assistant 图片消息落库，前端轮询即可渲染成莲心气泡。"""
+        try:
+            agent = self._bridge.agent()
+            if agent is None:
+                return
+            history = agent.get_history_manager()
+            session_id = getattr(agent, "_session_id", None)
+            if history is None or session_id is None:
+                return
+            from pathlib import Path
+            history.save_message(
+                session_id, "assistant", full_text or desc or "",
+                metadata={"attachments": [{
+                    "kind": "image",
+                    "path": str(image_path),
+                    "fileName": Path(str(image_path)).name,
+                    "description": desc or "",
+                }]},
+            )
+        except Exception as exc:
+            bridge_log.log("主动", f"观察图片落库失败: {exc}")
 
     def add_mooyu_data_sources(self, sources):
         pass
@@ -1556,7 +1581,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/attachments":
                 query = parse_qs(urlparse(self.path).query)
                 target = Path((query.get("path") or [""])[0]).expanduser().resolve()
-                allowed = [Path.home() / ".lianxin" / "images", Path.home() / ".lianxin" / "files"]
+                allowed = [Path.home() / ".lianxin" / "images", Path.home() / ".lianxin" / "files", Path.home() / ".lianxin" / "observations"]
                 if not any(target == root.resolve() or root.resolve() in target.parents for root in allowed) or not target.is_file():
                     return self._send({"error": "attachment not found"}, 404)
                 raw = target.read_bytes()

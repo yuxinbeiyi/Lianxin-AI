@@ -105,7 +105,7 @@ class ProactivePresentationController:
         self._last_observation_context = content
         self._last_observation_context_at = now
         stored = f"[观察] 莲心刚才观察到：{content[:1500]}"
-        self._save_message(stored)
+        self._save_message(f"莲心刚才观察到：{content[:1500]}")
         self._remember_assistant_context(stored)
 
     def handle_observation_image(self, img_path: str, desc: str):
@@ -157,7 +157,7 @@ class ProactivePresentationController:
         if self._scheduler.desktop_enabled:
             if pending_sources:
                 self._chat_widget.add_mooyu_data_sources(pending_sources)
-            self._save_message(f"[主动] {text}")
+            self._save_message(text)
             # SQLite 持久化不会自动更新当前 AgentCore.history；同步内存上下文，
             # 让用户紧接着追问时模型能看到刚才的主动发言。
             self._remember_assistant_context(f"[主动] {text}")
@@ -205,7 +205,7 @@ class ProactivePresentationController:
         if not text:
             return
         text = self._clean_text(text)
-        self._save_message(f"[摸鱼] {text}")
+        self._save_message(text)
         self._remember_assistant_context(f"[摸鱼] {text}")
         self._chat_widget.add_ai_message(text)
         self._notify_minimized()

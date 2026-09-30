@@ -72,6 +72,8 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .conversation-meta { color: #779095; font-size: 10px; }
 .message-viewport { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: linear-gradient(90deg, rgba(4,15,20,.06), rgba(4,15,20,.26)); }
 .message-list { width: min(760px, calc(100% - 64px)); margin: 0 auto; padding: 27px 0 20px; }
+.scroll-to-bottom { position: absolute; right: 26px; bottom: 18px; z-index: 3; display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 12px; color: var(--lx-text-muted); border: 1px solid var(--lx-border); border-radius: 999px; background: rgba(13, 35, 44, .82); backdrop-filter: blur(10px); box-shadow: 0 4px 16px rgba(0, 0, 0, .28); cursor: pointer; transition: color .15s, transform .15s, background .15s; }
+.scroll-to-bottom:hover { color: var(--lx-text); background: rgba(13, 35, 44, .95); transform: translateY(-1px); }
 .message-row { display: flex; gap: 11px; margin-bottom: 25px; }
 .user-row { justify-content: flex-start; flex-direction: row-reverse; }
 .assistant-row { justify-content: flex-start; }
