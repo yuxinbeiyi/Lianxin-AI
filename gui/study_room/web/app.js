@@ -14,6 +14,7 @@ let currentView = 'home';
 let editingTaskId = null;
 let completionTaskId = null;
 let spaceState = null;
+let pendingSpaceWallpaper = null;
 let lastRewindSignature = '';
 
 function setTextIfChanged(selector, value) {
@@ -48,6 +49,9 @@ function eventText(item) {
 
 function renderSpace(data) {
   if (!data) return;
+  if (pendingSpaceWallpaper && data.settings && data.settings.wallpaper !== pendingSpaceWallpaper) {
+    data = { ...data, settings: { ...data.settings, wallpaper: pendingSpaceWallpaper } };
+  }
   spaceState = data;
   const settings = data.settings || {};
   applySpaceVisuals(settings);
@@ -65,6 +69,7 @@ function renderSpace(data) {
     if (item.url) button.firstChild.src = item.url;
     button.querySelector('strong').textContent = item.name;
     button.onclick = () => {
+      pendingSpaceWallpaper = item.id;
       spaceState.settings.wallpaper = item.id;
       applySpaceVisuals(spaceState.settings);
       qa('.wallpaper-option').forEach(option => option.classList.toggle('active', option === button));
@@ -81,7 +86,13 @@ function renderSpace(data) {
   eventItems.forEach(item => { const row = document.createElement('div'); row.className = 'space-event'; row.innerHTML = `<i></i><div><strong></strong><small>${formatSessionTime(item.occurred_at)}</small></div>`; row.querySelector('strong').textContent = eventText(item); events.appendChild(row); });
 }
 
-function refreshSpace() { bridge?.get_space(payload => renderSpace(JSON.parse(payload))); }
+function refreshSpace() {
+  bridge?.get_space(payload => {
+    const data = JSON.parse(payload);
+    if (pendingSpaceWallpaper && data.settings?.wallpaper === pendingSpaceWallpaper) pendingSpaceWallpaper = null;
+    renderSpace(data);
+  });
+}
 let toastTimer = null;
 let roomSettings = {
   focus_minutes: 25,
@@ -851,8 +862,27 @@ function bindEvents() {
   q('#space-wallpaper-opacity').oninput = () => { if (!spaceState) return; spaceState.settings.wallpaper_opacity = Number(q('#space-wallpaper-opacity').value) / 100; q('#space-wallpaper-opacity-value').textContent = `${q('#space-wallpaper-opacity').value}%`; applySpaceVisuals(spaceState.settings); };
   q('#space-mask-opacity').oninput = () => { if (!spaceState) return; spaceState.settings.content_mask_opacity = Number(q('#space-mask-opacity').value) / 100; q('#space-mask-opacity-value').textContent = `${q('#space-mask-opacity').value}%`; applySpaceVisuals(spaceState.settings); };
   q('#space-fit').onchange = () => { if (!spaceState) return; spaceState.settings.fit = q('#space-fit').value; applySpaceVisuals(spaceState.settings); };
-  q('#space-save').onclick = () => { if (!spaceState) return; const s = spaceState.settings; bridge?.save_space_settings(s.wallpaper, s.wallpaper_opacity, s.content_mask_opacity, s.fit, payload => renderSpace(JSON.parse(payload))); showToast('自习室布置已保存。'); };
-  q('#space-custom-wallpaper').onclick = () => bridge?.choose_custom_wallpaper(path => { if (!path || !spaceState) return; const s = spaceState.settings; bridge?.save_space_settings(path, s.wallpaper_opacity, s.content_mask_opacity, s.fit, payload => renderSpace(JSON.parse(payload))); });
+  q('#space-save').onclick = () => {
+    if (!spaceState) return;
+    const s = spaceState.settings;
+    pendingSpaceWallpaper = s.wallpaper;
+    bridge?.save_space_settings(s.wallpaper, s.wallpaper_opacity, s.content_mask_opacity, s.fit, payload => {
+      const data = JSON.parse(payload);
+      if (data.settings?.wallpaper === pendingSpaceWallpaper) pendingSpaceWallpaper = null;
+      renderSpace(data);
+    });
+    showToast('自习室布置已保存。');
+  };
+  q('#space-custom-wallpaper').onclick = () => bridge?.choose_custom_wallpaper(path => {
+    if (!path || !spaceState) return;
+    const s = spaceState.settings;
+    pendingSpaceWallpaper = path;
+    bridge?.save_space_settings(path, s.wallpaper_opacity, s.content_mask_opacity, s.fit, payload => {
+      const data = JSON.parse(payload);
+      if (data.settings?.wallpaper === pendingSpaceWallpaper) pendingSpaceWallpaper = null;
+      renderSpace(data);
+    });
+  });
   q('#focus-pause').onclick = () => bridge?.toggle_pause();
   q('#focus-stop').onclick = () => bridge?.stop_focus();
   q('#focus-back').onclick = leaveFocusView;
@@ -896,9 +926,9 @@ function bindEvents() {
   q('#report-next').onclick = () => { if (!currentReport?.is_current) moveReportPeriod(1); };
   q('#save-settings').onclick = saveSettings;
   q('#reset-settings').onclick = resetSettings;
-  ['#minimize', '#focus-minimize'].forEach(selector => { q(selector).onclick = () => bridge?.minimize_window(); });
-  ['#fullscreen', '#focus-fullscreen'].forEach(selector => { q(selector).onclick = () => bridge?.toggle_fullscreen(); });
-  ['#close', '#focus-close'].forEach(selector => { q(selector).onclick = () => bridge?.close_window(); });
+  ['#minimize', '#focus-minimize'].forEach(selector => { const node = q(selector); if (node) node.onclick = () => bridge?.minimize_window(); });
+  ['#fullscreen', '#focus-fullscreen'].forEach(selector => { const node = q(selector); if (node) node.onclick = () => bridge?.toggle_fullscreen(); });
+  ['#close', '#focus-close'].forEach(selector => { const node = q(selector); if (node) node.onclick = () => bridge?.close_window(); });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
     if (!q('#task-modal').classList.contains('hidden')) closeTaskEditor();

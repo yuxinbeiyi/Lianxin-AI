@@ -76,9 +76,8 @@ _CONSTELLATION_BRIDGE_SHIM = """<script>
       fetch(base + '/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
     },
     toggleFullscreen: function () {
-      if (!document.fullscreenElement) { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); return true; }
-      if (document.exitFullscreen) document.exitFullscreen();
-      return false;
+      window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'maximize' }, '*');
+      return true;
     }
   };
 })();
@@ -104,10 +103,8 @@ _RIPPLE_BRIDGE_SHIM = """<script>
       fetch(base + '/clear', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
     },
     toggleFullscreen: function (cb) {
-      var full = false;
-      if (!document.fullscreenElement) { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); full = true; }
-      else { if (document.exitFullscreen) document.exitFullscreen(); }
-      if (cb) cb(full);
+      window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'maximize' }, '*');
+      if (cb) cb(true);
     }
   };
 })();
@@ -134,9 +131,9 @@ _DATA_TIDE_BRIDGE_SHIM = """<script>
     mark_unlocks_read: function (ids, cb) {
       request('mark-read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids || '[]' }) }).then(function (data) { cb(JSON.stringify(data)); });
     },
-    request_close: function () {},
-    request_minimize: function () {},
-    request_fullscreen: function () {}
+    request_close: function () { window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'close' }, '*'); },
+    request_minimize: function () { window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'minimize' }, '*'); },
+    request_fullscreen: function () { window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'maximize' }, '*'); }
   };
   window.qt = { webChannelTransport: {} };
   window.QWebChannel = function (transport, callback) { callback({ objects: { achievementBridge: bridge } }); };
@@ -150,6 +147,12 @@ _STUDY_ROOM_BRIDGE_SHIM = """<script>
     return { connect: function (callback) { (listeners[name] = listeners[name] || []).push(callback); } };
   };
   var call = function (method, args, callback) {
+    var parentActions = { minimize_window: 'minimize', toggle_fullscreen: 'maximize', close_window: 'close', set_focus_fullscreen: 'maximize' };
+    if (parentActions[method]) {
+      window.parent.postMessage({ source: 'lianxin-embedded-window', action: parentActions[method] }, '*');
+      if (callback) callback(null);
+      return;
+    }
     fetch('/api/study-room/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) })
       .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
       .then(function (data) { if (callback) callback(data.result); })
@@ -186,6 +189,10 @@ _STUDY_ROOM_BRIDGE_SHIM = """<script>
   }
   window.qt = { webChannelTransport: {} };
   window.QWebChannel = function (transport, callback) { callback({ objects: { studyBridge: bridge } }); };
+  document.addEventListener('mousedown', function (event) {
+    if (event.button !== 0 || event.target.closest('button, input, textarea, select, a')) return;
+    if (event.target.closest('.topbar, .focus-window-actions')) window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'drag' }, '*');
+  });
   setInterval(poll, 1000);
 })();
 </script>"""
@@ -195,6 +202,12 @@ _TIME_CAPSULE_BRIDGE_SHIM = """<script>
   var listeners = {};
   var signal = function (name) { return { connect: function (callback) { (listeners[name] = listeners[name] || []).push(callback); } }; };
   var call = function (method, args, callback) {
+    var parentActions = { request_minimize: 'minimize', request_fullscreen: 'maximize', request_close: 'close' };
+    if (parentActions[method]) {
+      window.parent.postMessage({ source: 'lianxin-embedded-window', action: parentActions[method] }, '*');
+      if (callback) callback(null);
+      return;
+    }
     fetch('/api/time-capsule/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) })
       .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
       .then(function (data) { if (callback) callback(data.result); })
@@ -210,7 +223,20 @@ _TIME_CAPSULE_BRIDGE_SHIM = """<script>
   function poll() { call('get_initial_state', [], function (raw) { if (!raw) return; (listeners.state_changed || []).forEach(function (fn) { fn(raw); }); }); }
   window.qt = { webChannelTransport: {} };
   window.QWebChannel = function (transport, callback) { callback({ objects: { capsuleBridge: bridge } }); };
+  document.addEventListener('mousedown', function (event) {
+    if (event.button !== 0 || event.target.closest('button, input, textarea, select, a')) return;
+    if (event.target.closest('.topbar')) window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'drag' }, '*');
+  });
   setInterval(poll, 1500);
+})();
+</script>"""
+
+_EMBEDDED_WINDOW_SCRIPT = """<script>
+(function () {
+  document.addEventListener('mousedown', function (event) {
+    if (event.button !== 0 || event.target.closest('button, input, textarea, select, a')) return;
+    if (event.target.closest('.topbar')) window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'drag' }, '*');
+  });
 })();
 </script>"""
 
@@ -1411,6 +1437,59 @@ class LianxinBridge:
         ]}
 
 
+    def persona_state(self) -> dict:
+        from brain.persona import PersonaPromptComposer, get_persona_manager
+        from brain.persona.growth import get_persona_growth_service
+        from config import get_core_system_policy, get_user_name
+
+        manager = get_persona_manager()
+        snapshot = manager.get_snapshot()
+        growth = get_persona_growth_service()
+        try:
+            compiled = PersonaPromptComposer.compose(
+                snapshot,
+                user_name=get_user_name(),
+                core_policy=get_core_system_policy(),
+                scene_policy="不同渠道会在运行时追加各自的场景规则。",
+            )
+            preview = {"text": compiled.text, "estimated_tokens": compiled.estimated_tokens, "layers": [layer.name for layer in compiled.layers]}
+        except Exception as exc:
+            preview = {"text": "", "estimated_tokens": 0, "layers": [], "error": str(exc)}
+        return {
+            "snapshot": {"profile": snapshot.profile.to_dict(), "revision": snapshot.revision, "enabled": snapshot.enabled, "activated_at": snapshot.activated_at},
+            "profiles": [profile.to_dict() for profile in manager.list_profiles()],
+            "preview": preview,
+            "growth": {"summary": growth.summary(snapshot.profile.id), "events": [event.__dict__ for event in growth.store.list(snapshot.profile.id)[:100]], "settings": growth.settings()},
+        }
+
+    def persona_save(self, payload: dict) -> dict:
+        from brain.persona import get_persona_manager
+        manager = get_persona_manager()
+        profile = manager.load_profile(str(payload.get("id", "")))
+        fields = ("profile_name", "assistant_name", "summary", "identity", "appearance", "personality", "speaking_style", "habits", "relationship", "user_address", "boundaries", "custom_instructions")
+        manager.save_profile(profile.updated(**{field: str(payload[field] or "") for field in fields if field in payload}))
+        return self.persona_state()
+
+    def persona_create(self, name: str) -> dict:
+        from brain.persona import get_persona_manager
+        get_persona_manager().create_profile(name)
+        return self.persona_state()
+
+    def persona_activate(self, profile_id: str, enabled: bool = True) -> dict:
+        from brain.persona import get_persona_manager
+        get_persona_manager().activate(profile_id, enable=enabled)
+        return self.persona_state()
+
+    def persona_toggle(self, enabled: bool) -> dict:
+        from brain.persona import get_persona_manager
+        get_persona_manager().set_enabled(enabled)
+        return self.persona_state()
+
+    def persona_delete(self, profile_id: str) -> dict:
+        from brain.persona import get_persona_manager
+        get_persona_manager().delete_profile(profile_id)
+        return self.persona_state()
+
     def memory_constellation_snapshot(self) -> dict:
         from brain.memory_narrative import list_entity_profiles, list_episodes, list_sagas, list_narrative_events, get_last_narrative_run
         from config import get_user_name
@@ -2171,6 +2250,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = bridge.memory_constellation_snapshot()
         injected = "<script>window.LIANXIN_MEMORY_DATA=" + json.dumps(payload, ensure_ascii=False, default=str) + ";</script>"
         html = template.replace("<!-- LIANXIN_DATA -->", injected)
+        html = html.replace('</head>', _EMBEDDED_WINDOW_SCRIPT + '</head>')
         html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
         shim = _CONSTELLATION_BRIDGE_SHIM
         html = html.replace("<script src=\"app.js\"></script>", shim + "<script src=\"app.js\"></script>")
@@ -2207,6 +2287,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = bridge.ripple_snapshot()
         injected = "<script>window.LIANXIN_MEMORY_DATA=" + json.dumps(payload, ensure_ascii=False, default=str) + ";</script>"
         html = template.replace("<!-- LIANXIN_DATA -->", injected)
+        html = html.replace('</head>', _EMBEDDED_WINDOW_SCRIPT + '</head>')
         html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
         shim = _RIPPLE_BRIDGE_SHIM
         html = html.replace("<script src=\"app.js\"></script>", injected + shim + "<script src=\"app.js\"></script>")
@@ -2240,7 +2321,8 @@ class Handler(BaseHTTPRequestHandler):
             template = (asset_dir / "index.html").read_text(encoding="utf-8")
         except OSError as exc:
             return self._send({"error": "data-tide html missing: %s" % exc}, 404)
-        html = template.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
+        html = template.replace('</head>', _EMBEDDED_WINDOW_SCRIPT + '</head>')
+        html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
         html = html.replace('<script src="app.js"></script>', _DATA_TIDE_BRIDGE_SHIM + '<script src="app.js"></script>')
         body = html.encode("utf-8")
         self.send_response(200)
@@ -2472,6 +2554,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.proactive_status())
             if path == "/api/management/state":
                 return self._send(bridge.management())
+            if path == "/api/persona/state":
+                return self._send(bridge.persona_state())
             if path == "/api/settings/background":
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
@@ -2607,6 +2691,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_seal(str(body.get("day", "")), str(body.get("content", ""))))
             if path == "/api/proactive/toggle":
                 return self._send(bridge.set_proactive(bool(body.get("enabled"))))
+            if path == "/api/persona/save":
+                return self._send(bridge.persona_save(body))
+            if path == "/api/persona/create":
+                return self._send(bridge.persona_create(str(body.get("profile_name", "新人格"))))
+            if path == "/api/persona/activate":
+                return self._send(bridge.persona_activate(str(body.get("id", "")), bool(body.get("enabled", True))))
+            if path == "/api/persona/toggle":
+                return self._send(bridge.persona_toggle(bool(body.get("enabled"))))
+            if path == "/api/persona/delete":
+                return self._send(bridge.persona_delete(str(body.get("id", ""))))
             if path == "/api/proactive/trigger":
                 return self._send(bridge.proactive_trigger(
                     str(body.get("mode") or "normal"), str(body.get("action") or "")))
