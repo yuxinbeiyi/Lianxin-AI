@@ -159,6 +159,7 @@ class LianxinBridge:
         self._voice = None
         self._voice_lock = threading.RLock()
         self._voice_events = deque(maxlen=100)
+        self._voice_input = None
         self._proactive = None
         self._proactive_runtime = None
         self._avatar_lock = threading.RLock()
@@ -1090,6 +1091,39 @@ class LianxinBridge:
             self.stop_call_sound()
             return self.voice_state()
 
+    def start_voice_input(self) -> dict:
+        with self._voice_lock:
+            if self._voice_input is not None:
+                return {"active": True}
+            from voice.listener import VoiceListener
+            listener = VoiceListener()
+            self._voice_input = listener
+
+        def _run():
+            try:
+                audio = listener.record()
+                text = listener.transcribe(audio) if len(audio) else ""
+                with self._voice_lock:
+                    self._voice_events.append({"id": time.time_ns(), "type": "voice.input", "content": text or ""})
+            except Exception as exc:
+                with self._voice_lock:
+                    self._voice_events.append({"id": time.time_ns(), "type": "voice.input", "error": str(exc)})
+            finally:
+                with self._voice_lock:
+                    self._voice_input = None
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"active": True}
+
+    def stop_voice_input(self) -> dict:
+        with self._voice_lock:
+            if self._voice_input is not None:
+                try:
+                    self._voice_input.stop()
+                except Exception:
+                    pass
+            return {"active": self._voice_input is not None}
+
     def proactive(self) -> dict:
         scheduler = self.get_proactive_scheduler()
         return {"desktopEnabled": scheduler.desktop_enabled, "qqEnabled": scheduler.qq_enabled,
@@ -1748,6 +1782,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.start_voice())
             if path == "/api/voice/stop":
                 return self._send(bridge.stop_voice())
+            if path == "/api/voice/input/start":
+                return self._send(bridge.start_voice_input())
+            if path == "/api/voice/input/stop":
+                return self._send(bridge.stop_voice_input())
             if path == "/api/tts/speak":
                 return self._send(bridge.speak(str(body.get("text", "")), str(body.get("voice", ""))))
             if path == "/api/tts/stop":

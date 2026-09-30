@@ -373,3 +373,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 
 .debug-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 16px; }
 .debug-actions .secondary-button { flex: 0 0 auto; }
+
+/* 右键菜单 */
+.context-menu-backdrop { position: fixed; inset: 0; z-index: 1200; }
+.bubble-context-menu { position: fixed; z-index: 1201; min-width: 128px; padding: 6px; border: 1px solid rgba(157,214,205,.22); border-radius: 12px; background: rgba(18,37,46,.95); box-shadow: 0 12px 32px rgba(0,0,0,.35); backdrop-filter: blur(14px); display: flex; flex-direction: column; gap: 2px; }
+.bubble-context-menu button { display: flex; align-items: center; width: 100%; padding: 8px 12px; color: var(--lx-text); border: 0; border-radius: 8px; background: transparent; font-size: 12px; text-align: left; }
+.bubble-context-menu button:hover { color: var(--lx-accent); background: rgba(105,215,195,.14); }
