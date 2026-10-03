@@ -1,14 +1,25 @@
 """
 QQ 聊天面板：桥接开关 + 参数设置。
 """
+import json
+import threading
+import urllib.error
+import urllib.request
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QPushButton,
-    QCheckBox, QFrame,
+    QCheckBox, QFrame, QScrollArea, QWidget, QLayout,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 from config import get_qq_timing_config, save_qq_timing_config
+from gui.styles.settings_theme import SettingsScrollBar, apply_settings_theme
+
+
+class _BridgeStatusSignals(QObject):
+    received = pyqtSignal(object)
+    failed = pyqtSignal(str)
 
 
 class QqSettingsDialog(QDialog):
@@ -17,17 +28,49 @@ class QqSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._bridge_controller = getattr(parent, "_bridge_controller", None)
+        self._bridge_api_status = {}
+        self._bridge_request_lock = threading.Lock()
+        self._bridge_request_active = False
+        self._bridge_closed = False
+        self._bridge_signals = _BridgeStatusSignals()
+        self._bridge_signals.received.connect(self._on_bridge_api_status)
+        self._bridge_signals.failed.connect(self._on_bridge_api_error)
+        self._bridge_timer = None
         self.setWindowTitle("QQ 聊天")
         self.setMinimumSize(440, 560)
         self.resize(460, 600)
 
         self._config = get_qq_timing_config()
         self._build_ui()
+        apply_settings_theme(self)
         self._load_config()
         self._refresh_bridge_section()
+        if self._bridge_controller is None:
+            self._bridge_timer = QTimer(self)
+            self._bridge_timer.setInterval(1000)
+            self._bridge_timer.timeout.connect(self._poll_bridge_status)
+            self._bridge_timer.start()
+            self._poll_bridge_status()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(11, 11, 11, 11)
+        root_layout.setSpacing(8)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(content)
+        scroll.setVerticalScrollBar(SettingsScrollBar(scroll))
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.verticalScrollBar().setMinimumWidth(14)
+        scroll.verticalScrollBar().setSingleStep(32)
+        scroll.verticalScrollBar().setCursor(Qt.PointingHandCursor)
+        root_layout.addWidget(scroll, 1)
+        layout = content_layout
         layout.setSpacing(14)
 
         # ── QQ 桥接开关 ──────────────────────────────────────
@@ -212,6 +255,9 @@ class QqSettingsDialog(QDialog):
         layout.addWidget(grp_poke)
 
         # ── 按钮 ────────────────────────────────────────────
+        content_layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
+        layout = root_layout
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -320,13 +366,79 @@ class QqSettingsDialog(QDialog):
         self._config = config
         self.accept()
 
+    def _request_bridge(self, path: str, method: str = "GET", payload: dict | None = None):
+        if self._bridge_controller is not None:
+            return
+        with self._bridge_request_lock:
+            if self._bridge_request_active:
+                return
+            self._bridge_request_active = True
+
+        def run_request():
+            try:
+                data = None
+                if payload is not None:
+                    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:8766{path}",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method=method,
+                )
+                with urllib.request.urlopen(request, timeout=2.5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                if not self._bridge_closed:
+                    self._bridge_signals.received.emit(result)
+            except urllib.error.HTTPError as exc:
+                try:
+                    payload = json.loads(exc.read().decode("utf-8"))
+                    message = str(payload.get("error") or exc)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    message = str(exc)
+                if not self._bridge_closed:
+                    self._bridge_signals.failed.emit(message)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                if not self._bridge_closed:
+                    self._bridge_signals.failed.emit(str(exc))
+            finally:
+                with self._bridge_request_lock:
+                    self._bridge_request_active = False
+
+        threading.Thread(target=run_request, name="qq-bridge-settings-request", daemon=True).start()
+
+    def _poll_bridge_status(self):
+        self._request_bridge("/api/qq/status")
+
+    def _on_bridge_api_status(self, status):
+        if not isinstance(status, dict):
+            return
+        self._bridge_api_status = status
+        self._refresh_bridge_section()
+
+    def _on_bridge_api_error(self, error: str):
+        self._bridge_api_status = {
+            **self._bridge_api_status,
+            "state": "error",
+            "error": f"无法连接莲心后端: {error}",
+            "running": False,
+            "connected": False,
+        }
+        self._btn_bridge_toggle.setEnabled(True)
+        self._refresh_bridge_section()
+
     def _on_fast_reply_toggled(self, enabled: bool):
         if self._bridge_controller:
             self._bridge_controller.set_qq_fast_reply_enabled(enabled)
+        else:
+            self._request_bridge("/api/qq/fast-reply", "POST", {"enabled": bool(enabled)})
 
     def _on_bridge_toggle(self):
         """启动/停止 QQ 桥接。"""
         if self._bridge_controller is None:
+            running = bool(self._bridge_api_status.get("running"))
+            self._btn_bridge_toggle.setEnabled(False)
+            self._bridge_status.setText("QQ 桥接: 连接中..." if not running else "QQ 桥接: 正在断开...")
+            self._request_bridge("/api/qq/stop" if running else "/api/qq/start", "POST", {})
             return
         if self._bridge_controller.is_qq_running():
             self._bridge_controller.stop_qq()
@@ -336,6 +448,34 @@ class QqSettingsDialog(QDialog):
 
     def _refresh_bridge_section(self):
         """刷新桥接状态显示。"""
+        if self._bridge_controller is None:
+            state = str(self._bridge_api_status.get("state") or "stopped")
+            connected = bool(self._bridge_api_status.get("connected"))
+            running = bool(self._bridge_api_status.get("running"))
+            error = str(self._bridge_api_status.get("error") or "")
+            if connected:
+                self._bridge_status.setText("QQ 桥接: ● 已连接")
+                self._bridge_status.setStyleSheet("color: #34C759;")
+                self._btn_bridge_toggle.setText("断开")
+                self._btn_bridge_toggle.setEnabled(True)
+            elif state == "connecting":
+                self._bridge_status.setText("QQ 桥接: 正在连接...")
+                self._bridge_status.setStyleSheet("color: #F2C94C;")
+                self._btn_bridge_toggle.setText("连接中")
+                self._btn_bridge_toggle.setEnabled(False)
+            elif state == "error":
+                self._bridge_status.setText(
+                    f"QQ 桥接: 连接失败（{error[:48]}）" if error else "QQ 桥接: 连接失败"
+                )
+                self._bridge_status.setStyleSheet("color: #FF8A80;")
+                self._btn_bridge_toggle.setText("重试")
+                self._btn_bridge_toggle.setEnabled(True)
+            else:
+                self._bridge_status.setText("QQ 桥接: ● 未连接")
+                self._bridge_status.setStyleSheet("color: #999999;")
+                self._btn_bridge_toggle.setText("断开" if running else "连接")
+                self._btn_bridge_toggle.setEnabled(True)
+            return
         if self._bridge_controller and self._bridge_controller.is_qq_connected():
             self._bridge_status.setText("QQ 桥接: ● 已连接")
             self._bridge_status.setStyleSheet("color: #34C759;")
@@ -364,6 +504,12 @@ class QqSettingsDialog(QDialog):
                 }
                 QPushButton:hover  { background-color: #5A6AEE; }
             """)
+
+    def closeEvent(self, event):
+        self._bridge_closed = True
+        if self._bridge_timer is not None:
+            self._bridge_timer.stop()
+        super().closeEvent(event)
 
     def _on_auto_start_changed(self):
         """保存自动启动设置到持久化配置。"""

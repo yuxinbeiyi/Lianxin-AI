@@ -4,7 +4,7 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QPushButton,
-    QCheckBox, QFrame, QLineEdit,
+    QCheckBox, QFrame, QLineEdit, QScrollArea, QWidget, QLayout,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -14,6 +14,7 @@ from config import (
     get_wechat_bridge_config,
     save_wechat_bridge_config,
 )
+from gui.styles.settings_theme import SettingsScrollBar, apply_settings_theme
 
 
 class WeChatSettingsDialog(QDialog):
@@ -28,6 +29,7 @@ class WeChatSettingsDialog(QDialog):
 
         self._config = get_wechat_timing_config()
         self._build_ui()
+        apply_settings_theme(self)
         self._load_config()
         self._refresh_bridge_section()
 
@@ -38,7 +40,24 @@ class WeChatSettingsDialog(QDialog):
         return f
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(11, 11, 11, 11)
+        root_layout.setSpacing(8)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(content)
+        scroll.setVerticalScrollBar(SettingsScrollBar(scroll))
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.verticalScrollBar().setMinimumWidth(14)
+        scroll.verticalScrollBar().setSingleStep(32)
+        scroll.verticalScrollBar().setCursor(Qt.PointingHandCursor)
+        root_layout.addWidget(scroll, 1)
+        layout = content_layout
         layout.setSpacing(14)
 
         # ── 微信桥接开关 ──────────────────────────────────────
@@ -275,6 +294,9 @@ class WeChatSettingsDialog(QDialog):
         layout.addWidget(grp_global)
 
         # ── 按钮 ────────────────────────────────────────────
+        content_layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
+        layout = root_layout
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 

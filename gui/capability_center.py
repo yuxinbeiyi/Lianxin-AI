@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from gui.styles.settings_theme import apply_settings_theme
 from PyQt5.QtGui import QFont
 
 
@@ -21,62 +22,12 @@ class CapabilityCenter(QDialog):
         self.setWindowTitle("🧩 能力中枢")
         self.setMinimumSize(820, 620)
         self.resize(960, 700)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #FFFFFF;
-            }
-            QWidget {
-                background-color: #FFFFFF;
-                color: #2C2C2C;
-            }
-            QTabWidget::pane {
-                background: #FFFFFF;
-                border: none;
-            }
-            QTabBar::tab {
-                background: #F0F0F5;
-                border: 1px solid #D0D0D8;
-                border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                padding: 8px 18px;
-                margin-right: 4px;
-                color: #2C2C2C;
-                font-size: 12px;
-            }
-            QTabBar::tab:selected {
-                background: #FFFFFF;
-                font-weight: bold;
-                color: #2C2C2C;
-            }
-            QFrame {
-                background: #FFFFFF;
-                border: 1px solid #E0E0E8;
-                border-radius: 10px;
-            }
-            QScrollArea {
-                background: #FFFFFF;
-                border: none;
-            }
-            QLabel {
-                background: transparent;
-                color: #2C2C2C;
-            }
-            QLineEdit {
-                background: #FFFFFF;
-                color: #2C2C2C;
-                border: 1px solid #D0D0E0;
-                border-radius: 8px;
-                padding: 6px 12px;
-            }
-            QLineEdit:focus {
-                border-color: #6C7BFF;
-            }
-        """)
         self._last_refresh = datetime.now()
         self._skill_seen = set()
         self._mcp_seen = set()
         self._build_ui()
+        apply_settings_theme(self)
+        self._apply_capability_theme()
         self.refresh_requested.connect(self._refresh_all)
         self._ensure_initialized()
         self._refresh_all()
@@ -135,13 +86,13 @@ class CapabilityCenter(QDialog):
         header = QHBoxLayout()
         title = QLabel("🧩 能力中枢")
         title.setFont(QFont("Microsoft YaHei UI", 14, QFont.Bold))
-        title.setStyleSheet("color: #2C2C2C;")
+        title.setStyleSheet("color: #E8EAF2;")
         header.addWidget(title)
         header.addStretch()
 
         self._refresh_label = QLabel()
         self._refresh_label.setFont(QFont("Microsoft YaHei UI", 8))
-        self._refresh_label.setStyleSheet("color: #555;")
+        self._refresh_label.setStyleSheet("color: #AEB3C2;")
         header.addWidget(self._refresh_label)
 
         self._refresh_btn = QPushButton("🔄 刷新")
@@ -176,8 +127,8 @@ class CapabilityCenter(QDialog):
         self._search_edit.setFont(QFont("Microsoft YaHei UI", 10))
         self._search_edit.setStyleSheet("""
             QLineEdit {
-                border: 1px solid #D0D0E0; border-radius: 8px;
-                padding: 6px 12px; background: #F6F7F8; color: #2C2C2C;
+                border: 1px solid #334155; border-radius: 8px;
+                padding: 6px 12px; background: #0F1724; color: #E6EDF7;
             }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
@@ -282,7 +233,7 @@ class CapabilityCenter(QDialog):
         self._usage_overview = QLabel()
         self._usage_overview.setWordWrap(True)
         self._usage_overview.setStyleSheet(
-            "background: #F3F6F5; border: 1px solid #D9E2DF; border-radius: 6px; padding: 10px;"
+            "background: #252538; border: 1px solid #3D3D5A; border-radius: 6px; padding: 10px;"
         )
         layout.addWidget(self._usage_overview)
         self._usage_scroll = self._make_scroll_area()
@@ -330,18 +281,18 @@ class CapabilityCenter(QDialog):
             provider = descriptor.provider_name if descriptor else "未知来源"
             row = QFrame()
             row.setStyleSheet(
-                "QFrame { background: #FAFBFC; border: 1px solid #DDE2E7; border-radius: 5px; }"
+                "QFrame { background: #252538; border: 1px solid #3D3D5A; border-radius: 5px; }"
             )
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(10, 7, 10, 7)
             label = QLabel(f"{display}\n{summary.tool_name} · {provider}")
-            label.setStyleSheet("color: #30363B;")
+            label.setStyleSheet("color: #AEB3C2;")
             row_layout.addWidget(label, 1)
             stats = QLabel(
                 f"{summary.call_count} 次  ·  {summary.success_rate * 100:.0f}%  ·  "
                 f"{summary.avg_duration_ms:.0f}ms"
             )
-            stats.setStyleSheet("color: #5C6770;")
+            stats.setStyleSheet("color: #AEB3C2;")
             row_layout.addWidget(stats)
             self._usage_layout.insertWidget(self._usage_layout.count() - 1, row)
 
@@ -388,7 +339,7 @@ class CapabilityCenter(QDialog):
             card = QFrame()
             card.setStyleSheet("""
                 QFrame {
-                    background: #F6F7F8; border: 1px solid #DDE2E7;
+                    background: #252538; border: 1px solid #3D3D5A;
                     border-radius: 10px;
                 }
             """)
@@ -402,7 +353,7 @@ class CapabilityCenter(QDialog):
             card_layout.addWidget(num_lbl)
             lbl = QLabel(label)
             lbl.setFont(QFont("Microsoft YaHei UI", 9))
-            lbl.setStyleSheet("color: #555;")
+            lbl.setStyleSheet("color: #AEB3C2;")
             lbl.setAlignment(Qt.AlignCenter)
             card_layout.addWidget(lbl)
             layout.addWidget(card, 0, i)
@@ -413,11 +364,11 @@ class CapabilityCenter(QDialog):
     # ── 卡片组件 ────────────────────────────────────────
 
     def _make_card(self, icon, name, description, version, status_text, status_color,
-                   tool_count, tools, extra_label="", extra_color="#888"):
+                   tool_count, tools, extra_label="", extra_color="#AEB8C8"):
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background: #F6F7F8; border: 1px solid #DDE2E7;
+                background: #252538; border: 1px solid #3D3D5A;
                 border-radius: 10px;
             }
         """)
@@ -436,13 +387,13 @@ class CapabilityCenter(QDialog):
 
         name_lbl = QLabel(name)
         name_lbl.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        name_lbl.setStyleSheet("color: #2C2C2C;")
+        name_lbl.setStyleSheet("color: #E8EAF2;")
         row1.addWidget(name_lbl)
 
         if version:
             ver = QLabel(f"v{version}")
             ver.setFont(QFont("Microsoft YaHei UI", 8))
-            ver.setStyleSheet("color: #888;")
+            ver.setStyleSheet("color: #858BA0;")
             row1.addWidget(ver)
 
         row1.addStretch()
@@ -456,7 +407,7 @@ class CapabilityCenter(QDialog):
         # 描述
         desc = QLabel(description)
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #555;")
+        desc.setStyleSheet("color: #AEB3C2;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -473,7 +424,7 @@ class CapabilityCenter(QDialog):
         tool_row.setSpacing(8)
         tool_badge = QLabel(f"▸ {tool_count} 个工具")
         tool_badge.setFont(QFont("Microsoft YaHei UI", 9))
-        tool_badge.setStyleSheet("color: #2C2C2C;")
+        tool_badge.setStyleSheet("color: #E8EAF2;")
         tool_badge.setCursor(Qt.PointingHandCursor)
         tool_row.addWidget(tool_badge)
         tool_row.addStretch()
@@ -503,20 +454,20 @@ class CapabilityCenter(QDialog):
         params = tool_info.get("parameters", {})
 
         frame = QFrame()
-        frame.setStyleSheet("background: #F6F7F8; border-radius: 6px; padding: 4px; border: 1px solid #DDE2E7;")
+        frame.setStyleSheet("background: #252538; border-radius: 6px; padding: 4px; border: 1px solid #3D3D5A;")
         fl = QVBoxLayout(frame)
         fl.setContentsMargins(8, 4, 8, 4)
         fl.setSpacing(2)
 
         name_lbl = QLabel(f"🔹 {name}")
         name_lbl.setFont(QFont("Consolas", 9, QFont.Bold))
-        name_lbl.setStyleSheet("color: #2C2C2C;")
+        name_lbl.setStyleSheet("color: #E8EAF2;")
         fl.addWidget(name_lbl)
 
         if desc:
             d = QLabel(desc)
             d.setFont(QFont("Microsoft YaHei UI", 8))
-            d.setStyleSheet("color: #888;")
+            d.setStyleSheet("color: #AEB3C2;")
             d.setWordWrap(True)
             fl.addWidget(d)
 
@@ -591,6 +542,166 @@ class CapabilityCenter(QDialog):
         self._refresh_btn.setText("🔄 刷新")
         self._refresh_btn.setEnabled(True)
 
+    def _apply_capability_theme(self):
+        """Apply the capability center palette after the shared settings theme."""
+        self.setStyleSheet("""
+            QDialog, QWidget {
+                background-color: #151B2B;
+                color: #E6EDF7;
+            }
+            QDialog { background-color: #151B2B; }
+            QLabel { background: transparent; color: #E6EDF7; }
+            QFrame {
+                background: #1B2435;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+            QTabWidget::pane {
+                background: #151B2B;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #202B3D;
+                color: #B8C1D8;
+                border: 1px solid #334155;
+                border-bottom: none;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                padding: 8px 18px;
+                margin-right: 4px;
+                font-size: 12px;
+            }
+            QTabBar::tab:hover {
+                background: #293A50;
+                color: #E6EDF7;
+            }
+            QTabBar::tab:selected {
+                background: #2F6F62;
+                color: #FFFFFF;
+                border-color: #65B7A5;
+                font-weight: bold;
+            }
+            QScrollArea, QScrollArea > QWidget > QWidget {
+                background: #151B2B;
+                border: none;
+            }
+            QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+                background: #0F1724;
+                color: #E6EDF7;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 5px 8px;
+                selection-background-color: #2F6F62;
+                selection-color: #FFFFFF;
+            }
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus,
+            QSpinBox:focus, QDoubleSpinBox:focus {
+                border-color: #65B7A5;
+            }
+            QComboBox QAbstractItemView {
+                background: #0F1724;
+                color: #E6EDF7;
+                selection-background-color: #2F6F62;
+                selection-color: #FFFFFF;
+            }
+            QListWidget {
+                background: #0F1724;
+                color: #E6EDF7;
+                border: 1px solid #334155;
+            }
+            QListWidget::item:selected {
+                background: #2F6F62;
+                color: #FFFFFF;
+            }
+            QPushButton {
+                background: #26354A;
+                color: #E6EDF7;
+                border: 1px solid #465B78;
+                border-radius: 6px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background: #324964;
+                border-color: #65B7A5;
+            }
+            QPushButton:pressed { background: #1F3F3A; }
+            QPushButton:disabled {
+                background: #202B3D;
+                color: #718096;
+                border-color: #334155;
+            }
+            QScrollBar:vertical {
+                background: #0F1724;
+                width: 10px;
+                margin: 2px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #526581;
+                min-height: 48px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover { background: #65B7A5; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+                border: none;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #718096;
+                background: #0F1724;
+            }
+            QCheckBox::indicator:checked {
+                background: #2F6F62;
+                border-color: #65B7A5;
+            }
+        """)
+
+        tab_style = """
+            QTabWidget::pane { background: #151B2B; border: 1px solid #334155; }
+            QTabBar::tab {
+                background: #202B3D; color: #B8C1D8;
+                border: 1px solid #334155; padding: 8px 18px; margin-right: 4px;
+            }
+            QTabBar::tab:hover { background: #293A50; color: #E6EDF7; }
+            QTabBar::tab:selected {
+                background: #2F6F62; color: #FFFFFF;
+                border-color: #65B7A5; font-weight: bold;
+            }
+        """
+        self._tabs.setStyleSheet(tab_style)
+        self._extension_tabs.setStyleSheet(tab_style)
+
+        combo_style = """
+            QComboBox {
+                background: #0F1724; color: #E6EDF7;
+                border: 1px solid #334155; border-radius: 6px; padding: 5px 8px;
+            }
+            QComboBox:hover, QComboBox:focus { border-color: #65B7A5; }
+            QComboBox QAbstractItemView {
+                background: #0F1724; color: #E6EDF7;
+                selection-background-color: #2F6F62; selection-color: #FFFFFF;
+            }
+        """
+        for combo in self.findChildren(QComboBox):
+            combo.setStyleSheet(combo_style)
+
+        button_style = """
+            QPushButton {
+                background: #26354A; color: #E6EDF7;
+                border: 1px solid #465B78; border-radius: 6px; padding: 5px 10px;
+            }
+            QPushButton:hover { background: #324964; border-color: #65B7A5; }
+            QPushButton:pressed { background: #1F3F3A; }
+            QPushButton:disabled { background: #202B3D; color: #718096; }
+        """
+        for button in self.findChildren(QPushButton):
+            if not button.styleSheet().strip():
+                button.setStyleSheet(button_style)
+
     def _update_refresh_time(self):
         ts = self._last_refresh.strftime("%H:%M:%S")
         self._refresh_label.setText(f"上次刷新：{ts}")
@@ -621,7 +732,7 @@ class CapabilityCenter(QDialog):
             tool_count = len(tools)
             icon = self._skill_icon(name)
             status_text = "✅ 已激活" if active else "⏸ 未激活"
-            status_color = "#27AE60" if active else "#AAA"
+            status_color = "#6EE7B7" if active else "#AEB8C8"
 
             # 提取工具信息
             tool_infos = []
@@ -639,7 +750,7 @@ class CapabilityCenter(QDialog):
                 icon, name, skill.get("description", ""),
                 skill.get("version", ""), status_text, status_color,
                 tool_count, tool_infos,
-                extra_label=extra, extra_color="#888",
+                extra_label=extra, extra_color="#AEB8C8",
             )
             card.setProperty("skill_name", name)
             card.setProperty("card_type", "skill")
@@ -652,9 +763,9 @@ class CapabilityCenter(QDialog):
             toggle_btn.setFont(QFont("Microsoft YaHei UI", 9))
             toggle_btn.setCursor(Qt.PointingHandCursor)
             if active:
-                toggle_btn.setStyleSheet("QPushButton{background:#FFE0B2;color:#E65100;border-radius:6px;border:1px solid #FFB74D;}QPushButton:hover{background:#FFCC80;}")
+                toggle_btn.setStyleSheet("QPushButton{background:#3B3022;color:#FFD28A;border-radius:6px;border:1px solid #A66A2C;}QPushButton:hover{background:#544025;}")
             else:
-                toggle_btn.setStyleSheet("QPushButton{background:#C8E6C9;color:#2E7D32;border-radius:6px;border:1px solid #A5D6A7;}QPushButton:hover{background:#A5D6A7;}")
+                toggle_btn.setStyleSheet("QPushButton{background:#1F3F3A;color:#8FE3C7;border-radius:6px;border:1px solid #3D8D7B;}QPushButton:hover{background:#285247;}")
             toggle_btn.clicked.connect(lambda checked, n=name: self._on_toggle_skill(n))
             action_row.addWidget(toggle_btn)
 
@@ -662,7 +773,7 @@ class CapabilityCenter(QDialog):
             uninstall_btn.setFixedSize(60, 26)
             uninstall_btn.setFont(QFont("Microsoft YaHei UI", 9))
             uninstall_btn.setCursor(Qt.PointingHandCursor)
-            uninstall_btn.setStyleSheet("QPushButton{background:#FFCDD2;color:#C62828;border-radius:6px;border:1px solid #EF9A9A;}QPushButton:hover{background:#EF9A9A;}")
+            uninstall_btn.setStyleSheet("QPushButton{background:#42252D;color:#FFB4C0;border-radius:6px;border:1px solid #9E5261;}QPushButton:hover{background:#5A303B;}")
             uninstall_btn.clicked.connect(lambda checked, n=name: self._on_uninstall_skill(n))
             action_row.addWidget(uninstall_btn)
             action_row.addStretch()
@@ -673,7 +784,7 @@ class CapabilityCenter(QDialog):
         if not skills:
             empty = QLabel("暂无技能。\n将 SKILL.md 放入 skills/ 目录即可自动发现。")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #888; padding: 40px;")
+            empty.setStyleSheet("color: #AEB8C8; padding: 40px;")
             layout.insertWidget(layout.count() - 1, empty)
 
     def _skill_icon(self, name):
@@ -706,10 +817,10 @@ class CapabilityCenter(QDialog):
             connected = getattr(agent, "_connected", True)
             if agent_type == "external":
                 status_text = "🟢 已连接" if connected else "🔴 未连接"
-                status_color = "#27AE60" if connected else "#E74C3C"
+                status_color = "#6EE7B7" if connected else "#FCA5A5"
             else:
                 status_text = "✅ 本地运行"
-                status_color = "#27AE60"
+                status_color = "#6EE7B7"
 
             # 工具
             tools = getattr(agent, "_tools", [])
@@ -730,7 +841,7 @@ class CapabilityCenter(QDialog):
                     })
 
             extra = ""
-            extra_color = "#888"
+            extra_color = "#AEB8C8"
             if agent_type == "external":
                 extra = f"类型：外部 MCP（{agent_type}）"
             elif agent_type == "local":
@@ -754,9 +865,9 @@ class CapabilityCenter(QDialog):
             toggle_btn.setFont(QFont("Microsoft YaHei UI", 9))
             toggle_btn.setCursor(Qt.PointingHandCursor)
             if enabled:
-                toggle_btn.setStyleSheet("QPushButton{background:#FFE0B2;color:#E65100;border-radius:6px;border:1px solid #FFB74D;}QPushButton:hover{background:#FFCC80;}")
+                toggle_btn.setStyleSheet("QPushButton{background:#3B3022;color:#FFD28A;border-radius:6px;border:1px solid #A66A2C;}QPushButton:hover{background:#544025;}")
             else:
-                toggle_btn.setStyleSheet("QPushButton{background:#C8E6C9;color:#2E7D32;border-radius:6px;border:1px solid #A5D6A7;}QPushButton:hover{background:#A5D6A7;}")
+                toggle_btn.setStyleSheet("QPushButton{background:#1F3F3A;color:#8FE3C7;border-radius:6px;border:1px solid #3D8D7B;}QPushButton:hover{background:#285247;}")
             toggle_btn.clicked.connect(lambda checked, n=sname: self._on_toggle_mcp(n))
             action_row.addWidget(toggle_btn)
 
@@ -764,7 +875,7 @@ class CapabilityCenter(QDialog):
             test_btn.setFixedSize(56, 26)
             test_btn.setFont(QFont("Microsoft YaHei UI", 9))
             test_btn.setCursor(Qt.PointingHandCursor)
-            test_btn.setStyleSheet("QPushButton{background:#E3F2FD;color:#1565C0;border-radius:6px;border:1px solid #90CAF9;}QPushButton:hover{background:#BBDEFB;}")
+            test_btn.setStyleSheet("QPushButton{background:#203A52;color:#A9D8FF;border-radius:6px;border:1px solid #4D87B5;}QPushButton:hover{background:#294A66;}")
             test_btn.clicked.connect(lambda checked, n=sname: self._on_test_mcp(n))
             action_row.addWidget(test_btn)
 
@@ -772,7 +883,7 @@ class CapabilityCenter(QDialog):
             uninstall_btn.setFixedSize(60, 26)
             uninstall_btn.setFont(QFont("Microsoft YaHei UI", 9))
             uninstall_btn.setCursor(Qt.PointingHandCursor)
-            uninstall_btn.setStyleSheet("QPushButton{background:#FFCDD2;color:#C62828;border-radius:6px;border:1px solid #EF9A9A;}QPushButton:hover{background:#EF9A9A;}")
+            uninstall_btn.setStyleSheet("QPushButton{background:#42252D;color:#FFB4C0;border-radius:6px;border:1px solid #9E5261;}QPushButton:hover{background:#5A303B;}")
             uninstall_btn.clicked.connect(lambda checked, n=sname: self._on_uninstall_mcp(n))
             action_row.addWidget(uninstall_btn)
             action_row.addStretch()
@@ -783,7 +894,7 @@ class CapabilityCenter(QDialog):
         if not MCP_REGISTRY:
             empty = QLabel("暂无 MCP 服务。\n将 mcp-manifest.json 放入 mcp_servers/ 目录即可自动发现。")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #AAA; padding: 40px;")
+            empty.setStyleSheet("color: #AEB8C8; padding: 40px;")
             layout.insertWidget(layout.count() - 1, empty)
 
     # ── 内置工具加载 ─────────────────────────────────────
@@ -825,7 +936,7 @@ class CapabilityCenter(QDialog):
         if not capabilities:
             empty = QLabel("当前筛选条件下没有能力。")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #AAA; padding: 40px;")
+            empty.setStyleSheet("color: #AEB8C8; padding: 40px;")
             layout.insertWidget(layout.count() - 1, empty)
             return
 
@@ -835,7 +946,7 @@ class CapabilityCenter(QDialog):
                 continue
             cat_label = QLabel(cat)
             cat_label.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-            cat_label.setStyleSheet("color: #4A4A6A; padding: 8px 4px 2px 4px;")
+            cat_label.setStyleSheet("color: #8FE3D0; padding: 8px 4px 2px 4px;")
             cat_label.setProperty("card_type", "capability_category")
             cat_label.setProperty("tool_names", " ".join(
                 f"{item.name} {item.display_name} {item.description}" for item in tools
@@ -851,7 +962,7 @@ class CapabilityCenter(QDialog):
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background: #FAFBFC; border: 1px solid #DDE2E7;
+                background: #252538; border: 1px solid #3D3D5A;
                 border-radius: 6px;
             }
         """)
@@ -869,10 +980,10 @@ class CapabilityCenter(QDialog):
         top.addWidget(name_lbl)
         tech = QLabel(descriptor.name)
         tech.setFont(QFont("Consolas", 8))
-        tech.setStyleSheet("color: #737A82;")
+        tech.setStyleSheet("color: #AEB3C2;")
         top.addWidget(tech)
         top.addStretch()
-        status_color = "#267A55" if descriptor.available and descriptor.enabled else "#A4493D"
+        status_color = "#6EE7B7" if descriptor.available and descriptor.enabled else "#FCA5A5"
         status = QLabel(f"{descriptor.status} · {descriptor.provider_name}")
         status.setStyleSheet(f"color: {status_color};")
         top.addWidget(status)
@@ -880,7 +991,7 @@ class CapabilityCenter(QDialog):
 
         desc = QLabel(descriptor.description or "暂无说明")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #4D555D;")
+        desc.setStyleSheet("color: #AEB3C2;")
         layout.addWidget(desc)
 
         bottom = QHBoxLayout()
@@ -889,7 +1000,7 @@ class CapabilityCenter(QDialog):
             f"调用 {summary.call_count} 次"
             + (f" · 成功率 {rate:.0f}% · 平均 {summary.avg_duration_ms:.0f}ms" if summary.call_count else "")
         )
-        metrics.setStyleSheet("color: #737A82;")
+        metrics.setStyleSheet("color: #AEB3C2;")
         bottom.addWidget(metrics)
         bottom.addStretch()
         favorite = QPushButton("★" if descriptor.favorite else "☆")
@@ -999,7 +1110,7 @@ class CapabilityCenter(QDialog):
         # 说明文字
         hint = QLabel("将社区 Skills 或 MCP 服务文件夹拖入下方，或点击浏览选择文件夹，系统将自动识别并安装。")
         hint.setFont(QFont("Microsoft YaHei UI", 9))
-        hint.setStyleSheet("color: #555; padding: 4px 0;")
+        hint.setStyleSheet("color: #AEB3C2; padding: 4px 0;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -1011,8 +1122,8 @@ class CapabilityCenter(QDialog):
         self._install_path.setFont(QFont("Microsoft YaHei UI", 10))
         self._install_path.setStyleSheet("""
             QLineEdit {
-                border: 2px dashed #D0D0E0; border-radius: 8px;
-                padding: 10px 14px; background: #F6F7F8; color: #2C2C2C;
+                border: 2px dashed #526581; border-radius: 8px;
+                padding: 10px 14px; background: #0F1724; color: #E6EDF7;
             }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
@@ -1038,7 +1149,7 @@ class CapabilityCenter(QDialog):
         self._detect_card = QFrame()
         self._detect_card.setStyleSheet("""
             QFrame {
-                background: #F8F8FF; border: 1px solid #E0E0F0;
+                background: #252538; border: 1px solid #3D3D5A;
                 border-radius: 10px;
             }
         """)
@@ -1057,7 +1168,7 @@ class CapabilityCenter(QDialog):
 
         self._detect_desc = QLabel()
         self._detect_desc.setFont(QFont("Microsoft YaHei UI", 9))
-        self._detect_desc.setStyleSheet("color: #555;")
+        self._detect_desc.setStyleSheet("color: #AEB3C2;")
         self._detect_desc.setWordWrap(True)
         detect_layout.addWidget(self._detect_desc)
 
@@ -1071,7 +1182,7 @@ class CapabilityCenter(QDialog):
                 border-radius: 8px; border: none;
             }
             QPushButton:hover { background-color: #219A52; }
-            QPushButton:disabled { background-color: #CCC; }
+            QPushButton:disabled { background-color: #202B3D; color: #718096; }
         """)
         self._install_btn.clicked.connect(self._on_install)
         detect_layout.addWidget(self._install_btn)
@@ -1085,8 +1196,8 @@ class CapabilityCenter(QDialog):
         self._install_log.setMaximumHeight(120)
         self._install_log.setStyleSheet("""
             QTextEdit {
-                background: #F6F7F8; border: 1px solid #DDE2E7;
-                border-radius: 8px; padding: 8px; color: #2C2C2C;
+                background: #252538; border: 1px solid #3D3D5A;
+                border-radius: 8px; padding: 8px; color: #E8EAF2;
             }
         """)
         self._install_log.setPlaceholderText("安装日志将在此显示...")
@@ -1111,7 +1222,7 @@ class CapabilityCenter(QDialog):
         clear_btn.setFixedSize(60, 24)
         clear_btn.setFont(QFont("Microsoft YaHei UI", 9))
         clear_btn.setCursor(Qt.PointingHandCursor)
-        clear_btn.setStyleSheet("QPushButton{background:#EEE;color:#555;border-radius:4px;border:1px solid #CCC;}QPushButton:hover{background:#DDD;}")
+        clear_btn.setStyleSheet("QPushButton{background:#2D2D3F;color:#E8EAF2;border-radius:4px;border:1px solid #505071;}QPushButton:hover{background:#3D3D58;}")
         clear_btn.clicked.connect(lambda: self._global_log.clear())
         header.addWidget(clear_btn)
         layout.addLayout(header)

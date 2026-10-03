@@ -91,6 +91,7 @@ class VoiceDuplexManager:
         self._lock = threading.Lock()
         self._vad_paused = False
         self._vad_cooldown_until = 0.0
+        self._muted = False
         self._headphone_mode = False  # 耳机模式：允许TTS期间语音打断
 
     # ── 状态 ──────────────────────────────────────────
@@ -158,6 +159,15 @@ class VoiceDuplexManager:
             self._vad_paused = False
             self._vad_cooldown_until = time.time() + cooldown
 
+    def set_muted(self, muted: bool):
+        self._muted = bool(muted)
+        if self._muted:
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+
     # ── VAD 回调 ──────────────────────────────────────
     def _on_voice_start(self):
         if self._on_voice_start_ui:
@@ -179,7 +189,7 @@ class VoiceDuplexManager:
 
     def _on_voice_end(self, wav_bytes: bytes):
         with self._lock:
-            if self._vad_paused:
+            if self._vad_paused or self._muted:
                 return  # 扬声器模式：丢弃 TTS 回声
             if time.time() < self._vad_cooldown_until:
                 return  # TTS 刚结束 → 冷却期内丢弃延迟的回声尾帧

@@ -27,6 +27,7 @@ from brain.graph_memory import list_all_facts, delete_facts
 from gui.quick_launch_dialog import QuickLaunchEditDialog
 from gui.avatar_widgets import ChatAvatarSettingsTab, AvatarCropDialog
 from utils.paths import get_user_data_dir
+from gui.styles.settings_theme import apply_settings_theme
 
 
 
@@ -54,6 +55,7 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.Window)
     
         self._build_ui()
+        apply_settings_theme(self)
         self._load_from_settings()
 
 
@@ -123,7 +125,7 @@ class SettingsDialog(QDialog):
 
         prob_hint = QLabel("💡 提示：若表情包文件夹为空，则不会发送图片。")
         prob_hint.setFont(QFont("Microsoft YaHei UI", 8))
-        prob_hint.setStyleSheet("color: #888888;")
+        prob_hint.setStyleSheet("color: #AEB3C2;")
         prob_layout.addWidget(prob_hint)
 
         scroll_layout.addWidget(prob_frame)
@@ -135,7 +137,7 @@ class SettingsDialog(QDialog):
 
         name_title = QLabel("👤 用户称呼")
         name_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        name_title.setStyleSheet("color: #444466;")
+        name_title.setStyleSheet("color: #E8EAF2;")
         name_layout.addWidget(name_title)
 
         name_input_layout = QHBoxLayout()
@@ -150,7 +152,7 @@ class SettingsDialog(QDialog):
 
         name_hint = QLabel("💡 莲心在对话中会使用这个称呼来叫你，默认为「雨心」")
         name_hint.setFont(QFont("Microsoft YaHei UI", 8))
-        name_hint.setStyleSheet("color: #888888;")
+        name_hint.setStyleSheet("color: #AEB3C2;")
         name_layout.addWidget(name_hint)
 
         scroll_layout.addWidget(name_frame)
@@ -186,7 +188,7 @@ class SettingsDialog(QDialog):
             "完整启动会延长启动时间；Torch、FunASR 等原生模型将在安全的独立加载流程中准备。"
         )
         startup_mode_tip.setFont(QFont("Microsoft YaHei UI", 8))
-        startup_mode_tip.setStyleSheet("color: #888888;")
+        startup_mode_tip.setStyleSheet("color: #AEB3C2;")
         startup_mode_tip.setWordWrap(True)
         startup_mode_layout.addWidget(startup_mode_tip)
         scroll_layout.addWidget(startup_mode_frame)
@@ -228,7 +230,7 @@ class SettingsDialog(QDialog):
             capability_text = "平台能力检测不可用，将使用 Qt 通用窗口能力。"
         capability_label = QLabel(capability_text)
         capability_label.setWordWrap(True)
-        capability_label.setStyleSheet("color:#888;font-size:11px;")
+        capability_label.setStyleSheet("color:#AEB3C2;font-size:11px;")
         window_layout.addWidget(capability_label)
         scroll_layout.addWidget(window_frame)
 
@@ -237,7 +239,7 @@ class SettingsDialog(QDialog):
         font_layout = QVBoxLayout(font_frame)
         font_title = QLabel("🔤 聊天字体大小")
         font_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        font_title.setStyleSheet("color: #444466;")
+        font_title.setStyleSheet("color: #E8EAF2;")
         font_layout.addWidget(font_title)
 
         slider_layout_font = QHBoxLayout()
@@ -268,7 +270,7 @@ class SettingsDialog(QDialog):
         note_layout = QVBoxLayout(note_frame)
         note_title = QLabel("📝 小纸条文件路径")
         note_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        note_title.setStyleSheet("color: #444466;")
+        note_title.setStyleSheet("color: #E8EAF2;")
         note_layout.addWidget(note_title)
 
         path_layout = QHBoxLayout()
@@ -340,7 +342,7 @@ class SettingsDialog(QDialog):
         first_meet_layout.addLayout(date_input_layout)
         date_tip = QLabel("💡 设置你与莲心初次见面的日期，用于计算「一起度过的第X天」")
         date_tip.setFont(QFont("Microsoft YaHei UI", 8))
-        date_tip.setStyleSheet("color: #888888;")
+        date_tip.setStyleSheet("color: #AEB3C2;")
         first_meet_layout.addWidget(date_tip)
         scroll_layout.addWidget(first_meet_group)
 
@@ -409,14 +411,14 @@ class SettingsDialog(QDialog):
 
         # ----- 快捷启动设置选项卡 -----
         ql_tab = QWidget()
-        ql_layout = QVBoxLayout(ql_tab)
+        ql_layout = QVBoxLayout(self._prepare_scroll_tab(ql_tab))
         ql_layout.setSpacing(12)
 
         ql_tip = QLabel(
             "在这里添加你常用的应用，之后在 QQ 或桌面端说「打开xxx」时，莲心会优先从这里匹配。"
         )
         ql_tip.setWordWrap(True)
-        ql_tip.setStyleSheet("color: #666; font-size: 12px;")
+        ql_tip.setStyleSheet("color: #AEB3C2; font-size: 12px;")
         ql_layout.addWidget(ql_tip)
 
         self._ql_table = QTableWidget()
@@ -457,7 +459,7 @@ class SettingsDialog(QDialog):
 
         # ── GPU/CPU 性能选项卡 ──
         perf_tab = QWidget()
-        perf_layout = QVBoxLayout(perf_tab)
+        perf_layout = QVBoxLayout(self._prepare_scroll_tab(perf_tab))
         perf_layout.setSpacing(16)
 
         from config import get_device_preference, save_device_preference
@@ -491,7 +493,7 @@ class SettingsDialog(QDialog):
             perf_layout.addLayout(row)
 
             desc_lbl = QLabel(desc)
-            desc_lbl.setStyleSheet("color: #888; font-size: 11px; margin-left: 164px;")
+            desc_lbl.setStyleSheet("color: #AEB3C2; font-size: 11px; margin-left: 164px;")
             perf_layout.addWidget(desc_lbl)
 
         perf_layout.addSpacing(12)
@@ -502,7 +504,7 @@ class SettingsDialog(QDialog):
             "   GPU：始终使用 GPU（需 NVIDIA 显卡，失败则报错）\n"
             "   修改后需重启莲心生效"
         )
-        tip.setStyleSheet("color: #aaa; font-size: 11px;")
+        tip.setStyleSheet("color: #AEB3C2; font-size: 11px;")
         perf_layout.addWidget(tip)
 
         perf_layout.addStretch()
@@ -510,7 +512,7 @@ class SettingsDialog(QDialog):
 
         # ── 桌面端聊天设置选项卡 ──
         desktop_tab = QWidget()
-        desktop_layout = QVBoxLayout(desktop_tab)
+        desktop_layout = QVBoxLayout(self._prepare_scroll_tab(desktop_tab))
         desktop_layout.setSpacing(14)
 
         desktop_tip = QLabel(
@@ -519,7 +521,7 @@ class SettingsDialog(QDialog):
         )
         desktop_tip.setWordWrap(True)
         desktop_tip.setStyleSheet(
-            "color: #888; font-size: 12px; background: #1E1E30; padding: 10px; border-radius: 8px;"
+            "color: #AEB3C2; font-size: 12px; background: #252538; padding: 10px; border-radius: 8px;"
         )
         desktop_layout.addWidget(desktop_tip)
 
@@ -529,7 +531,7 @@ class SettingsDialog(QDialog):
         chat_frame_layout.setSpacing(8)
         chat_title = QLabel("💬 对话式回复（日常闲聊、简短回复）")
         chat_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        chat_title.setStyleSheet("color: #444466;")
+        chat_title.setStyleSheet("color: #E8EAF2;")
         chat_frame_layout.addWidget(chat_title)
 
         chat_row = QHBoxLayout()
@@ -555,7 +557,7 @@ class SettingsDialog(QDialog):
             "数值越大，段落之间越从容。"
         )
         chat_hint.setFont(QFont("Microsoft YaHei UI", 8))
-        chat_hint.setStyleSheet("color: #888888;")
+        chat_hint.setStyleSheet("color: #AEB3C2;")
         chat_hint.setWordWrap(True)
         chat_frame_layout.addWidget(chat_hint)
         desktop_layout.addWidget(chat_frame)
@@ -566,7 +568,7 @@ class SettingsDialog(QDialog):
         long_frame_layout.setSpacing(8)
         long_title = QLabel("📄 长文 / 结构化回复（代码、列表、长段落）")
         long_title.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        long_title.setStyleSheet("color: #444466;")
+        long_title.setStyleSheet("color: #E8EAF2;")
         long_frame_layout.addWidget(long_title)
 
         long_row = QHBoxLayout()
@@ -592,7 +594,7 @@ class SettingsDialog(QDialog):
             "也不会让屏幕刷得太快。"
         )
         long_hint.setFont(QFont("Microsoft YaHei UI", 8))
-        long_hint.setStyleSheet("color: #888888;")
+        long_hint.setStyleSheet("color: #AEB3C2;")
         long_hint.setWordWrap(True)
         long_frame_layout.addWidget(long_hint)
         desktop_layout.addWidget(long_frame)
@@ -601,7 +603,7 @@ class SettingsDialog(QDialog):
             "ℹ️ 这些停顿是「固定等待」，不含朗读耗时；朗读本身由语音设置里的音色与速度控制。"
         )
         note.setFont(QFont("Microsoft YaHei UI", 8))
-        note.setStyleSheet("color: #666666;")
+        note.setStyleSheet("color: #AEB3C2;")
         note.setWordWrap(True)
         desktop_layout.addWidget(note)
 
@@ -628,6 +630,19 @@ class SettingsDialog(QDialog):
 
         # 初始化记忆设置界面
         self._refresh_ql_table()
+
+    @staticmethod
+    def _prepare_scroll_tab(parent: QWidget) -> QWidget:
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        return content
 
     def _create_frame(self):
         frame = QFrame()
@@ -734,7 +749,7 @@ class SettingsDialog(QDialog):
 
         tip = QLabel("提示：设置会实时预览；点击取消可恢复之前的背景。文件夹只读取常见图片格式。")
         tip.setWordWrap(True)
-        tip.setStyleSheet("color:#888; font-size:11px;")
+        tip.setStyleSheet("color:#AEB3C2; font-size:11px;")
         layout.addWidget(tip)
 
         self._background_enabled_cb.toggled.connect(self._emit_background_preview)

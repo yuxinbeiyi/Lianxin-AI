@@ -21,7 +21,9 @@ import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+from config import get_tts_config, save_tts_config
 
 
 _IMAGE_FLOW_LOG = Path(__file__).resolve().parent / "logs" / "image_flow_diagnostic.log"
@@ -372,6 +374,189 @@ def _watchdog_loop() -> None:
             pass
 
 
+class QQBridgeRuntime:
+    """Headless owner for the QQ bridge used by the React/legacy boundary."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._worker = None
+        self._connected = False
+        self._stopping = False
+        self._last_error = ""
+        self._last_disconnect = ""
+        self._fast_reply_enabled = False
+
+    @staticmethod
+    def _register_worker(worker) -> None:
+        from brain.tools import _register_qq_bridge
+        _register_qq_bridge(worker)
+
+    @staticmethod
+    def _worker_is_running(worker) -> bool:
+        if worker is None:
+            return False
+        try:
+            return bool(worker.isRunning())
+        except RuntimeError:
+            return False
+
+    def _on_connected(self) -> None:
+        with self._lock:
+            self._connected = True
+            self._last_error = ""
+            self._last_disconnect = ""
+        bridge_log.log("QQ", "QQ bridge connected")
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=True, connected=True,
+                          health="healthy", last_activity_summary="QQ bridge connected")
+        except Exception:
+            pass
+
+    def _on_disconnected(self, reason: str) -> None:
+        with self._lock:
+            stopping = self._stopping
+            self._connected = False
+            if not stopping:
+                self._last_disconnect = str(reason or "connection closed")
+        bridge_log.log("QQ", f"QQ bridge disconnected: {reason}")
+        if stopping:
+            return
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=True, connected=False,
+                          last_activity_summary=f"QQ bridge disconnected: {reason}")
+        except Exception:
+            pass
+
+    def _on_error(self, error: str) -> None:
+        with self._lock:
+            self._connected = False
+            self._last_error = str(error or "QQ bridge error")
+        bridge_log.log("QQ", f"QQ bridge error: {error}")
+        try:
+            from brain.runtime_status import update_status
+            update_status("qq", running=True, connected=False, health="error",
+                          last_activity_summary=f"QQ bridge error: {error}")
+        except Exception:
+            pass
+
+    def _on_debug_log(self, message: str) -> None:
+        bridge_log.log("QQ", str(message))
+
+    def status(self) -> dict:
+        with self._lock:
+            worker = self._worker
+            running = self._worker_is_running(worker)
+            socket_connected = False
+            if running and worker is not None:
+                try:
+                    socket_connected = bool(worker._ws and worker._ws.sock and worker._ws.sock.connected)
+                except Exception:
+                    socket_connected = False
+            connected = bool(running and (self._connected or socket_connected))
+            if connected:
+                state = "connected"
+            elif running and self._last_error:
+                state = "error"
+            elif running:
+                state = "connecting"
+            else:
+                state = "stopped"
+            try:
+                from config import get_qq_bridge_config
+                url = str(get_qq_bridge_config().get("ws_url") or "")
+            except Exception:
+                url = ""
+            return {
+                "running": running,
+                "connected": connected,
+                "state": state,
+                "url": url,
+                "error": self._last_error if running else "",
+                "disconnectReason": self._last_disconnect if running else "",
+                "fastReplyEnabled": self._fast_reply_enabled,
+            }
+
+    def start(self) -> dict:
+        with self._lock:
+            if self._worker_is_running(self._worker):
+                return self.status()
+            from config import get_qq_bridge_config
+            config = get_qq_bridge_config()
+            if not str(config.get("qq_account") or "").strip():
+                raise ValueError("QQ account is not configured")
+            if not str(config.get("ws_url") or "").strip():
+                raise ValueError("QQ WebSocket URL is not configured")
+
+            # api_server normally creates QCoreApplication before HTTP starts.
+            # Keep the runtime usable in focused tests and direct imports too.
+            try:
+                from PyQt5.QtCore import QCoreApplication
+                if QCoreApplication.instance() is None:
+                    self._qt_app_hold = QCoreApplication([])
+            except Exception as exc:
+                raise RuntimeError(f"Qt runtime is unavailable: {exc}") from exc
+
+            from workers.qq_bridge_worker import QQBridgeWorker
+            worker = QQBridgeWorker()
+            worker.set_fast_reply_enabled(self._fast_reply_enabled)
+            from PyQt5.QtCore import Qt
+            worker.connected.connect(self._on_connected, Qt.DirectConnection)
+            worker.disconnected.connect(self._on_disconnected, Qt.DirectConnection)
+            worker.error_occurred.connect(self._on_error, Qt.DirectConnection)
+            worker.debug_log.connect(self._on_debug_log, Qt.DirectConnection)
+            self._worker = worker
+            self._connected = False
+            self._stopping = False
+            self._last_error = ""
+            self._last_disconnect = ""
+            self._register_worker(worker)
+            worker.start()
+            bridge_log.log("QQ", "QQ bridge worker started")
+            return self.status()
+
+    def stop(self) -> dict:
+        with self._lock:
+            worker = self._worker
+            self._stopping = True
+            if worker is not None:
+                try:
+                    worker.stop()
+                except Exception as exc:
+                    bridge_log.log("QQ", f"QQ bridge stop failed: {exc}")
+                try:
+                    worker.wait(7000)
+                except Exception:
+                    pass
+            self._worker = None
+            self._connected = False
+            self._last_error = ""
+            self._last_disconnect = ""
+            self._register_worker(None)
+            self._stopping = False
+            try:
+                from brain.runtime_status import update_status
+                update_status("qq", running=False, connected=False,
+                              health="stopped", last_activity_summary="QQ bridge stopped")
+            except Exception:
+                pass
+            return self.status()
+
+    def reload(self) -> dict:
+        with self._lock:
+            if self._worker_is_running(self._worker):
+                self._worker.reload_bridge_config()
+            return self.status()
+
+    def set_fast_reply(self, enabled: bool) -> dict:
+        with self._lock:
+            self._fast_reply_enabled = bool(enabled)
+            if self._worker is not None:
+                self._worker.set_fast_reply_enabled(self._fast_reply_enabled)
+            return self.status()
+
+
 class LianxinBridge:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -402,6 +587,7 @@ class LianxinBridge:
         self._study_room_lock = threading.RLock()
         self._time_capsule_lock = threading.RLock()
         self._diary_workers = set()
+        self._qq_runtime = QQBridgeRuntime()
 
     def agent(self):
         with self._lock:
@@ -409,6 +595,21 @@ class LianxinBridge:
                 from brain.agent import AgentCore
                 self._agent = AgentCore()
             return self._agent
+
+    def qq_status(self) -> dict:
+        return self._qq_runtime.status()
+
+    def start_qq(self) -> dict:
+        return self._qq_runtime.start()
+
+    def stop_qq(self) -> dict:
+        return self._qq_runtime.stop()
+
+    def reload_qq(self) -> dict:
+        return self._qq_runtime.reload()
+
+    def set_qq_fast_reply(self, enabled: bool) -> dict:
+        return self._qq_runtime.set_fast_reply(enabled)
 
     def status(self) -> dict:
         agent = self.agent()
@@ -835,6 +1036,127 @@ class LianxinBridge:
             "fingerprint": fingerprint,
             "dataUrl": data_url,
         }
+
+    def settings_panel_state(self) -> dict:
+        from utils.settings import SettingsManager
+        from config import get_avatar_config, get_chat_avatar_config, get_device_preference, get_quick_launch_apps
+        from utils.autostart import is_autostart_enabled
+        from utils.accompany_stats import AccompanyStats
+        settings = SettingsManager()
+        tts = get_tts_config()
+        return {
+            "global": {
+                "silentMode": bool(settings.silent_mode),
+                "userName": settings.user_name,
+                "emotionProbability": float(settings.emotion_probability),
+                "showExitConfirmation": bool(settings.show_exit_confirmation),
+                "startupCheckEnabled": bool(settings.startup_check_enabled),
+                "startupMode": settings.startup_mode,
+                "trayEnabled": bool(settings.tray_enabled),
+                "closeBehavior": settings.close_behavior,
+                "minimizeToTray": bool(settings.minimize_to_tray),
+                "restoreWindowState": bool(settings.restore_window_state),
+                "alwaysOnTop": bool(settings.always_on_top),
+                "reducedMotion": bool(settings.reduced_motion),
+                "desktopNotifications": bool(settings.desktop_notifications),
+                "fontSize": int(settings.font_size),
+                "noteFilePath": settings.note_file_path,
+                "backgroundEnabled": bool(settings.background_enabled),
+                "backgroundSource": str(settings.background_source or ""),
+                "backgroundSourceType": settings.background_source_type,
+                "backgroundOpacity": float(settings.background_opacity),
+                "chatBackgroundOpacity": float(settings.chat_background_opacity),
+                "backgroundFitMode": settings.background_fit_mode,
+                "avatarMode": get_avatar_config().get("mode", "animated"),
+                "avatarPath": get_avatar_config().get("static_image_path", ""),
+                "firstMeetDate": AccompanyStats().get_first_meet_date(),
+                "autostart": bool(is_autostart_enabled()),
+                "segmentPauseChatMin": float(settings.segment_pause_chat_min),
+                "segmentPauseChatMax": float(settings.segment_pause_chat_max),
+                "segmentPauseSemanticMin": float(settings.segment_pause_semantic_min),
+                "segmentPauseSemanticMax": float(settings.segment_pause_semantic_max),
+            },
+            "avatar": get_chat_avatar_config(),
+            "quickLaunch": get_quick_launch_apps(),
+            "performance": {key: get_device_preference(key) for key in ("whisper", "funasr", "rag")},
+            "sound": {
+                "ttsVolume": float(settings.tts_volume),
+                "sfxVolume": float(settings.sfx_volume),
+                "silentMode": bool(settings.silent_mode),
+                "engine": tts.get("engine", "auto"),
+                "speed": float(tts.get("speed", 1.0)),
+                "defaultMood": tts.get("default_mood", "auto"),
+                "gptSovitsVersion": tts.get("gpt_sovits_version", "v2Pro"),
+                "gptSovitsPath": tts.get("gpt_sovits_path", ""),
+                "refWavOverride": tts.get("ref_wav_override", ""),
+            },
+        }
+
+    def save_settings_panel(self, payload: dict) -> dict:
+        from utils.settings import SettingsManager
+        from config import get_avatar_config, save_avatar_config, save_chat_avatar_config, save_device_preference, save_quick_launch_apps
+        from utils.autostart import disable_autostart, enable_autostart, is_autostart_enabled
+        from utils.accompany_stats import AccompanyStats
+        settings = SettingsManager()
+        global_values = payload.get("global") or {}
+        avatar_values = payload.get("avatar") or {}
+        performance_values = payload.get("performance") or {}
+        sound_values = payload.get("sound") or {}
+        for key, value in global_values.items():
+            if key == "silentMode": settings.silent_mode = bool(value)
+            elif key == "userName": settings.user_name = str(value)[:20]
+            elif key == "emotionProbability": settings.emotion_probability = max(0.0, min(1.0, float(value)))
+            elif key == "showExitConfirmation": settings.show_exit_confirmation = bool(value)
+            elif key == "startupCheckEnabled": settings.startup_check_enabled = bool(value)
+            elif key == "startupMode": settings.startup_mode = str(value)
+            elif key == "trayEnabled": settings.tray_enabled = bool(value)
+            elif key == "closeBehavior": settings.close_behavior = str(value)
+            elif key == "minimizeToTray": settings.minimize_to_tray = bool(value)
+            elif key == "restoreWindowState": settings.restore_window_state = bool(value)
+            elif key == "alwaysOnTop": settings.always_on_top = bool(value)
+            elif key == "reducedMotion": settings.reduced_motion = bool(value)
+            elif key == "desktopNotifications": settings.desktop_notifications = bool(value)
+            elif key == "fontSize": settings.font_size = max(10, min(20, int(value)))
+            elif key == "noteFilePath": settings.note_file_path = str(value)
+            elif key == "segmentPauseChatMin": settings.segment_pause_chat_min = max(0.1, float(value))
+            elif key == "segmentPauseChatMax": settings.segment_pause_chat_max = max(0.1, float(value))
+            elif key == "segmentPauseSemanticMin": settings.segment_pause_semantic_min = max(0.1, float(value))
+            elif key == "segmentPauseSemanticMax": settings.segment_pause_semantic_max = max(0.1, float(value))
+            elif key == "backgroundEnabled": settings.background_enabled = bool(value)
+            elif key == "backgroundSource": settings.background_source = str(value)
+            elif key == "backgroundSourceType": settings.background_source_type = str(value)
+            elif key == "backgroundOpacity": settings.background_opacity = max(0.0, min(1.0, float(value)))
+            elif key == "chatBackgroundOpacity": settings.chat_background_opacity = max(0.0, min(1.0, float(value)))
+            elif key == "backgroundFitMode": settings.background_fit_mode = str(value)
+        for key, value in sound_values.items():
+            if key == "ttsVolume": settings.tts_volume = max(0.0, min(1.0, float(value)))
+            elif key == "sfxVolume": settings.sfx_volume = max(0.0, min(1.0, float(value)))
+            elif key == "silentMode": settings.silent_mode = bool(value)
+        if sound_values:
+            tts = get_tts_config()
+            mapping = {"engine": "engine", "speed": "speed", "defaultMood": "default_mood", "gptSovitsVersion": "gpt_sovits_version", "gptSovitsPath": "gpt_sovits_path", "refWavOverride": "ref_wav_override"}
+            for source, target in mapping.items():
+                if source in sound_values:
+                    tts[target] = sound_values[source]
+            save_tts_config(tts)
+        if avatar_values:
+            save_chat_avatar_config(avatar_values)
+        for key, value in performance_values.items():
+            if key in {"whisper", "funasr", "rag"} and value in {"auto", "cpu", "cuda"}:
+                save_device_preference(key, value)
+        if "quickLaunch" in payload and isinstance(payload["quickLaunch"], list):
+            save_quick_launch_apps(payload["quickLaunch"])
+        if "avatarMode" in global_values:
+            avatar = get_avatar_config()
+            avatar["mode"] = str(global_values["avatarMode"])
+            if "avatarPath" in global_values:
+                avatar["static_image_path"] = str(global_values["avatarPath"])
+            save_avatar_config(avatar)
+        if "firstMeetDate" in global_values and global_values["firstMeetDate"]:
+            AccompanyStats().set_first_meet_date(str(global_values["firstMeetDate"]))
+        if "autostart" in global_values and bool(global_values["autostart"]) != bool(is_autostart_enabled()):
+            (enable_autostart if global_values["autostart"] else disable_autostart)()
+        return self.settings_panel_state()
 
     @staticmethod
     def _image_payload(path_value: str, include_data: bool) -> dict:
@@ -1291,6 +1613,7 @@ class LianxinBridge:
                 self._voice_events.append({"id": time.time_ns(), "type": "voice.state", "state": state})
             def on_transcript(text):
                 self._voice_events.append({"id": time.time_ns(), "type": "voice.transcript", "content": text})
+                threading.Thread(target=self._voice_chat, args=(text,), name="lianxin-voice-chat", daemon=True).start()
             def on_stt_ready(ready):
                 if ready:
                     self.stop_call_sound()
@@ -1305,8 +1628,12 @@ class LianxinBridge:
 
     def _voice_chat(self, text: str):
         try:
+            self._voice_events.append({"id": time.time_ns(), "type": "voice.reply.started"})
             result = self.chat(text)
-            self._voice_events.append({"id": time.time_ns(), "type": "voice.reply", "content": result["message"]["content"]})
+            content = str(result.get("message", {}).get("content", "") or "")
+            self._voice_events.append({"id": time.time_ns(), "type": "voice.reply", "content": content})
+            if content:
+                self.speak(content)
         except Exception as exc:
             self._voice_events.append({"id": time.time_ns(), "type": "voice.error", "error": str(exc)})
 
@@ -1317,6 +1644,13 @@ class LianxinBridge:
                 self._voice = None
             self.stop_call_sound()
             return self.voice_state()
+
+    def set_voice_mic(self, muted: bool) -> dict:
+        with self._voice_lock:
+            if self._voice is None:
+                return {"active": False, "muted": bool(muted)}
+            self._voice.set_muted(bool(muted))
+            return {"active": True, "muted": bool(muted)}
 
     def start_voice_input(self) -> dict:
         with self._voice_lock:
@@ -2440,6 +2774,33 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         return
 
+    def _video_call_asset(self, rel: str):
+        root = Path(__file__).resolve().parent
+        aliases = {
+            "user-avatar.jpg": root / "assets" / "video_call" / "\u7528\u6237\u5934\u50cf.jpg",
+            "lianxin-poster.jpg": root / "assets" / "video_call" / "\u83b2\u5fc3\u89c6\u9891\u7167\u7247.jpg",
+            "startup.mp4": root / "assets" / "\u89c6\u9891\u901a\u8bdd" / "\u517c\u5bb9" / "\u5f00\u542f.mp4",
+            "waiting-1.mp4": root / "assets" / "\u89c6\u9891\u901a\u8bdd" / "\u517c\u5bb9" / "\u5faa\u73af\u7b49\u5f851.mp4",
+            "waiting-2.mp4": root / "assets" / "\u89c6\u9891\u901a\u8bdd" / "\u517c\u5bb9" / "\u5faa\u73af\u7b49\u5f852.mp4",
+            "waiting-3.mp4": root / "assets" / "\u89c6\u9891\u901a\u8bdd" / "\u517c\u5bb9" / "\u5faa\u73af\u7b49\u5f853.mp4",
+        }
+        if rel in aliases:
+            requested = aliases[rel].resolve()
+        else:
+            requested = (root / unquote(rel)).resolve()
+        allowed_roots = [root / "assets" / "video_call", root / "assets" / "视频通话", root / "assets" / "GIF" / "正常与说话"]
+        if not any(requested == allowed or allowed in requested.parents for allowed in allowed_roots) or not requested.is_file():
+            return self._send({"error": "video-call asset not found"}, 404)
+        raw = requested.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(requested.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.end_headers()
+        self.wfile.write(raw)
+        return
+
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -2453,6 +2814,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/app/status":
                 return self._send(bridge.status())
+            if path == "/api/qq/status":
+                return self._send(bridge.qq_status())
             if path == "/api/attachments":
                 query = parse_qs(urlparse(self.path).query)
                 target = Path((query.get("path") or [""])[0]).expanduser().resolve()
@@ -2560,6 +2923,8 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
                 return self._send(bridge.background_state(include_data=include_data))
+            if path == "/api/settings/panels":
+                return self._send(bridge.settings_panel_state())
             if path == "/api/settings/avatars":
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
@@ -2612,6 +2977,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._study_room_asset(path[len("/api/study-room/"):])
             if path == "/api/time-capsule/html":
                 return self._time_capsule_page()
+            if path.startswith("/api/video-call/assets/"):
+                return self._video_call_asset(path[len("/api/video-call/assets/"):])
             if path.startswith("/api/time-capsule/"):
                 return self._time_capsule_asset(path[len("/api/time-capsule/"):])
 
@@ -2661,6 +3028,8 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("content_mask_opacity", 0.5),
                     str(body.get("fit", "cover")),
                 ))
+            if path == "/api/settings/panels":
+                return self._send(bridge.save_settings_panel(body))
             if path == "/api/music/control":
                 return self._send(bridge.music_control(str(body.get("action", "")), body))
             if path == "/api/open-player":
@@ -2669,6 +3038,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.start_voice())
             if path == "/api/voice/stop":
                 return self._send(bridge.stop_voice())
+            if path == "/api/voice/mic":
+                return self._send(bridge.set_voice_mic(bool(body.get("muted", False))))
             if path == "/api/voice/input/start":
                 return self._send(bridge.start_voice_input())
             if path == "/api/voice/input/stop":
@@ -2704,6 +3075,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/proactive/trigger":
                 return self._send(bridge.proactive_trigger(
                     str(body.get("mode") or "normal"), str(body.get("action") or "")))
+            if path == "/api/qq/start":
+                return self._send(bridge.start_qq())
+            if path == "/api/qq/stop":
+                return self._send(bridge.stop_qq())
+            if path == "/api/qq/reload":
+                return self._send(bridge.reload_qq())
+            if path == "/api/qq/fast-reply":
+                return self._send(bridge.set_qq_fast_reply(bool(body.get("enabled"))))
             if path == "/api/memory-constellation/review":
                 return self._send(bridge.memory_constellation_review(str(body.get("id", ""))))
             if path == "/api/ripple/simulate":
@@ -2859,6 +3238,14 @@ def main():
         bridge_log.log("主动", "主动聊天运行时已启动")
     except Exception as exc:
         bridge_log.log("主动", f"主动聊天运行时启动失败: {exc}")
+    try:
+        from config import get_qq_bridge_config
+        qq_config = get_qq_bridge_config()
+        if qq_config.get("enabled") and qq_config.get("auto_start"):
+            bridge.start_qq()
+            bridge_log.log("QQ", "QQ bridge auto-started")
+    except Exception as exc:
+        bridge_log.log("QQ", f"QQ bridge auto-start failed: {exc}")
     threading.Thread(target=_cover_cleanup_loop, name="cover-cache-cleanup", daemon=True).start()
     threading.Thread(target=_memory_heartbeat_loop, name="memory-heartbeat", daemon=True).start()
     threading.Thread(target=_watchdog_loop, name="bridge-watchdog", daemon=True).start()
@@ -2870,6 +3257,10 @@ def main():
         pass
     finally:
         server.server_close()
+        try:
+            bridge.stop_qq()
+        except Exception:
+            pass
         try:
             bridge.stop_proactive_runtime()
         except Exception:

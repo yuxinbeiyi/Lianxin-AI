@@ -7,7 +7,7 @@ ApiConfigDialog：API Key 配置对话框
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QSpinBox, QFrame, QMessageBox, QTabWidget,
-    QWidget, QFormLayout, QCheckBox, QComboBox, QApplication,
+    QWidget, QFormLayout, QCheckBox, QComboBox, QApplication, QScrollArea,
     QDoubleSpinBox,
     QRadioButton, QButtonGroup,
     QInputDialog,
@@ -28,6 +28,7 @@ from config import (
 
 )
 from gui.model_fetcher import run_model_fetch, show_model_picker
+from gui.styles.settings_theme import apply_settings_theme
 
 # 配置记录下拉框的「不保存记录」占位项
 _NO_PROFILE_TEXT = "（直接填写下方配置）"
@@ -141,6 +142,7 @@ class ApiConfigDialog(QDialog):
         self._test_worker: _TestWorker | None = None
         self._loading = False
         self._build_ui()
+        apply_settings_theme(self)
         self._load()
 
     # ── 界面构建 ──────────────────────────────────────────────
@@ -153,7 +155,7 @@ class ApiConfigDialog(QDialog):
         # 标题
         title = QLabel("🔑 API 配置")
         title.setFont(QFont("Microsoft YaHei UI", 14, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -192,7 +194,7 @@ class ApiConfigDialog(QDialog):
             }
             QTabBar::tab:selected {
                 background-color: #FFFFFF;
-                color: #3A3A5C;
+                color: #E8EAF2;
                 font-weight: bold;
                 border-bottom: 1px solid #FFFFFF;
             }
@@ -293,16 +295,29 @@ class ApiConfigDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+    @staticmethod
+    def _prepare_scroll_tab(parent: QWidget) -> QWidget:
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        return content
+
     # ── Tab: 聊天API ───────────────────────────────────────
 
     def _build_tab_deepseek(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(16, 20, 16, 16)
 
         # ── Provider 选择器（RadioButton 三选一） ──
         provider_label = QLabel("选择 AI 提供商：")
         provider_label.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-        provider_label.setStyleSheet("color: #3A3A5C;")
+        provider_label.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(provider_label)
 
         provider_row = QHBoxLayout()
@@ -316,7 +331,7 @@ class ApiConfigDialog(QDialog):
 
         radio_style = """
             QRadioButton {
-                color: #3A3A5C;
+                color: #E8EAF2;
                 spacing: 6px;
                 padding: 8px 14px;
                 background-color: #1E1E30;
@@ -361,7 +376,7 @@ class ApiConfigDialog(QDialog):
 
         profile_label = QLabel("配置记录：")
         profile_label.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
-        profile_label.setStyleSheet("color: #3A3A5C;")
+        profile_label.setStyleSheet("color: #E8EAF2;")
         profile_row.addWidget(profile_label)
 
         self._profile_combo = QComboBox()
@@ -783,7 +798,7 @@ class ApiConfigDialog(QDialog):
     # ── Tab: NapCat QQ 聊天 ──────────────────────────────────
 
     def _build_tab_qq(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(16, 20, 16, 16)
         form = QFormLayout()
         form.setSpacing(16)
@@ -839,7 +854,7 @@ class ApiConfigDialog(QDialog):
     # ── Tab: 视觉理解 (SiliconFlow) ──────────────────────────
 
     def _build_tab_siliconflow(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(16, 20, 16, 16)
         form = QFormLayout()
         form.setSpacing(16)
@@ -909,13 +924,13 @@ class ApiConfigDialog(QDialog):
     # ── 创作生图选项卡（Agnes Image API） ────────────────────
 
     def _build_tab_image_gen(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         title = QLabel("🎨 创作生图")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -935,7 +950,7 @@ class ApiConfigDialog(QDialog):
         # 启用开关
         self._ig_enabled_cb = QCheckBox("启用图片生成（关闭后 AI 将无法调用生图工具）")
         self._ig_enabled_cb.setFont(QFont("Microsoft YaHei UI", 9))
-        self._ig_enabled_cb.setStyleSheet("color: #3A3A5C;")
+        self._ig_enabled_cb.setStyleSheet("color: #E8EAF2;")
         form.addRow("", self._ig_enabled_cb)
 
         self._ig_provider_combo = QComboBox()
@@ -1001,7 +1016,7 @@ class ApiConfigDialog(QDialog):
                 border-radius: 8px;
                 padding: 4px 10px;
                 background-color: #FFFFFF;
-                color: #3A3A5C;
+                color: #E8EAF2;
             }
         """)
         form.addRow("默认尺寸:", self._ig_size_combo)
@@ -1054,7 +1069,7 @@ class ApiConfigDialog(QDialog):
                 border-radius: 8px;
                 padding: 4px 10px;
                 background-color: #FFFFFF;
-                color: #3A3A5C;
+                color: #E8EAF2;
             }
         """
 
@@ -1076,13 +1091,13 @@ class ApiConfigDialog(QDialog):
     # ── 创作视频选项卡（Agnes Video API） ──────────────────
 
     def _build_tab_video_gen(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         title = QLabel("🎬 创作视频 — Agnes Video API")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -1102,7 +1117,7 @@ class ApiConfigDialog(QDialog):
 
         self._vg_enabled_cb = QCheckBox("启用视频生成（关闭后 AI 将无法调用生视频工具）")
         self._vg_enabled_cb.setFont(QFont("Microsoft YaHei UI", 9))
-        self._vg_enabled_cb.setStyleSheet("color: #3A3A5C;")
+        self._vg_enabled_cb.setStyleSheet("color: #E8EAF2;")
         form.addRow("", self._vg_enabled_cb)
 
         self._vg_model_edit = QLineEdit()
@@ -1120,7 +1135,7 @@ class ApiConfigDialog(QDialog):
                 border-radius: 8px;
                 padding: 4px 10px;
                 background-color: #FFFFFF;
-                color: #3A3A5C;
+                color: #E8EAF2;
             }
         """)
         self._vg_duration_combo.setCurrentIndex(1)
@@ -1164,13 +1179,13 @@ class ApiConfigDialog(QDialog):
     # ── 和风天气选项卡 ───────────────────────────────────────
 
     def _build_tab_qweather(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         title = QLabel("☁️ 和风天气 API 配置")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -1238,7 +1253,7 @@ class ApiConfigDialog(QDialog):
         # 主动天气提醒开关
         self._qw_auto_remind = QCheckBox("开启主动天气提醒")
         self._qw_auto_remind.setFont(QFont("Microsoft YaHei UI", 9))
-        self._qw_auto_remind.setStyleSheet("color: #3A3A5C;")
+        self._qw_auto_remind.setStyleSheet("color: #E8EAF2;")
         form.addRow("", self._qw_auto_remind)
 
         # 每日提醒时间
@@ -1279,7 +1294,7 @@ class ApiConfigDialog(QDialog):
         # ── Tavily Search 选项卡 ─────────────────────────────────
 
     def _build_tab_tavily(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
@@ -1345,13 +1360,13 @@ class ApiConfigDialog(QDialog):
 
     # ── Firecrawl 选项卡 ─────────────────────────────────
     def _build_tab_firecrawl(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         title = QLabel("🕷️ Firecrawl 网页爬虫配置")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -1425,7 +1440,7 @@ class ApiConfigDialog(QDialog):
 
     # ── 网络搜索重试与回退设置 ───────────────────────────────
     def _build_tab_search_fallback(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
 
@@ -2016,4 +2031,3 @@ class ApiConfigDialog(QDialog):
             self, "连接失败",
             f"无法连接到 {api_name}。{hint}\n\n错误信息：{err}"
         )
-

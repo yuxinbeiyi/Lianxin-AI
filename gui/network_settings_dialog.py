@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QMessageBox, QTabWidget,
     QWidget, QFormLayout, QCheckBox, QSpinBox, QButtonGroup, QRadioButton,
-    QGroupBox, QListWidget, QListWidgetItem, QAbstractItemView,
+    QGroupBox, QListWidget, QListWidgetItem, QAbstractItemView, QScrollArea, QLayout,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -22,6 +22,7 @@ from config import (
     get_builtin_tool_config, save_builtin_tool_config,
     get_bilibili_config, save_bilibili_config,
 )
+from gui.styles.settings_theme import SettingsScrollBar, apply_settings_theme
 
 
 class NetworkSettingsDialog(QDialog):
@@ -39,7 +40,185 @@ class NetworkSettingsDialog(QDialog):
             }
         """)
         self._build_ui()
+        apply_settings_theme(self)
+        self._apply_network_theme()
         self._load_config()
+
+    def _apply_network_theme(self):
+        """Keep every search settings tab on the same dark, high-contrast palette."""
+        self.setStyleSheet("""
+            QDialog, QWidget {
+                background-color: #151B2B;
+                color: #E6EDF7;
+            }
+            QDialog { background-color: #151B2B; }
+            QLabel, QCheckBox, QRadioButton, QGroupBox {
+                color: #E6EDF7;
+            }
+            QGroupBox {
+                border: 1px solid #334155;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 14px 10px 10px 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #E6EDF7;
+            }
+            QTabWidget::pane {
+                background: #151B2B;
+                border: 1px solid #334155;
+                border-radius: 6px;
+            }
+            QTabBar::tab {
+                background: #202B3D;
+                color: #B8C1D8;
+                border: 1px solid #334155;
+                padding: 7px 14px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:hover {
+                background: #293A50;
+                color: #E6EDF7;
+            }
+            QTabBar::tab:selected {
+                background: #2F6F62;
+                color: #FFFFFF;
+                border-color: #65B7A5;
+                font-weight: bold;
+            }
+            QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox,
+            QComboBox, QListWidget {
+                background-color: #0F1724;
+                color: #E6EDF7;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                selection-background-color: #2F6F62;
+                selection-color: #FFFFFF;
+            }
+            QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
+            QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+            QListWidget:focus {
+                border-color: #65B7A5;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0F1724;
+                color: #E6EDF7;
+                selection-background-color: #2F6F62;
+                selection-color: #FFFFFF;
+            }
+            QListWidget::item {
+                padding: 5px 6px;
+            }
+            QListWidget::item:selected {
+                background: #2F6F62;
+                color: #FFFFFF;
+            }
+            QPushButton {
+                background-color: #26354A;
+                color: #E6EDF7;
+                border: 1px solid #465B78;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: #324964;
+                border-color: #65B7A5;
+            }
+            QPushButton:pressed { background-color: #1F3F3A; }
+            QPushButton:disabled {
+                background-color: #202B3D;
+                color: #718096;
+                border-color: #334155;
+            }
+            QScrollArea, QScrollArea > QWidget > QWidget {
+                background: #151B2B;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #0F1724;
+                width: 10px;
+                margin: 2px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #526581;
+                min-height: 48px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover { background: #65B7A5; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+                border: none;
+            }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #718096;
+                background: #0F1724;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background: #2F6F62;
+                border-color: #65B7A5;
+            }
+        """)
+
+        button_style = """
+            QPushButton {
+                background: #26354A; color: #E6EDF7;
+                border: 1px solid #465B78; border-radius: 6px; padding: 6px 12px;
+            }
+            QPushButton:hover { background: #324964; border-color: #65B7A5; }
+            QPushButton:pressed { background: #1F3F3A; }
+            QPushButton:disabled { background: #202B3D; color: #718096; }
+        """
+        for button in self.findChildren(QPushButton):
+            if not button.styleSheet().strip():
+                button.setStyleSheet(button_style)
+
+        for label in self.findChildren(QLabel):
+            if not label.styleSheet().strip():
+                label.setStyleSheet("color: #F4F7FB;")
+
+        for checkbox in self.findChildren(QCheckBox):
+            if not checkbox.styleSheet().strip():
+                checkbox.setStyleSheet("color: #F4F7FB;")
+
+        input_style = """
+            QLineEdit {
+                background: #0F1724;
+                color: #FFFFFF;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 5px 8px;
+                selection-background-color: #2F6F62;
+                selection-color: #FFFFFF;
+            }
+            QLineEdit:focus { border-color: #65B7A5; }
+        """
+        for edit in self.findChildren(QLineEdit):
+            if not edit.styleSheet().strip():
+                edit.setStyleSheet(input_style)
+
+        for group in self.findChildren(QGroupBox):
+            if not group.styleSheet().strip():
+                group.setStyleSheet("""
+                    QGroupBox {
+                        color: #FFFFFF;
+                        border: 1px solid #334155;
+                        border-radius: 8px;
+                        margin-top: 10px;
+                        padding: 14px 10px 10px 10px;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 10px;
+                        padding: 0 5px;
+                        color: #FFFFFF;
+                    }
+                """)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -48,12 +227,12 @@ class NetworkSettingsDialog(QDialog):
 
         title = QLabel("🌐 网络搜索设置")
         title.setFont(QFont("Microsoft YaHei UI", 14, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("background-color: #E0E0E8; max-height: 1px;")
+        line.setStyleSheet("background-color: #334155; max-height: 1px;")
         layout.addWidget(line)
 
         desc = QLabel(
@@ -67,13 +246,18 @@ class NetworkSettingsDialog(QDialog):
 
         tabs = QTabWidget()
         tabs.setStyleSheet("""
-            QTabWidget::pane { border: 0; background: transparent; }
+            QTabWidget::pane { border: 1px solid #334155; background: #151B2B; }
             QTabBar::tab {
-                background: #1E1E30; border: 1px solid #3D3D5A; border-bottom: 0;
+                background: #202B3D; border: 1px solid #334155; border-bottom: 0;
                 border-radius: 6px 6px 0 0; padding: 6px 14px; margin-right: 2px;
-                color: #A0A0B0;
+                color: #B8C1D8;
             }
-            QTabBar::tab:selected { background: #2D2D3F; color: #E0E0E0; font-weight: bold; }
+            QTabBar::tab:hover { background: #293A50; color: #E6EDF7; }
+            QTabBar::tab:selected { background: #2F6F62; color: #FFFFFF; border-color: #65B7A5; font-weight: bold; }
+            QTabBar QToolButton {
+                background: #202B3D; color: #E6EDF7;
+                border: 1px solid #334155; border-radius: 3px;
+            }
         """)
         layout.addWidget(tabs)
 
@@ -122,14 +306,34 @@ class NetworkSettingsDialog(QDialog):
         layout.addLayout(btn_row)
 
     # ── Tavily ────────────────────────────────────────────
+    def _prepare_scroll_tab(self, parent: QWidget) -> QWidget:
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        parent.setStyleSheet("background: #151B2B;")
+        content.setStyleSheet("background: #151B2B;")
+        scroll.setWidget(content)
+        scroll.setVerticalScrollBar(SettingsScrollBar(scroll))
+        outer.addWidget(scroll)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.verticalScrollBar().setMinimumWidth(14)
+        scroll.verticalScrollBar().setSingleStep(32)
+        scroll.verticalScrollBar().setCursor(Qt.PointingHandCursor)
+        return content
+
     def _build_tab_tavily(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         section_title = QLabel("🔍 Tavily AI 搜索配置")
         section_title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        section_title.setStyleSheet("color: #3A3A5C;")
+        section_title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(section_title)
 
         desc = QLabel(
@@ -138,7 +342,7 @@ class NetworkSettingsDialog(QDialog):
             "注册地址：https://tavily.com/，免费额度 1000次/月。"
         )
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #888888;")
+        desc.setStyleSheet("color: #AEB8C8;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
         layout.addSpacing(8)
@@ -153,8 +357,8 @@ class NetworkSettingsDialog(QDialog):
         self._tv_key_edit.setEchoMode(QLineEdit.Password)
         self._tv_key_edit.setFont(QFont("Consolas", 10))
         self._tv_key_edit.setStyleSheet("""
-            QLineEdit { border: 1px solid #D8D8E8; border-radius: 6px;
-                padding: 6px 10px; background: #FFFFFF; color: #2C2C2C;
+            QLineEdit { border: 1px solid #334155; border-radius: 6px;
+                padding: 6px 10px; background: #0F1724; color: #E6EDF7;
             }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
@@ -176,7 +380,7 @@ class NetworkSettingsDialog(QDialog):
             "💡 提示：MCP Tavily 请求从你本地发出，绕过后端被墙限制，搜索质量优于 DuckDuckGo。"
         )
         help_text.setFont(QFont("Microsoft YaHei UI", 8))
-        help_text.setStyleSheet("color: #999999; background-color: #1E1E30; padding: 8px; border-radius: 6px;")
+        help_text.setStyleSheet("color: #C8D2E2; background-color: #1B2435; padding: 8px; border-radius: 6px; border: 1px solid #334155;")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         layout.addStretch()
@@ -187,13 +391,14 @@ class NetworkSettingsDialog(QDialog):
 
     # ── Firecrawl ─────────────────────────────────────────
     def _build_tab_firecrawl(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         section_title = QLabel("🕷️ Firecrawl 网页爬虫配置")
         section_title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        section_title.setStyleSheet("color: #3A3A5C;")
+        section_title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(section_title)
 
         desc = QLabel(
@@ -203,7 +408,7 @@ class NetworkSettingsDialog(QDialog):
             "注册地址：https://firecrawl.org.cn/，免费额度 500页/月。"
         )
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #888888;")
+        desc.setStyleSheet("color: #AEB8C8;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
         layout.addSpacing(8)
@@ -219,8 +424,8 @@ class NetworkSettingsDialog(QDialog):
         self._fc_key_edit.setFont(QFont("Consolas", 10))
         self._fc_key_edit.setStyleSheet("""
             QLineEdit {
-                border: 1px solid #D0D0E0; border-radius: 6px;
-                padding: 6px 10px; background: #FFFFFF; color: #2C2C2C;
+                border: 1px solid #334155; border-radius: 6px;
+                padding: 6px 10px; background: #0F1724; color: #E6EDF7;
             }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
@@ -244,13 +449,14 @@ class NetworkSettingsDialog(QDialog):
 
     # ── 知乎全搜索 ────────────────────────────────────────
     def _build_tab_zhihu(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         title = QLabel("🎓 知乎全网搜索配置")
         title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        title.setStyleSheet("color: #3A3A5C;")
+        title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(title)
 
         desc = QLabel(
@@ -259,7 +465,7 @@ class NetworkSettingsDialog(QDialog):
             "注册地址：https://developer.zhihu.com/，在个人中心获取 Access Secret。"
         )
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #888;")
+        desc.setStyleSheet("color: #AEB8C8;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
         layout.addSpacing(8)
@@ -275,8 +481,8 @@ class NetworkSettingsDialog(QDialog):
         self._zhihu_key_edit.setFont(QFont("Consolas", 10))
         self._zhihu_key_edit.setStyleSheet("""
             QLineEdit {
-                border: 1px solid #D0D0E0; border-radius: 6px;
-                padding: 6px 10px; background: #FFFFFF; color: #2C2C2C;
+                border: 1px solid #334155; border-radius: 6px;
+                padding: 6px 10px; background: #0F1724; color: #E6EDF7;
             }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
@@ -300,7 +506,8 @@ class NetworkSettingsDialog(QDialog):
 
     # ── 工具调用顺序 ──────────────────────────────────────
     def _build_tab_fallback(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
@@ -310,7 +517,7 @@ class NetworkSettingsDialog(QDialog):
         )
         desc.setWordWrap(True)
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #666; background: #F5F5FF; padding: 8px; border-radius: 4px;")
+        desc.setStyleSheet("color: #C8D2E2; background: #1B2435; padding: 8px; border-radius: 4px; border: 1px solid #334155;")
         layout.addWidget(desc)
 
         search_group = QGroupBox("搜索来源（关键词搜索）")
@@ -350,6 +557,19 @@ class NetworkSettingsDialog(QDialog):
 
     def _build_order_list(self, kind: str):
         widget = QListWidget()
+        widget.setStyleSheet("""
+            QListWidget {
+                background: #0F1724;
+                color: #FFFFFF;
+                border: 1px solid #334155;
+                border-radius: 6px;
+            }
+            QListWidget::item { padding: 5px 6px; color: #FFFFFF; }
+            QListWidget::item:selected {
+                background: #2F6F62;
+                color: #FFFFFF;
+            }
+        """)
         widget.setObjectName(f"network_{kind}_order")
         widget.setDragDropMode(QAbstractItemView.InternalMove)
         widget.setDefaultDropAction(Qt.MoveAction)
@@ -390,7 +610,8 @@ class NetworkSettingsDialog(QDialog):
 
     # ── 代理设置 ─────────────────────────────────────────
     def _build_tab_proxy(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(12)
 
@@ -439,19 +660,20 @@ class NetworkSettingsDialog(QDialog):
             "· 代理失败时不再尝试直连，避免反复超时"
         )
         tip.setWordWrap(True)
-        tip.setStyleSheet("color: #888; font-size: 12px; padding: 8px;")
+        tip.setStyleSheet("color: #AEB8C8; font-size: 12px; padding: 8px;")
         layout.addWidget(tip)
         layout.addStretch()
 
     # ── B站账号 ─────────────────────────────────────────
     def _build_tab_bilibili(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
+        layout = QVBoxLayout(self._prepare_scroll_tab(parent))
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
         section_title = QLabel("📺 B站账号 Cookie 配置")
         section_title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
-        section_title.setStyleSheet("color: #3A3A5C;")
+        section_title.setStyleSheet("color: #E8EAF2;")
         layout.addWidget(section_title)
 
         desc = QLabel(
@@ -460,7 +682,7 @@ class NetworkSettingsDialog(QDialog):
             "获取方式：浏览器登录 B站 → F12 → Application → Cookies → bilibili.com"
         )
         desc.setFont(QFont("Microsoft YaHei UI", 9))
-        desc.setStyleSheet("color: #888888;")
+        desc.setStyleSheet("color: #AEB8C8;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
         layout.addSpacing(8)
@@ -476,8 +698,8 @@ class NetworkSettingsDialog(QDialog):
         self._bl_sess_edit.setEchoMode(QLineEdit.Password)
         self._bl_sess_edit.setFont(QFont("Consolas", 10))
         self._bl_sess_edit.setStyleSheet("""
-            QLineEdit { border: 1px solid #D0D0E0; border-radius: 6px;
-                padding: 6px 10px; background: #FFFFFF; color: #2C2C2C; }
+            QLineEdit { border: 1px solid #334155; border-radius: 6px;
+                padding: 6px 10px; background: #0F1724; color: #E6EDF7; }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
         sess_row.addWidget(self._bl_sess_edit)
@@ -498,8 +720,8 @@ class NetworkSettingsDialog(QDialog):
         self._bl_jct_edit.setEchoMode(QLineEdit.Password)
         self._bl_jct_edit.setFont(QFont("Consolas", 10))
         self._bl_jct_edit.setStyleSheet("""
-            QLineEdit { border: 1px solid #D0D0E0; border-radius: 6px;
-                padding: 6px 10px; background: #FFFFFF; color: #2C2C2C; }
+            QLineEdit { border: 1px solid #334155; border-radius: 6px;
+                padding: 6px 10px; background: #0F1724; color: #E6EDF7; }
             QLineEdit:focus { border-color: #6C7BFF; }
         """)
         jct_row.addWidget(self._bl_jct_edit)
@@ -523,7 +745,7 @@ class NetworkSettingsDialog(QDialog):
             "· 未配置 Cookie 时，B站视频摘要功能只能返回视频基本信息，无法提取字幕"
         )
         help_text.setFont(QFont("Microsoft YaHei UI", 8))
-        help_text.setStyleSheet("color: #999999; background-color: #1E1E30; padding: 8px; border-radius: 6px;")
+        help_text.setStyleSheet("color: #C8D2E2; background-color: #1B2435; padding: 8px; border-radius: 6px; border: 1px solid #334155;")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         layout.addStretch()

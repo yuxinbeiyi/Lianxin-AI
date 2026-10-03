@@ -10,6 +10,7 @@ from PyQt5.QtGui import QFont
 from utils.settings import get_settings
 from config import get_tts_config, save_tts_config
 from .settings_dialog import SettingsDialog
+from gui.styles.settings_theme import apply_settings_theme
 
 
 # 高级参数默认值
@@ -38,6 +39,7 @@ class SoundSettingsDialog(QDialog):
 
         self._adv_sliders = {}
         self._build_ui()
+        apply_settings_theme(self)
         self._load_from_settings()
 
     def _create_frame(self):
@@ -165,7 +167,7 @@ class SoundSettingsDialog(QDialog):
             "Edge-TTS 无需安装，配置后即可使用。"
         )
         engine_desc.setWordWrap(True)
-        engine_desc.setStyleSheet("font-size: 12px; padding: 4px 0;")
+        engine_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 4px 0;")
         engine_vbox.addWidget(engine_desc)
         scroll_layout.addWidget(engine_frame)
 
@@ -205,7 +207,7 @@ class SoundSettingsDialog(QDialog):
             "也可在 ref_wavs/config.json 中手动修改「text」字段覆盖。"
         )
         version_desc.setWordWrap(True)
-        version_desc.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
+        version_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 2px 0;")
         gs_vbox.addWidget(version_desc)
 
         self._tts_gs_status = QLabel()
@@ -223,7 +225,7 @@ class SoundSettingsDialog(QDialog):
         gs_vbox.addWidget(self._tts_sovits_path_edit)
         custom_desc = QLabel("选择 v2ProPlus 后生效；留空则使用 GPT-SoVITS 默认权重。")
         custom_desc.setWordWrap(True)
-        custom_desc.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
+        custom_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 2px 0;")
         gs_vbox.addWidget(custom_desc)
         scroll_layout.addWidget(gs_frame)
 
@@ -261,7 +263,7 @@ class SoundSettingsDialog(QDialog):
         transcribe_btn.clicked.connect(self._on_re_transcribe_refs)
         transcribe_row.addWidget(transcribe_btn)
         self._transcribe_status = QLabel("")
-        self._transcribe_status.setStyleSheet("color: #888; font-size: 12px;")
+        self._transcribe_status.setStyleSheet("color: #AEB3C2; font-size: 12px;")
         transcribe_row.addWidget(self._transcribe_status, 1)
         ref_vbox.addLayout(transcribe_row)
 
@@ -271,7 +273,7 @@ class SoundSettingsDialog(QDialog):
             "将 WAV 文件放入 skills/语音合成/ref_wavs/ 目录后点击刷新。"
         )
         ref_desc.setWordWrap(True)
-        ref_desc.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0;")
+        ref_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 4px 0;")
         ref_vbox.addWidget(ref_desc)
         scroll_layout.addWidget(ref_frame)
 
@@ -328,7 +330,7 @@ class SoundSettingsDialog(QDialog):
             "仅在 GPT-SoVITS 可用时生效，关闭可节省 GPU 显存。"
         )
         warmup_desc.setWordWrap(True)
-        warmup_desc.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0;")
+        warmup_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 4px 0;")
         warmup_vbox.addWidget(warmup_desc)
         scroll_layout.addWidget(warmup_frame)
 
@@ -349,7 +351,7 @@ class SoundSettingsDialog(QDialog):
             "释放后会回收 GPT-SoVITS 独立进程及其显存；下次使用会重新加载，Edge-TTS 不受影响。"
         )
         resource_desc.setWordWrap(True)
-        resource_desc.setStyleSheet("color: #888; font-size: 12px; padding: 2px 0;")
+        resource_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 2px 0;")
         resource_vbox.addWidget(resource_desc)
         release_btn = QPushButton("立即释放 GPT-SoVITS GPU")
         release_btn.clicked.connect(self._release_gpt_worker)
@@ -365,7 +367,7 @@ class SoundSettingsDialog(QDialog):
         self._tts_test_btn.clicked.connect(self._on_tts_test)
         test_hbox.addWidget(self._tts_test_btn)
         self._tts_test_status = QLabel("")
-        self._tts_test_status.setStyleSheet("color: #888; font-size: 12px;")
+        self._tts_test_status.setStyleSheet("color: #AEB3C2; font-size: 12px;")
         test_hbox.addWidget(self._tts_test_status)
         test_hbox.addStretch()
         scroll_layout.addWidget(test_frame)
@@ -378,7 +380,7 @@ class SoundSettingsDialog(QDialog):
             "· 参考音频格式：WAV 文件，5-15 秒，24000Hz 采样率"
         )
         tts_tip.setWordWrap(True)
-        tts_tip.setStyleSheet("color: #888; font-size: 12px; padding: 8px;")
+        tts_tip.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 8px;")
         scroll_layout.addWidget(tts_tip)
 
         scroll_layout.addStretch()
@@ -406,7 +408,7 @@ class SoundSettingsDialog(QDialog):
             "修改后点「试听」可立即感受效果，满意后点「保存」。"
         )
         tip.setWordWrap(True)
-        tip.setStyleSheet("color: #888; font-size: 12px; padding: 8px;")
+        tip.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 8px;")
         adv_layout.addWidget(tip)
 
         # ── temperature ──
@@ -488,7 +490,7 @@ class SoundSettingsDialog(QDialog):
 
         reset_desc = QLabel("将所有高级参数重置为推荐的默认值。")
         reset_desc.setWordWrap(True)
-        reset_desc.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0;")
+        reset_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 4px 0;")
         reset_vbox.addWidget(reset_desc)
         adv_layout.addWidget(reset_frame)
 
@@ -529,7 +531,7 @@ class SoundSettingsDialog(QDialog):
         desc_row.addStretch()
         desc_row.addWidget(QLabel(right_desc))
         for lbl in (desc_row.itemAt(0).widget(), desc_row.itemAt(2).widget()):
-            lbl.setStyleSheet("color: #888; font-size: 12px;")
+            lbl.setStyleSheet("color: #AEB3C2; font-size: 12px;")
         vbox.addLayout(desc_row)
 
         return frame

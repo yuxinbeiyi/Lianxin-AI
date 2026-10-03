@@ -425,6 +425,8 @@ class QQBridgeWorker(QThread):
         else:
             self._log(f"[!] WebSocket 错误: {err_str}")
 
+        self.error_occurred.emit(err_str)
+
     def _on_message(self, ws, raw):
         """处理来自 NapCatQQ 的消息。"""
         try:

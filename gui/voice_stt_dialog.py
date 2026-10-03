@@ -17,6 +17,7 @@ from config import (
     get_stt_engine_config, save_stt_engine_config,
     detect_best_stt_engine, migrate_legacy_stt_config,
 )
+from gui.styles.settings_theme import apply_settings_theme
 
 
 class VoiceSTTDialog(QDialog):
@@ -49,6 +50,7 @@ class VoiceSTTDialog(QDialog):
         
         self._original_config = None
         self._build_ui()
+        apply_settings_theme(self)
         self._load_config()
         self._check_migration()
     
