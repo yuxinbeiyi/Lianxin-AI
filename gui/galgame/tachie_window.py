@@ -124,6 +124,8 @@ class TachieWindow(QWidget):
 
     def set_animation_state(self, state: str):
         """切换精灵动作状态（idle/sit/sleep/happy/study/think/...）。"""
+        if self._movement_direction and state not in ("walk_left", "walk_right"):
+            self.stop_moving()
         self._animation.set_state(state)
 
     def current_state(self) -> str:

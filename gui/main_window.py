@@ -1778,6 +1778,9 @@ class MainWindow(QMainWindow):
         emotion = getattr(self._agent, '_last_emotion', None) if self._agent else None
 
         if self._galgame_visible and self._galgame_dialog:
+            from utils.settings import get_settings
+            if get_settings().galgame_auto_show_dialog and not self._galgame_dialog.isVisible():
+                self._galgame_dialog.show()
             self._galgame_dialog.set_status("正在回复", active=True)
             galgame_emotion = self._expression_mgr.match(first_segment)
             self._galgame_dialog.show_reply(display_text)

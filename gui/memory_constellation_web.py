@@ -99,6 +99,30 @@ class _ConstellationBridge(QObject):
         except Exception:
             return False
 
+    @pyqtSlot(str, str, result=str)
+    def correctMemory(self, raw_id: str, content: str):
+        try:
+            fact_id = int(raw_id)
+            if fact_id <= 0 or not str(content or '').strip():
+                return json.dumps({'ok': False, 'error': '记忆内容不能为空'}, ensure_ascii=False)
+            from brain.graph_memory import correct_fact_by_id
+            fact = correct_fact_by_id(fact_id, content)
+            return json.dumps({'ok': bool(fact), 'fact': fact, 'error': '' if fact else '记忆不存在'}, ensure_ascii=False, default=str)
+        except Exception as exc:
+            return json.dumps({'ok': False, 'error': str(exc)}, ensure_ascii=False)
+
+    @pyqtSlot(str, result=str)
+    def deleteMemory(self, raw_id: str):
+        try:
+            fact_id = int(raw_id)
+            if fact_id <= 0:
+                return json.dumps({'ok': False, 'error': '无效的记忆编号'}, ensure_ascii=False)
+            from brain.graph_memory import delete_fact_by_id
+            ok = delete_fact_by_id(fact_id)
+            return json.dumps({'ok': ok, 'error': '' if ok else '记忆不存在'}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({'ok': False, 'error': str(exc)}, ensure_ascii=False)
+
     @pyqtSlot(str, result=str)
     def simulateEmotion(self, scenario: str):
         try:

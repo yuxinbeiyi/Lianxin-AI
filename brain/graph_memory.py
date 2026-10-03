@@ -878,6 +878,89 @@ def get_fact_by_id(fact_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def correct_fact_by_id(fact_id: int, new_content: str) -> dict | None:
+    """Correct one fact using an explicit id and mark it as user-verified."""
+    content = " ".join(str(new_content or "").split()).strip()
+    if not content:
+        raise ValueError("记忆内容不能为空")
+
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id, category, content FROM memory_facts WHERE id=? AND status='active'",
+        (int(fact_id),),
+    ).fetchone()
+    if not row:
+        return None
+
+    try:
+        from brain.memory_corrections import apply_correction_feedback
+        apply_correction_feedback(
+            [int(fact_id)], action="update",
+            reason=f"用户在星图中纠正记忆：{content[:240]}",
+            conn=conn, commit=False,
+        )
+    except Exception:
+        pass
+
+    embedding = None
+    embedding_model = ""
+    embedding_hash = ""
+    try:
+        from brain.memory_rag import embed_bytes
+        from utils.embedding_cache import content_hash
+        embedding = embed_bytes(content)
+        embedding_model = "BAAI/bge-small-zh-v1.5"
+        embedding_hash = content_hash(content)
+    except Exception:
+        pass
+
+    conn.execute(
+        """UPDATE memory_fragments
+           SET status='superseded', updated_at=datetime('now','localtime')
+           WHERE fact_id=? AND status='active'""",
+        (int(fact_id),),
+    )
+    conn.execute(
+        """UPDATE memory_facts
+           SET content=?, source='user_correction', strength=1,
+               quality_score=1.0, review_status='confirmed',
+               quality_updated_at=datetime('now','localtime'),
+               embedding=?, embedding_model=?, embedding_content_hash=?,
+               updated_at=datetime('now','localtime'), status='active'
+           WHERE id=? AND status='active'""",
+        (content, embedding, embedding_model, embedding_hash, int(fact_id)),
+    )
+    add_memory_fragment(
+        int(fact_id), content, row["category"], source="user_correction",
+        confidence=1.0, commit=False,
+    )
+    conn.commit()
+    return get_fact_by_id(int(fact_id))
+
+
+def delete_fact_by_id(fact_id: int) -> bool:
+    """Delete one fact and its evidence using an explicit id."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id, content FROM memory_facts WHERE id=?", (int(fact_id),)
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        from brain.memory_corrections import apply_correction_feedback
+        apply_correction_feedback(
+            [int(fact_id)], action="delete",
+            reason=f"用户在星图中删除记忆：{str(row['content'])[:240]}",
+            conn=conn, commit=False,
+        )
+    except Exception:
+        pass
+    conn.execute("DELETE FROM memory_fragments WHERE fact_id=?", (int(fact_id),))
+    conn.execute("DELETE FROM memory_facts WHERE id=?", (int(fact_id),))
+    conn.commit()
+    return True
+
+
 def _prune_category(conn: sqlite3.Connection, category: str) -> None:
     """如果 category 条目数超出上限，淘汰最旧且强度最低的条目。"""
     try:

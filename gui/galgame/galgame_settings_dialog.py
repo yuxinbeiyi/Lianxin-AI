@@ -214,6 +214,9 @@ class GalgameSettingsDialog(QDialog):
         self._bounce_cb = QCheckBox("说话时弹跳")
         self._bounce_cb.setChecked(self._settings.galgame_speaking_bounce)
         form.addRow("说话动画:", self._bounce_cb)
+        self._auto_show_cb = QCheckBox("收到莲心消息时自动显示对话框")
+        self._auto_show_cb.setChecked(self._settings.galgame_auto_show_dialog)
+        form.addRow("消息显示:", self._auto_show_cb)
 
         hint = QLabel("启动/隐藏快捷键：<b>Ctrl+Alt+X</b>（全局热键）")
         hint.setObjectName("PageHint")
@@ -251,6 +254,7 @@ class GalgameSettingsDialog(QDialog):
         s.galgame_panel_height = self._panel_h_spin.value()
         s.galgame_sprite_scale = self._scale_spin.value()
         s.galgame_speaking_bounce = self._bounce_cb.isChecked()
+        s.galgame_auto_show_dialog = self._auto_show_cb.isChecked()
         triggers = {key: combo.currentData() for key, combo in self._trigger_combos.items()}
         s.galgame_action_triggers = triggers
         self.accept()

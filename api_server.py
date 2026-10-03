@@ -77,6 +77,12 @@ _CONSTELLATION_BRIDGE_SHIM = """<script>
     queueMemoryReview: function (id, cb) {
       fetch(base + '/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) }).then(function (r) { return r.json(); }).then(function (d) { cb(Boolean(d.ok)); }).catch(function () { cb(false); });
     },
+    correctMemory: function (id, content, cb) {
+      fetch(base + '/correct', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id), content: String(content || '') }) }).then(function (r) { return r.json(); }).then(function (d) { cb(d); }).catch(function (e) { cb({ ok: false, error: String(e) }); });
+    },
+    deleteMemory: function (id, cb) {
+      fetch(base + '/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) }).then(function (r) { return r.json(); }).then(function (d) { cb(d); }).catch(function (e) { cb({ ok: false, error: String(e) }); });
+    },
     toggleFullscreen: function () {
       window.parent.postMessage({ source: 'lianxin-embedded-window', action: 'maximize' }, '*');
       return true;
@@ -737,7 +743,8 @@ class LianxinBridge:
         return target
 
     def chat_stream(self, text: str, attachments: list[dict] | None = None,
-                    forced_tool: str | None = None, preferred_tool: str | None = None):
+                    forced_tool: str | None = None, preferred_tool: str | None = None,
+                    quote: dict | None = None):
         """Run AgentCore in a worker and forward tool lifecycle events as SSE data."""
         attachments = list(attachments or [])
         if not text.strip() and not attachments:
@@ -840,7 +847,11 @@ class LianxinBridge:
                     user_text = text.strip()
                     if attachments and user_text:
                         user_text = f"[用户附加文字]\n{user_text}\n[用户附加文字结束]"
-                    agent_text = "\n\n".join(context_parts + ([user_text] if user_text else []))
+                    quote_text = ""
+                    if isinstance(quote, dict) and str(quote.get("content") or "").strip():
+                        quote_role = "你" if quote.get("role") == "user" else "莲心"
+                        quote_text = f"[用户正在回复此前的{quote_role}消息]\n{str(quote.get('content'))[:12000]}\n[引用消息结束]"
+                    agent_text = "\n\n".join(context_parts + ([quote_text] if quote_text else []) + ([user_text] if user_text else []))
                     if not agent_text.strip():
                         agent_text = "请根据你看到的图片自然地回应。"
                     from brain.request_context import parse_request_context
@@ -860,6 +871,10 @@ class LianxinBridge:
                         on_tool_call=on_tool_call,
                         on_tool_result=on_tool_result,
                     )
+                    if quote_text:
+                        agent.get_history_manager().update_latest_message_content(
+                            agent._session_id, "user", text.strip() or "看看这张图片"
+                        )
                     if attachments:
                         metadata = {"attachments": [
                             {"kind": str(item.get("kind") or "image"),
@@ -910,6 +925,9 @@ class LianxinBridge:
     def speak(self, text: str, voice: str = "") -> dict:
         if not str(text or "").strip():
             raise ValueError("朗读内容不能为空")
+        from utils.settings import SettingsManager
+        if SettingsManager().silent_mode:
+            return {"speaking": False, "muted": True}
         self.stop_speaking()
         from voice.speaker import VoiceSpeaker
         if not voice:
@@ -1008,6 +1026,7 @@ class LianxinBridge:
         from utils.settings import SettingsManager
 
         settings = SettingsManager()
+        was_silent = bool(settings.silent_mode)
         source = str(settings.background_source or "")
         source_type = settings.background_source_type
         path = Path(source).expanduser()
@@ -1156,6 +1175,8 @@ class LianxinBridge:
             AccompanyStats().set_first_meet_date(str(global_values["firstMeetDate"]))
         if "autostart" in global_values and bool(global_values["autostart"]) != bool(is_autostart_enabled()):
             (enable_autostart if global_values["autostart"] else disable_autostart)()
+        if settings.silent_mode and not was_silent:
+            self.stop_speaking()
         return self.settings_panel_state()
 
     @staticmethod
@@ -1247,7 +1268,11 @@ class LianxinBridge:
             "tap": ["你拍到我了，我记住啦。", "拍完就不许跑远，我还在这里。"],
             "headpat": ["被你摸到了，今天也稍微陪你久一点。", "好啦好啦，摸到了，继续陪你聊天。"],
         }
-        response = random.choice(fallback[action])
+        counter_fallback = {
+            "tap": ["看到了吧，我也会反手拍回来。别以为只有你会逗我。", "这一下算我的回礼，接住了就不许装作没感觉。"],
+            "headpat": ["我也摸回来一下，礼尚往来。现在轮到你乖乖感受了。", "刚才那一下我收到了，所以也轻轻摸回来，不许只占我的便宜。"],
+        }
+        response = random.choice(counter_fallback[action] if counter_action else fallback[action])
         used_fallback = True
         if cfg.get("dynamic_response", True):
             try:
@@ -1256,12 +1281,21 @@ class LianxinBridge:
                 recent = getattr(self.agent(), "history", [])[-6:]
                 recent_text = "\n".join(f"{m.get('role')}: {str(m.get('content', ''))[:200]}" for m in recent if isinstance(m, dict))
                 actor = str(get_user_name() or "主人")
-                prompt = (
-                    f"{actor}刚刚对莲心的圆形聊天头像进行了{'拍一拍' if action == 'tap' else '摸一摸'}。"
-                    f"请以莲心第一人称，用1到2句自然、口语化的话回应。"
-                    "不要提模型、系统、工具或提示词，不要否认这次互动，不要反转动作方向。"
-                    f"最近对话上下文：{recent_text}"
-                )
+                action_name = "拍一拍" if action == "tap" else "摸一摸"
+                if counter_action:
+                    prompt = (
+                        f"事实不可改变：{actor}刚刚对莲心的头像进行了{action_name}，随后莲心已经反手对{actor}进行了同样的{action_name}。"
+                        "请以莲心第一人称，用1到2句自然、口语化的话回应这次反击。"
+                        "语气要像轻微调侃、撒娇或亲近的回应，明确体现这是莲心反手回应，而不是普通地被用户拍/摸。"
+                        "不要写成‘你拍我’‘被你摸’等把莲心写成再次被动接受动作的表达，不要反转动作方向。"
+                    )
+                else:
+                    prompt = (
+                        f"{actor}刚刚对莲心的头像进行了{action_name}。"
+                        "请以莲心第一人称，用1到2句自然、口语化的话回应被互动的感受。"
+                        "不要提模型、系统、工具或提示词，不要否认这次互动，不要反转动作方向。"
+                    )
+                prompt += f"最近对话上下文：{recent_text}"
                 generated = (isolated.chat(prompt, disable_tools=True) or "").strip()
                 invalid = ("api", "调用失败", "请求失败", "系统错误", "不要提")
                 if generated and not any(marker in generated.lower() for marker in invalid):
@@ -1949,6 +1983,28 @@ class LianxinBridge:
             return {"ok": cur.rowcount > 0}
         except Exception:
             return {"ok": False}
+
+    def memory_constellation_correct(self, raw_id: str, content: str) -> dict:
+        try:
+            fact_id = int(raw_id)
+            if fact_id <= 0 or not str(content or "").strip():
+                return {"ok": False, "error": "记忆内容不能为空"}
+            from brain.graph_memory import correct_fact_by_id
+            fact = correct_fact_by_id(fact_id, content)
+            return {"ok": bool(fact), "fact": fact, "error": "记忆不存在" if not fact else ""}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def memory_constellation_delete(self, raw_id: str) -> dict:
+        try:
+            fact_id = int(raw_id)
+            if fact_id <= 0:
+                return {"ok": False, "error": "无效的记忆编号"}
+            from brain.graph_memory import delete_fact_by_id
+            ok = delete_fact_by_id(fact_id)
+            return {"ok": ok, "error": "记忆不存在" if not ok else ""}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def ripple_snapshot(self) -> dict:
         payload = self.memory_constellation_snapshot()
@@ -3012,6 +3068,7 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("attachments") if isinstance(body.get("attachments"), list) else [],
                     str(body.get("forcedTool") or "") or None,
                     str(body.get("preferredTool") or "") or None,
+                    body.get("quote") if isinstance(body.get("quote"), dict) else None,
                 ):
                     if event.get("type") == "completed":
                         event = {**event, "message": event.get("message", {})}
@@ -3085,6 +3142,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.set_qq_fast_reply(bool(body.get("enabled"))))
             if path == "/api/memory-constellation/review":
                 return self._send(bridge.memory_constellation_review(str(body.get("id", ""))))
+            if path == "/api/memory-constellation/correct":
+                return self._send(bridge.memory_constellation_correct(
+                    str(body.get("id", "")), str(body.get("content", ""))))
+            if path == "/api/memory-constellation/delete":
+                return self._send(bridge.memory_constellation_delete(str(body.get("id", ""))))
             if path == "/api/ripple/simulate":
                 return self._send(bridge.ripple_simulate(str(body.get("scenario", ""))))
             if path == "/api/ripple/restore":

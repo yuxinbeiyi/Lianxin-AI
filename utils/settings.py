@@ -25,6 +25,7 @@ _DEFAULT_SETTINGS = {
     "galgame_panel_opacity": 92,         # Galgame 对话面板透明度（%）
     "galgame_sprite_scale": 100,         # Galgame 角色精灵缩放（%，100=桌宠原比例 95x150）
     "galgame_speaking_bounce": True,     # Galgame 说话时弹跳动画
+    "galgame_auto_show_dialog": True,    # 桌宠收到莲心消息时自动显示对话框
     "galgame_action_triggers": {         # Galgame 行为动作触发：事件 → 动画状态
         "thinking": "think",
         "speaking": "happy",
@@ -220,6 +221,15 @@ class SettingsManager:
     @galgame_speaking_bounce.setter
     def galgame_speaking_bounce(self, val: bool):
         self._settings["galgame_speaking_bounce"] = bool(val)
+        self.save()
+
+    @property
+    def galgame_auto_show_dialog(self) -> bool:
+        return self._settings.get("galgame_auto_show_dialog", True)
+
+    @galgame_auto_show_dialog.setter
+    def galgame_auto_show_dialog(self, val: bool):
+        self._settings["galgame_auto_show_dialog"] = bool(val)
         self.save()
 
     @property

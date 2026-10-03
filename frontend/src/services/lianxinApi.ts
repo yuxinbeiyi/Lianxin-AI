@@ -73,7 +73,7 @@ export const lianxinApi = {
   background: (include = true) => request<BackgroundState>(`/settings/background?include=${include ? "1" : "0"}`),
   avatars: (include = true) => request<AvatarState>(`/settings/avatars?include=${include ? "1" : "0"}`),
   settingsPanels: () => request<SettingsPanelState>("/settings/panels"),
-  saveSettingsPanels: (payload: Partial<SettingsPanelState>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
+  saveSettingsPanels: (payload: Partial<{ global: Partial<SettingsPanelState["global"]>; sound: Partial<SettingsPanelState["sound"]> }>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
   avatarAction: (action: "tap" | "headpat") => request<{ action: string; accepted?: boolean; sound?: boolean; response?: string; counterAction?: string; message?: string }>(`/avatar/action?action=${action}`),
   openLegacy: (feature: LegacyFeature) => request<{ feature: string; pid: number; mode: string }>("/legacy/open", { method: "POST", body: JSON.stringify({ feature }) }),
   qqStatus: () => request<{ running: boolean; connected: boolean; state: string; url: string; error?: string; disconnectReason?: string; fastReplyEnabled: boolean }>("/qq/status"),
@@ -93,8 +93,8 @@ export const lianxinApi = {
   timeCapsule: (day = "") => request<{ day: any; timeline: any[]; today: string }>(`/time-capsule/state${day ? `?day=${encodeURIComponent(day)}` : ""}`),
   saveTimeCapsule: (day: string, content: string) => request<Record<string, unknown>>("/time-capsule/save", { method: "POST", body: JSON.stringify({ day, content }) }),
   sealTimeCapsule: (day: string, content: string) => request<Record<string, unknown>>("/time-capsule/seal", { method: "POST", body: JSON.stringify({ day, content }) }),
-  streamChat: async function* (message: string, attachments: Array<{ kind: "image" | "file"; fileName: string; dataUrl: string }> = [], selection: { forcedTool?: string; preferredTool?: string } = {}) {
-    const response = await fetch(`${API_ROOT}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachments, ...selection }) });
+  streamChat: async function* (message: string, attachments: Array<{ kind: "image" | "file"; fileName: string; dataUrl: string }> = [], selection: { forcedTool?: string; preferredTool?: string } = {}, quote?: { role: "user" | "assistant"; content: string }) {
+    const response = await fetch(`${API_ROOT}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachments, ...selection, quote }) });
     if (!response.ok || !response.body) throw new Error(`API ${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value, { stream: true }); const chunks = buffer.split("\n\n"); buffer = chunks.pop() ?? ""; for (const chunk of chunks) { const line = chunk.split("\n").find((item) => item.startsWith("data: ")); if (line) yield JSON.parse(line.slice(6)) as ChatStreamEvent; } }

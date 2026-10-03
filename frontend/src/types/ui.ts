@@ -12,7 +12,7 @@ export type Message = {
   role: "user" | "assistant";
   content: string;
   time: string;
-  kind?: "text" | "task" | "result" | "file";
+  kind?: "text" | "task" | "result" | "file" | "interaction";
   imageUrl?: string;
   imageName?: string;
   imageStatus?: "pending" | "success" | "error";
