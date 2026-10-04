@@ -298,6 +298,8 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .music-queue-item.is-current { color: var(--lx-accent); background: rgba(105, 215, 195, .1); border-color: rgba(105, 215, 195, .28); }
 .music-queue-index { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; color: var(--lx-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .music-queue-item.is-current .music-queue-index { color: var(--lx-accent); }
+.music-track-actions { display: inline-flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+.music-btn-small { min-height: 28px; padding: 4px 8px; font-size: 12px; }
 .music-queue-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .music-queue-copy strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .music-queue-copy em { font-style: normal; font-size: 11px; color: var(--lx-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -89,6 +89,7 @@ type Session = {
   is_pinned?: number;
 };
 type MusicState = {
+  stateVersion?: number;
   active?: boolean;
   playing?: boolean;
   paused?: boolean;
@@ -2176,12 +2177,14 @@ function Workspace({
   workspace,
   music,
   onControl,
+  onRefreshMusic,
   musicError,
   onDismissMusicError,
 }: {
   workspace: WorkspaceId;
   music: MusicState;
   onControl: (action: string, payload?: Record<string, unknown>) => void;
+  onRefreshMusic?: () => void;
   musicError?: string;
   onDismissMusicError?: () => void;
 }) {
@@ -2190,6 +2193,7 @@ function Workspace({
       <MusicWorkspace
         music={music}
         onControl={onControl}
+        onRefresh={onRefreshMusic}
         errorMsg={musicError}
         onDismissError={onDismissMusicError}
       />
@@ -2316,7 +2320,10 @@ export function App() {
         });
       void lianxinApi
         .musicState()
-        .then((state) => setMusic(state as MusicState))
+        .then((state) => setMusic((current) => {
+          const next = state as MusicState;
+          return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current;
+        }))
         .catch(() => undefined);
       void lianxinApi
         .fiveAxis()
@@ -2753,15 +2760,21 @@ export function App() {
     void lianxinApi
       .musicControl(action, payload)
       .then((state) => {
-        setMusic(state as MusicState);
+        setMusic((current) => {
+          const next = state as MusicState;
+          return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current;
+        });
         setMusicError("");
       })
       .catch((error) =>
-        setMusicError(
-          String(
-            (error as Error)?.message ?? "\u97f3\u4e50\u63a7\u5236\u5931\u8d25",
-          ),
-        ),
+        setMusicError((() => {
+          const raw = String((error as Error)?.message ?? "音乐控制失败");
+          if (/VIP|copyright|会员|版权/i.test(raw)) return "这首歌曲需要 VIP 或暂无版权，已尝试跳过";
+          if (/timed out|timeout|超时/i.test(raw)) return "音乐服务响应超时，请稍后重试";
+          if (/offline|未启动|连接/i.test(raw)) return "网易云播放器未连接，请先启动音乐服务";
+          if (/queue|队列/i.test(raw)) return "播放队列暂未同步完成，请稍后重试";
+          return raw;
+        })()),
       );
   };
   useEffect(() => {
@@ -3013,6 +3026,7 @@ export function App() {
                 workspace={activeWorkspace}
                 music={music}
                 onControl={controlMusic}
+                onRefreshMusic={() => { void lianxinApi.musicState().then((state) => setMusic((current) => { const next = state as MusicState; return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current; })); }}
                 musicError={musicError}
                 onDismissMusicError={() => setMusicError("")}
               />

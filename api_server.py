@@ -9,6 +9,7 @@ Run with: ``python api_server.py``.
 from __future__ import annotations
 
 import json
+import atexit
 import hashlib
 import base64
 import mimetypes
@@ -589,6 +590,7 @@ class LianxinBridge:
         self._call_sound = None
         self._call_channel = None
         self._netease_spawn_lock = threading.Lock()
+        self._music_control_lock = threading.Lock()
         self._netease_proc = None
         self._watched_song = None
         from brain.music_service import MusicService
@@ -599,6 +601,18 @@ class LianxinBridge:
         self._time_capsule_lock = threading.RLock()
         self._diary_workers = set()
         self._qq_runtime = QQBridgeRuntime()
+        # Reuse the legacy companion counter so the standalone React/Tauri
+        # runtime contributes to the same data-tide statistics.
+        from utils.accompany_stats import AccompanyStats
+        self._accompany_stats = AccompanyStats()
+        self._accompany_stats.start_session()
+        atexit.register(self._end_accompany_session)
+
+    def _end_accompany_session(self) -> None:
+        try:
+            self._accompany_stats.end_session()
+        except Exception:
+            pass
 
     def agent(self):
         with self._lock:
@@ -1415,6 +1429,23 @@ class LianxinBridge:
             return url
         return "http://127.0.0.1:8766/api/music/cover?url=" + quote(url, safe="")
 
+    @staticmethod
+    def _track_cover_url(track: dict) -> str:
+        """Extract the cover from the different shapes returned by NetEase APIs."""
+        if not isinstance(track, dict):
+            return ""
+        album = track.get("album") if isinstance(track.get("album"), dict) else {}
+        return str(
+            track.get("coverUrl")
+            or track.get("cover_url")
+            or track.get("picUrl")
+            or track.get("albumPicUrl")
+            or track.get("coverImgUrl")
+            or album.get("picUrl")
+            or album.get("coverUrl")
+            or ""
+        )
+
     def music_state(self) -> dict:
         # Prefer the real 8765 player API; the state file remains a safe fallback.
         try:
@@ -1462,6 +1493,7 @@ class LianxinBridge:
                     "artist": t.get("artist") or "",
                     "duration": dur,
                     "index": i,
+                    "coverUrl": self._proxy_cover_url(self._track_cover_url(t)),
                 })
             duration = float(st.get("duration") or 0)
             if not duration and playback.get("durationMs"):
@@ -1483,16 +1515,30 @@ class LianxinBridge:
                 "title": playback.get("name") or "",
                 "artist": playback.get("artist") or "",
                 "album": playback.get("album") or "",
+                "coverUrl": self._proxy_cover_url(
+                    self._track_cover_url(playback)
+                    or (playlist[index].get("coverUrl") if 0 <= index < len(playlist) else "")
+                ),
             }
+            if not (0 <= index < len(playlist)):
+                playback_id = str(playback.get("id") or playback.get("songId") or "")
+                index = next(
+                    (i for i, item in enumerate(playlist) if str(item.get("id") or "") == playback_id),
+                    -1,
+                )
+            cover_url = self._track_cover_url(playback)
+            if not cover_url and 0 <= index < len(playlist):
+                cover_url = playlist[index].get("coverUrl") or ""
             return {
                 "serviceOnline": True, "loggedIn": status.get("loggedIn"),
+                "stateVersion": status.get("stateVersion", 0),
                 "queueAvailable": bool(playlist), "currentTrack": current_track,
                 "error": "", "updatedAt": time.time(),
                 "active": bool(st.get("playing")) and not bool(st.get("paused")),
                 "playing": bool(st.get("playing")), "paused": bool(st.get("paused")),
                 "name": playback.get("name") or "", "title": playback.get("name") or "",
                 "artist": playback.get("artist") or "", "album": playback.get("album") or "",
-                "coverUrl": self._proxy_cover_url(playback.get("coverUrl") or ""),
+                "coverUrl": self._proxy_cover_url(cover_url),
                 "progress": float(st.get("position") or 0), "duration": duration,
                 "volume": float(st.get("volume") or 0), "source": "netease-8765",
                 "playlist": playlist, "current_index": index, "mode": mode,
@@ -1585,6 +1631,69 @@ class LianxinBridge:
 
     def music_stats(self) -> dict:
         return self.music_service.stats()
+
+    def music_playlists(self, offset: int = 0, limit: int = 24) -> dict:
+        import urllib.request
+        query = f"?offset={max(0, int(offset))}&limit={max(1, min(50, int(limit)))}"
+        with urllib.request.urlopen("http://127.0.0.1:8765/api/playlists" + query, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def music_playlist(self, playlist_id: str) -> dict:
+        import urllib.request
+        if not str(playlist_id).strip():
+            raise ValueError("歌单 ID 不能为空")
+        url = "http://127.0.0.1:8765/api/playlist?id=" + quote(str(playlist_id), safe="")
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def music_play_playlist(self, playlist_id: str) -> dict:
+        import urllib.request
+        detail = self.music_playlist(playlist_id)
+        raw_tracks = detail.get("tracks") or (detail.get("playlist") or {}).get("tracks") or []
+        tracks = []
+        for track in raw_tracks:
+            if not isinstance(track, dict) or not track.get("id"):
+                continue
+            tracks.append({
+                "id": str(track.get("id")),
+                "name": track.get("name") or track.get("title") or "未知歌曲",
+                "artist": track.get("artist") or "",
+                "album": track.get("album") or "",
+                "durationMs": track.get("durationMs") or track.get("duration") or 0,
+                "coverUrl": self._track_cover_url(track),
+            })
+        if not tracks:
+            raise ValueError("歌单中没有可播放歌曲")
+        base = "http://127.0.0.1:8765"
+        headers = {"Content-Type": "application/json", "X-Lianxin-Bridge": "1"}
+        queue_request = urllib.request.Request(
+            base + "/api/queue",
+            data=json.dumps({"tracks": tracks, "index": 0}).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(queue_request, timeout=8) as response:
+            response.read()
+        play_request = urllib.request.Request(
+            base + "/api/play-track",
+            data=json.dumps({"id": tracks[0]["id"]}).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(play_request, timeout=8) as response:
+            response.read()
+        deadline = time.time() + 8.0
+        state = self.music_state()
+        while time.time() < deadline:
+            queue = state.get("playlist") or []
+            expected_ids = [str(track["id"]) for track in tracks]
+            actual_ids = [str(item.get("id") or "") for item in queue]
+            if actual_ids == expected_ids:
+                return state
+            time.sleep(0.25)
+            state = self.music_state()
+        actual_ids = [str(item.get("id") or "") for item in (state.get("playlist") or [])]
+        raise TimeoutError(
+            f"播放队列同步超时：期望 {len(expected_ids)} 首，实际 {len(actual_ids)} 首，歌曲顺序未确认"
+        )
 
     def start_music_watcher(self) -> dict:
         with self._music_watcher_lock:
@@ -1710,6 +1819,10 @@ class LianxinBridge:
         payload = payload or {}
         if action != "kill-mpv" and not self.ensure_netease_online():
             raise ValueError("网易云播放服务未启动且自动拉起失败，请确认 node 环境")
+        if action in {"next", "previous"}:
+            return self._music_skip_unplayable(action, payload)
+        if action in {"queue-append", "queue-insert-next"}:
+            return self._music_queue_operation(action, payload)
         if action == "select":
             try:
                 index = int(payload.get("index", -1) or -1)
@@ -1751,7 +1864,7 @@ class LianxinBridge:
                 bridge_log.log("网易云", f"kill mpv 失败: {exc}")
             return {"active": False, "playing": False, "paused": False, "source": "netease-8765"}
         else:
-            routes = {"toggle": "/api/pause", "play": "/api/pause", "pause": "/api/pause", "next": "/api/next", "previous": "/api/prev"}
+            routes = {"toggle": "/api/pause", "play": "/api/pause", "pause": "/api/pause"}
             route = routes.get(action)
             if not route:
                 raise ValueError(f"不支持的音乐操作: {action}")
@@ -1764,7 +1877,123 @@ class LianxinBridge:
         )
         with urllib.request.urlopen(request, timeout=3) as response:
             response.read()
+        result = self.music_state()
+        if action == "mode":
+            target = mode
+            deadline = time.time() + 2.0
+            while result.get("mode") != target and time.time() < deadline:
+                time.sleep(0.15)
+                result = self.music_state()
+            result["modeSyncPending"] = result.get("mode") != target
+            result["modeRequested"] = target
+        return result
+
+    def _music_queue_operation(self, action: str, payload: dict) -> dict:
+        """Append or insert one normalized track without starting playback."""
+        import urllib.request
+        track = payload.get("track") if isinstance(payload, dict) else None
+        if not isinstance(track, dict) or not track.get("id"):
+            raise ValueError("缺少要加入队列的歌曲")
+        base = "http://127.0.0.1:8765"
+        with urllib.request.urlopen(base + "/api/queue", timeout=1.5) as response:
+            current = json.loads(response.read().decode("utf-8"))
+        queue = list(current.get("queue") or [])
+        item = {
+            "id": str(track.get("id")),
+            "name": track.get("name") or track.get("title") or "未知歌曲",
+            "artist": track.get("artist") or "",
+            "album": track.get("album") or "",
+            "durationMs": track.get("durationMs") or track.get("duration") or 0,
+            "coverUrl": self._track_cover_url(track),
+        }
+        if action == "queue-insert-next":
+            index = int(current.get("index", -1) or -1)
+            insert_at = max(0, min(len(queue), index + 1))
+            queue.insert(insert_at, item)
+        else:
+            queue.append(item)
+        request = urllib.request.Request(
+            base + "/api/queue",
+            data=json.dumps({"tracks": queue, "index": current.get("index", -1)}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Lianxin-Bridge": "1"}, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            response.read()
         return self.music_state()
+
+    def _music_skip_unplayable(self, action: str, payload: dict) -> dict:
+        """Try directional queue candidates instead of failing on one VIP track."""
+        with self._music_control_lock:
+            return self._music_skip_unplayable_locked(action, payload)
+
+    def _music_skip_unplayable_locked(self, action: str, payload: dict) -> dict:
+        """Run one directional skip while excluding overlapping bridge requests."""
+        import urllib.request
+        base = "http://127.0.0.1:8765"
+        if action == "previous":
+            with urllib.request.urlopen(base + "/api/status", timeout=1.5) as response:
+                status = json.loads(response.read().decode("utf-8"))
+            player_status = status.get("status") or {}
+            playback = status.get("playback") or {}
+            try:
+                position = float(player_status.get("position") or 0)
+            except (TypeError, ValueError):
+                position = 0.0
+            current_id = str(playback.get("id") or playback.get("songId") or "")
+            if position > 3 and current_id:
+                request = urllib.request.Request(
+                    base + "/api/replay-track",
+                    data=json.dumps({"id": current_id}).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "X-Lianxin-Bridge": "1"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    response.read()
+                return self.music_state()
+        with urllib.request.urlopen(base + "/api/queue", timeout=1.5) as response:
+            queue_data = json.loads(response.read().decode("utf-8"))
+        queue = queue_data.get("queue") or []
+        if not queue:
+            raise ValueError("当前播放队列为空")
+        try:
+            current = int(queue_data.get("index", -1))
+        except (TypeError, ValueError):
+            current = -1
+        step = 1 if action == "next" else -1
+        tried = []
+        skipped = []
+        for offset in range(1, len(queue) + 1):
+            index = (current + step * offset) % len(queue)
+            track_id = queue[index].get("id")
+            if not track_id:
+                continue
+            tried.append(track_id)
+            request = urllib.request.Request(
+                base + "/api/play-track",
+                data=json.dumps({"id": track_id}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "X-Lianxin-Bridge": "1"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    response.read()
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    state = self.music_state()
+                    current_id = str((state.get("currentTrack") or {}).get("id") or "")
+                    if state.get("active") and (current_id == str(track_id) or state.get("name") == queue[index].get("name")):
+                        state["skippedTracks"] = max(0, len(tried) - 1)
+                        state["skippedTrackIds"] = skipped
+                        return state
+                    time.sleep(0.2)
+            except Exception as exc:
+                skipped.append({
+                    "id": str(track_id),
+                    "title": queue[index].get("name") or "未知歌曲",
+                    "reason": "unavailable",
+                })
+                bridge_log.log("网易云", f"跳过不可播放歌曲 {track_id}: {exc}")
+        raise ValueError(f"未找到可播放的歌曲，已尝试 {len(tried)} 首")
 
     def voice_state(self) -> dict:
         with self._voice_lock:
@@ -2203,6 +2432,12 @@ class LianxinBridge:
         from config import get_user_name
         from gui.achievement.service import AchievementService
         state = AchievementService().state()
+        # AchievementService projects closed presence segments. Include the
+        # current API session immediately so the card does not wait for exit.
+        live_seconds = self._accompany_stats.get_current_session_seconds()
+        metrics = state.setdefault("metrics", {})
+        metrics["today_seconds"] = int(metrics.get("today_seconds", 0) or 0) + live_seconds
+        metrics["seconds"] = int(metrics.get("seconds", 0) or 0) + live_seconds
         state["user_name"] = get_user_name()
         return state
 
@@ -3086,6 +3321,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"error": "wallpaper not found"}, 404)
             if path == "/api/music/state":
                 return self._send(bridge.music_state())
+            if path == "/api/music/playlists":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.music_playlists(int((query.get("offset") or [0])[0]), int((query.get("limit") or [24])[0])))
+            if path == "/api/music/playlist":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.music_playlist((query.get("id") or [""])[0]))
             if path == "/api/music/stats":
                 return self._send(bridge.music_stats())
             if path == "/api/music/events":
@@ -3235,6 +3476,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.save_settings_panel(body))
             if path == "/api/music/control":
                 return self._send(bridge.music_control(str(body.get("action", "")), body))
+            if path == "/api/music/play-playlist":
+                return self._send(bridge.music_play_playlist(str(body.get("id", ""))))
             if path == "/api/music/feedback-settings":
                 return self._send(bridge.save_music_feedback_settings(body))
             if path == "/api/music/settings":

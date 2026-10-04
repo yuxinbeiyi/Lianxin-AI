@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { Disc3, ExternalLink, ListMusic, Pause, Play, Power, Repeat, Repeat1, Settings2, Shuffle, SkipBack, SkipForward, Volume2, X } from "lucide-react";
 import { lianxinApi } from "../services/lianxinApi";
 
-type MusicTrack = { id?: string; title?: string; artist?: string; duration?: number; index?: number };
+type MusicTrack = { id?: string; title?: string; artist?: string; duration?: number; index?: number; coverUrl?: string };
 type LyricLine = { time?: number; text?: string };
 type MusicState = {
   active?: boolean; playing?: boolean; paused?: boolean; name?: string; artist?: string; album?: string;
@@ -16,6 +16,8 @@ type SpaceSettingsData = {
 };
 type FeedbackSettings = { enabled: boolean; delaySeconds: number; minimumListenSeconds: number; cooldownSeconds: number; autoSpeak: boolean; saveToChat: boolean };
 type MusicStats = { total_seconds: number; total_hours: number; most_played: { name: string; seconds: number } | null };
+type UserPlaylist = { id: string; name: string; trackCount?: number; creator?: string; coverUrl?: string };
+type PlaylistDetail = { id: string; name: string; tracks?: Array<{ id: string; name?: string; artist?: string; album?: string; durationMs?: number; coverUrl?: string }> };
 
 const LYRIC_DEPTH = [
   { opacity: 1, scale: 1, blur: 0 },
@@ -32,8 +34,8 @@ function fmt(sec?: number): string {
 
 const API_ORIGIN = "http://127.0.0.1:8766";
 
-export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; errorMsg?: string; onDismissError?: () => void }) {
-  const [tab, setTab] = useState<"queue" | "lyrics" | "feedback" | "stats">("queue");
+export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; onRefresh?: () => void; errorMsg?: string; onDismissError?: () => void }) {
+  const [tab, setTab] = useState<"queue" | "lyrics" | "playlists" | "feedback" | "stats">("queue");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [spaceData, setSpaceData] = useState<SpaceSettingsData | null>(null);
   const [wallpaper, setWallpaper] = useState("default");
@@ -47,10 +49,17 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
   const [stats, setStats] = useState<MusicStats | null>(null);
   const [lastFeedback, setLastFeedback] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState("idle");
+  const [playlists, setPlaylists] = useState<UserPlaylist[]>([]);
+  const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<PlaylistDetail | null>(null);
+  const [playlistDetailLoading, setPlaylistDetailLoading] = useState(false);
+  const [playlistPlayLoading, setPlaylistPlayLoading] = useState(false);
+  const [playlistError, setPlaylistError] = useState("");
   const [killArmed, setKillArmed] = useState(false);
   const [seekDrag, setSeekDrag] = useState<number | null>(null);
   const [seekConfirm, setSeekConfirm] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
+  const [coverFailed, setCoverFailed] = useState(false);
   const killTimerRef = useRef<number | undefined>(undefined);
   const lyricBoxRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -65,6 +74,12 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
   const volume = Math.round(music.volume ?? 80);
   const mode = music.mode === "single" ? "single" : music.mode === "shuffle" ? "shuffle" : "sequence";
   const hasLyrics = Boolean(music.lyrics && music.lyrics.length > 0);
+  const currentQueueCover = music.current_index !== undefined && music.current_index >= 0
+    ? music.playlist?.[music.current_index]?.coverUrl
+    : undefined;
+  const vinylCover = music.coverUrl || currentQueueCover;
+
+  useEffect(() => { setCoverFailed(false); }, [vinylCover]);
 
   const activeLyricIndex = (music.lyrics ?? []).reduce((acc, line, index) => {
     return (line.time ?? 0) <= (music.progress ?? 0) ? index : acc;
@@ -84,6 +99,17 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
       .catch(() => undefined);
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    if (tab !== "playlists" || playlists.length) return;
+    setPlaylistLoading(true);
+    lianxinApi.musicPlaylists().then((data) => setPlaylists(data.playlists ?? [])).catch(() => undefined).finally(() => setPlaylistLoading(false));
+  }, [tab, playlists.length]);
+
+  const loadPlaylists = () => {
+    setPlaylistLoading(true);
+    lianxinApi.musicPlaylists().then((data) => setPlaylists(data.playlists ?? [])).catch(() => undefined).finally(() => setPlaylistLoading(false));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -332,7 +358,7 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
             <div className="music-vinyl-grooves" />
             <div className="music-vinyl-sheen" />
             <div className="music-vinyl-cover">
-              {music.coverUrl ? <img src={music.coverUrl} alt={"封面"} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} /> : <Disc3 size={40} />}
+              {vinylCover && !coverFailed ? <img src={vinylCover} alt={"封面"} onError={() => setCoverFailed(true)} /> : <Disc3 size={40} />}
             </div>
             <div className="music-vinyl-hub" />
           </div>
@@ -383,6 +409,7 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
           <button className={`music-panel-tab ${tab === "lyrics" ? "is-active" : ""}`} onClick={() => setTab("lyrics")}><Disc3 size={15} />{"歌词"}</button>
           <button className={`music-panel-tab ${tab === "feedback" ? "is-active" : ""}`} onClick={() => setTab("feedback")}><Disc3 size={15} />{"听歌反馈"}</button>
           <button className={`music-panel-tab ${tab === "stats" ? "is-active" : ""}`} onClick={() => setTab("stats")}><ListMusic size={15} />{"统计"}</button>
+          <button className={`music-panel-tab ${tab === "playlists" ? "is-active" : ""}`} onClick={() => setTab("playlists")}><ListMusic size={15} />{"我的歌单"}</button>
         </div>
         {tab === "queue" ? (
           <div className="music-queue">
@@ -411,9 +438,18 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
               );
             }) : <div className="music-empty">{music.instrumental ? "纯音乐无声，莲心将与你一起聆听" : "暂无歌词"}</div>}
           </div>
+        ) : tab === "playlists" ? (
+          <div className="music-queue">
+            {!selectedPlaylist ? <button className="music-btn music-btn-primary" onClick={loadPlaylists} disabled={playlistLoading}>{playlistLoading ? "加载中..." : "加载歌单"}</button> : null}
+            {selectedPlaylist ? <>
+              <div className="music-feedback-panel"><p>{selectedPlaylist.name}</p><button className="music-btn music-btn-primary" disabled={playlistPlayLoading} onClick={() => { setPlaylistPlayLoading(true); setPlaylistError(""); lianxinApi.musicPlayPlaylist(selectedPlaylist.id).then(() => onRefresh?.()).catch((error) => setPlaylistError(String(error?.message || "歌单播放失败"))).finally(() => setPlaylistPlayLoading(false)); }}>{playlistPlayLoading ? "正在加载播放队列..." : "播放此歌单"}</button>{playlistError ? <p className="music-error-text">{playlistError}</p> : null}</div>
+              {(selectedPlaylist.tracks ?? []).map((track, index) => <div className="music-queue-item" key={`${track.id}-${index}`}><span className="music-queue-index">{String(index + 1).padStart(2, "0")}</span><span className="music-queue-copy"><strong>{track.name || "未知歌曲"}</strong><em>{track.artist || "未知歌手"}</em></span><span className="music-track-actions"><button className="music-btn music-btn-small" title="下一首播放" onClick={() => onControl("queue-insert-next", { track })}>下一首</button><button className="music-btn music-btn-small" title="加入播放队列" onClick={() => onControl("queue-append", { track })}>加入</button></span></div>)}
+              <button className="music-btn" onClick={() => setSelectedPlaylist(null)}>返回歌单列表</button>
+            </> : playlistLoading ? <div className="music-empty">正在加载歌单...</div> : playlists.length ? playlists.map((item) => <button className="music-queue-item" key={item.id} onClick={() => { setPlaylistDetailLoading(true); lianxinApi.musicPlaylist(item.id).then((data) => setSelectedPlaylist(data.playlist ?? { id: item.id, name: item.name, tracks: data.tracks ?? [] })).catch(() => undefined).finally(() => setPlaylistDetailLoading(false)); }}><span className="music-queue-copy"><strong>{item.name}</strong><em>{playlistDetailLoading ? "正在加载详情..." : `${item.trackCount ?? 0} 首歌曲${item.creator ? ` · ${item.creator}` : ""}`}</em></span></button>) : <div className="music-empty">暂无歌单或网易云尚未登录，请点击“加载歌单”重试</div>}
+          </div>
         ) : tab === "feedback" ? (
           <div className="music-feedback-panel">
-            <div className="music-empty">{feedbackSettings?.enabled ? `听歌反馈：${feedbackStatus === "waiting" ? "等待歌曲稳定" : feedbackStatus === "analyzing" ? "正在分析" : feedbackStatus === "busy" ? "主聊天处理中" : feedbackStatus === "ready" ? "本首已反馈" : feedbackStatus === "skipped" ? "本轮已跳过" : "已启用"}` : "听歌反馈已停用"}</div>
+            <div className="music-empty">{feedbackSettings?.enabled ? `听歌反馈：${feedbackStatus === "waiting" ? "莲心正在听这首歌" : feedbackStatus === "analyzing" ? "莲心正在整理对这首歌的感受" : feedbackStatus === "busy" ? "莲心正在回复你的消息" : feedbackStatus === "ready" ? `莲心对《${music.name || "这首歌"}》留下了评论` : feedbackStatus === "skipped" ? "这首歌播放时间较短，莲心暂时没有发表评论" : "已启用"}` : "听歌反馈已停用"}</div>
             <p>{lastFeedback || "等待下一次听歌反馈"}</p>
           </div>
         ) : (
