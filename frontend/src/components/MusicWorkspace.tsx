@@ -14,6 +14,8 @@ type SpaceSettingsData = {
   wallpapers: SpaceWallpaper[];
   settings: { wallpaper: string; wallpaper_opacity: number; content_mask_opacity: number; fit: string };
 };
+type FeedbackSettings = { enabled: boolean; delaySeconds: number; minimumListenSeconds: number; cooldownSeconds: number; autoSpeak: boolean; saveToChat: boolean };
+type MusicStats = { total_seconds: number; total_hours: number; most_played: { name: string; seconds: number } | null };
 
 const LYRIC_DEPTH = [
   { opacity: 1, scale: 1, blur: 0 },
@@ -31,7 +33,7 @@ function fmt(sec?: number): string {
 const API_ORIGIN = "http://127.0.0.1:8766";
 
 export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; errorMsg?: string; onDismissError?: () => void }) {
-  const [tab, setTab] = useState<"queue" | "lyrics">("queue");
+  const [tab, setTab] = useState<"queue" | "lyrics" | "feedback" | "stats">("queue");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [spaceData, setSpaceData] = useState<SpaceSettingsData | null>(null);
   const [wallpaper, setWallpaper] = useState("default");
@@ -41,6 +43,10 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
   const [settingsMsg, setSettingsMsg] = useState("");
   const [settingsError, setSettingsError] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [feedbackSettings, setFeedbackSettings] = useState<FeedbackSettings | null>(null);
+  const [stats, setStats] = useState<MusicStats | null>(null);
+  const [lastFeedback, setLastFeedback] = useState("");
+  const [feedbackStatus, setFeedbackStatus] = useState("idle");
   const [killArmed, setKillArmed] = useState(false);
   const [seekDrag, setSeekDrag] = useState<number | null>(null);
   const [seekConfirm, setSeekConfirm] = useState<number | null>(null);
@@ -77,6 +83,29 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
       })
       .catch(() => undefined);
     return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    let cursor = 0;
+    const poll = async () => {
+      try {
+        const [settings, stat] = await Promise.all([lianxinApi.musicFeedbackSettings(), lianxinApi.musicStats()]);
+        if (!alive) return;
+        setFeedbackSettings(settings);
+        setStats(stat);
+        const events = await lianxinApi.musicEvents(cursor);
+        if (!alive) return;
+        cursor = events.latest;
+        const latest = [...events.items].reverse().find((event) => event.type === "music.feedback_ready" && event.content);
+        if (latest?.content) setLastFeedback(latest.content);
+        const status = [...events.items].reverse().find((event) => event.status);
+        if (status?.status) setFeedbackStatus(status.status);
+      } catch { /* bridge may be offline */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => { alive = false; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -276,12 +305,15 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
     setSettingsSaving(true);
     setSettingsMsg("");
     setSettingsError(false);
-    lianxinApi.saveMusicSpaceSettings({
+    Promise.all([
+      lianxinApi.saveMusicSpaceSettings({
       wallpaper,
       wallpaper_opacity: wallpaperOpacity / 100,
       content_mask_opacity: maskOpacity / 100,
       fit,
-    })
+      }),
+      feedbackSettings ? lianxinApi.saveMusicFeedbackSettings(feedbackSettings) : Promise.resolve(null),
+    ])
       .then(() => { setSettingsMsg("已保存"); setSettingsSaving(false); })
       .catch(() => { setSettingsMsg("保存失败"); setSettingsError(true); setSettingsSaving(false); });
   };
@@ -349,6 +381,8 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
         <div className="music-panel-tabs">
           <button className={`music-panel-tab ${tab === "queue" ? "is-active" : ""}`} onClick={() => setTab("queue")}><ListMusic size={15} />{"播放队列"}</button>
           <button className={`music-panel-tab ${tab === "lyrics" ? "is-active" : ""}`} onClick={() => setTab("lyrics")}><Disc3 size={15} />{"歌词"}</button>
+          <button className={`music-panel-tab ${tab === "feedback" ? "is-active" : ""}`} onClick={() => setTab("feedback")}><Disc3 size={15} />{"听歌反馈"}</button>
+          <button className={`music-panel-tab ${tab === "stats" ? "is-active" : ""}`} onClick={() => setTab("stats")}><ListMusic size={15} />{"统计"}</button>
         </div>
         {tab === "queue" ? (
           <div className="music-queue">
@@ -360,7 +394,7 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
               </button>
             )) : <div className="music-empty">{"当前没有播放列表，请在 Web 播放器中添加歌曲"}</div>}
           </div>
-        ) : (
+        ) : tab === "lyrics" ? (
           <div className="music-lyrics music-lyrics-waterfall" ref={lyricBoxRef}>
             <div className="music-lyric-track">
               <span className="music-lyric-track-dot" style={{ top: `${hasLyrics ? ((activeLyricIndex + 0.5) / (music.lyrics?.length || 1)) * 100 : 0}%` }} />
@@ -376,6 +410,17 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
                 </p>
               );
             }) : <div className="music-empty">{music.instrumental ? "纯音乐无声，莲心将与你一起聆听" : "暂无歌词"}</div>}
+          </div>
+        ) : tab === "feedback" ? (
+          <div className="music-feedback-panel">
+            <div className="music-empty">{feedbackSettings?.enabled ? `听歌反馈：${feedbackStatus === "waiting" ? "等待歌曲稳定" : feedbackStatus === "analyzing" ? "正在分析" : feedbackStatus === "busy" ? "主聊天处理中" : feedbackStatus === "ready" ? "本首已反馈" : feedbackStatus === "skipped" ? "本轮已跳过" : "已启用"}` : "听歌反馈已停用"}</div>
+            <p>{lastFeedback || "等待下一次听歌反馈"}</p>
+          </div>
+        ) : (
+          <div className="music-feedback-panel">
+            <p>累计听歌：{(stats?.total_hours ?? 0).toFixed(1)} 小时</p>
+            <p>最常听：{stats?.most_played?.name || "暂无记录"}</p>
+            <p>累计时长：{Math.floor((stats?.most_played?.seconds ?? 0) / 60)} 分钟</p>
           </div>
         )}
       </div>
@@ -416,6 +461,12 @@ export function MusicWorkspace({ music, onControl, errorMsg, onDismissError }: {
                   <option value="contain">{"完整显示"}</option>
                 </select>
               </label>
+              <div className="music-settings-block">
+                <span className="music-settings-label">{"听歌反馈"}</span>
+                <label className="music-settings-row"><span>{"启用反馈"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.enabled)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, enabled: e.target.checked } : current)} /></label>
+                <label className="music-settings-row"><span>{"自动朗读"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.autoSpeak)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, autoSpeak: e.target.checked } : current)} /></label>
+                <label className="music-settings-row"><span>{"写入聊天记录"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.saveToChat)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, saveToChat: e.target.checked } : current)} /></label>
+              </div>
             </div>
             <div className="music-settings-foot">
               <span className={`music-settings-msg ${settingsError ? "is-error" : ""}`}>{settingsMsg}</span>

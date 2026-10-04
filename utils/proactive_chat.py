@@ -81,6 +81,11 @@ class ProactiveChatScheduler:
         return {
             "desktop_enabled": False,
             "music_feedback_enabled": True,
+            "music_feedback_delay_seconds": 15,
+            "music_feedback_min_seconds": 10,
+            "music_feedback_cooldown_seconds": 120,
+            "music_feedback_auto_speak": False,
+            "music_feedback_save_to_chat": True,
             "weights": list(_DEFAULT_WEIGHTS),           # 24 个整数 0~10
             "frequency": 3,                               # 1~15
             "min_interval_minutes": DEFAULT_MIN_INTERVAL_MINUTES,

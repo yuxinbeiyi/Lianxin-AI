@@ -5,6 +5,7 @@ MainWindow：莲心AI 主窗口（Phase 4 — 含语音输入/输出）
 import webbrowser
 import os
 import ctypes
+import logging
 from datetime import datetime
 from ctypes import wintypes
 from typing import Optional
@@ -18,6 +19,8 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QKeySequence
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from brain.agent import AgentCore
 from utils.emotion_manager import parse_emotion_tag as _strip_emotion_tag
 from voice.listener import VoiceListener
@@ -1117,6 +1120,37 @@ class MainWindow(QMainWindow):
 
         # init volume clamp (actual volume is managed by 8765)
         self._global_settings.music_volume = max(0.0, min(1.0, float(self._global_settings.music_volume)))
+        try:
+            from brain.local_music_backend import LocalMusicBackend
+            from brain.music_service import get_music_service
+            service = get_music_service()
+            if service is not None:
+                service.register_local_backend(LocalMusicBackend(
+                    self._music_box_state,
+                    self._control_local_music_backend,
+                ))
+        except Exception as exc:
+            logger.debug("local music backend registration skipped: %s", exc)
+
+    def _control_local_music_backend(self, action: str, payload: dict) -> dict:
+        actions = {
+            "play": self._on_music_play_pause,
+            "pause": self._on_music_play_pause,
+            "toggle": self._on_music_play_pause,
+            "next": self._next_track,
+            "previous": self._prev_track,
+            "prev": self._prev_track,
+            "loop": self._on_loop_mode_clicked,
+        }
+        if action == "seek":
+            self._seek_to_seconds(float(payload.get("position", 0)))
+        elif action == "volume":
+            self._on_music_volume_changed(int(float(payload.get("volume", 0.5)) * 100))
+        elif action in actions:
+            actions[action]()
+        else:
+            raise ValueError(f"unsupported local music action: {action}")
+        return self._music_box_state()
         
     def _open_note_dialog(self):
         play_sound("MemoBook.mp3")

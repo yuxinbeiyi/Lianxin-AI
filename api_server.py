@@ -572,6 +572,9 @@ class LianxinBridge:
         self._voice = None
         self._voice_lock = threading.RLock()
         self._voice_events = deque(maxlen=100)
+        self._music_events = deque(maxlen=200)
+        self._music_watcher = None
+        self._music_watcher_lock = threading.RLock()
         self._voice_input = None
         self._proactive = None
         self._proactive_runtime = None
@@ -588,6 +591,8 @@ class LianxinBridge:
         self._netease_spawn_lock = threading.Lock()
         self._netease_proc = None
         self._watched_song = None
+        from brain.music_service import MusicService
+        self.music_service = MusicService(self)
         self._study_room_bridge = None
         self._time_capsule_bridge = None
         self._study_room_lock = threading.RLock()
@@ -1473,7 +1478,16 @@ class LianxinBridge:
                     self._watched_song = _current
             except Exception:
                 pass
+            current_track = {
+                "id": playback.get("id") or playback.get("songId") or "",
+                "title": playback.get("name") or "",
+                "artist": playback.get("artist") or "",
+                "album": playback.get("album") or "",
+            }
             return {
+                "serviceOnline": True, "loggedIn": status.get("loggedIn"),
+                "queueAvailable": bool(playlist), "currentTrack": current_track,
+                "error": "", "updatedAt": time.time(),
                 "active": bool(st.get("playing")) and not bool(st.get("paused")),
                 "playing": bool(st.get("playing")), "paused": bool(st.get("paused")),
                 "name": playback.get("name") or "", "title": playback.get("name") or "",
@@ -1498,10 +1512,29 @@ class LianxinBridge:
         for path in candidates:
             try:
                 if path.exists():
-                    return json.loads(path.read_text(encoding="utf-8"))
+                    return self._normalize_music_state(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError, json.JSONDecodeError):
                 pass
-        return {"active": False}
+        return self._normalize_music_state({"active": False, "serviceOnline": False, "error": "播放器服务离线"})
+
+    @staticmethod
+    def _normalize_music_state(state: dict) -> dict:
+        result = dict(state or {})
+        result.setdefault("serviceOnline", bool(result.get("source")))
+        result.setdefault("loggedIn", None)
+        result.setdefault("playlist", [])
+        result.setdefault("queueAvailable", bool(result["playlist"]))
+        result.setdefault("error", "")
+        result.setdefault("updatedAt", time.time())
+        result.setdefault("name", result.get("title") or "")
+        result.setdefault("title", result.get("name") or "")
+        result.setdefault("currentTrack", {
+            "id": result.get("id") or result.get("songId") or "",
+            "title": result.get("name") or result.get("title") or "",
+            "artist": result.get("artist") or "",
+            "album": result.get("album") or "",
+        })
+        return result
 
     def _netease_online(self) -> bool:
         import urllib.request
@@ -1549,6 +1582,110 @@ class LianxinBridge:
 
     def music_ensure(self) -> dict:
         return {"online": self.ensure_netease_online(), "url": "http://127.0.0.1:8765/"}
+
+    def music_stats(self) -> dict:
+        return self.music_service.stats()
+
+    def start_music_watcher(self) -> dict:
+        with self._music_watcher_lock:
+            if self._music_watcher is not None:
+                return {"running": True}
+            from brain.music_watcher import MusicWatcher
+            watcher = MusicWatcher(
+                state_provider=self.music_service.state,
+                on_feedback=self._on_music_feedback,
+                on_status=self._on_music_status,
+                enabled_check=lambda: bool(self.get_proactive_scheduler().music_feedback_enabled),
+                feedback_delay=float(self.get_proactive_scheduler()._settings.get("music_feedback_delay_seconds", 15)),
+                listen_min_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_min_seconds", 10)),
+                min_interval_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_cooldown_seconds", 120)),
+            )
+            watcher.start()
+            self._music_watcher = watcher
+            return {"running": True}
+
+    def stop_music_watcher(self) -> dict:
+        with self._music_watcher_lock:
+            watcher = self._music_watcher
+            self._music_watcher = None
+        if watcher is not None:
+            watcher.stop()
+        return {"running": False}
+
+    def _on_music_feedback(self, text: str) -> None:
+        content = str(text or "").strip()
+        if not content:
+            return
+        scheduler = self.get_proactive_scheduler()
+        settings = scheduler._settings
+        message_id = None
+        if bool(settings.get("music_feedback_save_to_chat", True)):
+            try:
+                agent = self.agent()
+                message_id = agent.get_history_manager().save_message(
+                    agent._session_id, "assistant", content,
+                )
+            except Exception as exc:
+                bridge_log.log("闊充箰", f"听歌反馈写入会话失败: {exc}")
+        if bool(settings.get("music_feedback_auto_speak", False)):
+            threading.Thread(target=self._safe_speak, args=(self, content), daemon=True).start()
+        event = {
+            "id": time.time_ns(),
+            "type": "music.feedback_ready",
+            "content": content,
+            "messageId": message_id,
+        }
+        with self._music_watcher_lock:
+            self._music_events.append(event)
+
+    def _on_music_status(self, status: str, state: dict) -> None:
+        event = {
+            "id": time.time_ns(),
+            "type": f"music.feedback_{status}",
+            "status": status,
+            "track": state.get("name") or state.get("title") or "",
+        }
+        with self._music_watcher_lock:
+            self._music_events.append(event)
+
+    def music_events(self, after: int = 0) -> dict:
+        with self._music_watcher_lock:
+            events = [event for event in self._music_events if int(event["id"]) > int(after)]
+        return {"items": events, "latest": events[-1]["id"] if events else int(after)}
+
+    def music_feedback_settings(self) -> dict:
+        scheduler = self.get_proactive_scheduler()
+        return {
+            "enabled": bool(scheduler.music_feedback_enabled),
+            "delaySeconds": int(scheduler._settings.get("music_feedback_delay_seconds", 15)),
+            "minimumListenSeconds": int(scheduler._settings.get("music_feedback_min_seconds", 10)),
+            "cooldownSeconds": int(scheduler._settings.get("music_feedback_cooldown_seconds", 120)),
+            "autoSpeak": bool(scheduler._settings.get("music_feedback_auto_speak", False)),
+            "saveToChat": bool(scheduler._settings.get("music_feedback_save_to_chat", True)),
+        }
+
+    def save_music_feedback_settings(self, payload: dict) -> dict:
+        scheduler = self.get_proactive_scheduler()
+        if "enabled" in payload:
+            scheduler.music_feedback_enabled = bool(payload["enabled"])
+        mapping = {
+            "delaySeconds": ("music_feedback_delay_seconds", 3, 300),
+            "minimumListenSeconds": ("music_feedback_min_seconds", 1, 600),
+            "cooldownSeconds": ("music_feedback_cooldown_seconds", 10, 3600),
+        }
+        for key, (target, lower, upper) in mapping.items():
+            if key in payload:
+                scheduler._settings[target] = max(lower, min(upper, int(payload[key])))
+        for key, target in (("autoSpeak", "music_feedback_auto_speak"), ("saveToChat", "music_feedback_save_to_chat")):
+            if key in payload:
+                scheduler._settings[target] = bool(payload[key])
+        scheduler.save_settings()
+        with self._music_watcher_lock:
+            watcher = self._music_watcher
+        if watcher is not None:
+            self.stop_music_watcher()
+            self.start_music_watcher()
+        return self.music_feedback_settings()
 
     def open_web_player(self) -> dict:
         """确保网易云 Web 播放器在线，并在系统默认浏览器中打开 8765 页面。"""
@@ -2949,6 +3086,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"error": "wallpaper not found"}, 404)
             if path == "/api/music/state":
                 return self._send(bridge.music_state())
+            if path == "/api/music/stats":
+                return self._send(bridge.music_stats())
+            if path == "/api/music/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.music_events(int((query.get("after") or [0])[0])))
+            if path == "/api/music/feedback-settings":
+                return self._send(bridge.music_feedback_settings())
+            if path == "/api/music/settings":
+                return self._send(bridge.music_feedback_settings())
             if path == "/api/music/spectrum":
                 from utils.spectrum import ensure_started, snapshot
                 ensure_started()
@@ -3089,6 +3235,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.save_settings_panel(body))
             if path == "/api/music/control":
                 return self._send(bridge.music_control(str(body.get("action", "")), body))
+            if path == "/api/music/feedback-settings":
+                return self._send(bridge.save_music_feedback_settings(body))
+            if path == "/api/music/settings":
+                return self._send(bridge.save_music_feedback_settings(body))
             if path == "/api/open-player":
                 return self._send(bridge.open_web_player())
             if path == "/api/voice/start":
@@ -3297,6 +3447,7 @@ def main():
         bridge_log.log("启动", f"MCP 初始化失败: {exc}")
     try:
         bridge.start_proactive_runtime()
+        bridge.start_music_watcher()
         bridge_log.log("主动", "主动聊天运行时已启动")
     except Exception as exc:
         bridge_log.log("主动", f"主动聊天运行时启动失败: {exc}")
@@ -3325,6 +3476,10 @@ def main():
             pass
         try:
             bridge.stop_proactive_runtime()
+        except Exception:
+            pass
+        try:
+            bridge.stop_music_watcher()
         except Exception:
             pass
         try:

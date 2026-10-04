@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+from utils.paths import get_user_data_dir
 
 logger = logging.getLogger("MusicWatcher")
 
@@ -33,6 +34,10 @@ _MUSIC_SYSTEM = """你是莲心，正和用户一起听歌。根据当前歌曲�
 
 
 class MusicWatcher:
+    _instance_lock = threading.RLock()
+    _active_instance = None
+    _process_lock_handle = None
+
     def __init__(
         self,
         state_file: Path = None,
@@ -42,6 +47,8 @@ class MusicWatcher:
         listen_min_seconds: float = 10.0,
         min_interval_seconds: float = 120.0,
         enabled_check: Callable[[], bool] = None,
+        state_provider: Callable[[], Optional[dict]] = None,
+        on_status: Callable[[str, dict], None] = None,
     ):
         self._state_file = Path(state_file or _DEFAULT_STATE_FILE)
         self._on_feedback = on_feedback
@@ -50,6 +57,9 @@ class MusicWatcher:
         self._listen_min = listen_min_seconds
         self._min_interval = min_interval_seconds
         self._enabled_check = enabled_check or (lambda: True)
+        self._state_provider = state_provider
+        self._on_status = on_status
+        self._status = "idle"
         self._last_key: Optional[tuple] = None
         self._pending_key: Optional[tuple] = None
         self._pending_since: float = 0.0
@@ -63,6 +73,14 @@ class MusicWatcher:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        with self._instance_lock:
+            if self._active_instance is not None and self._active_instance is not self:
+                logger.info("[MusicWatcher] 已有实例运行，跳过重复启动")
+                return
+            if not self._acquire_process_lock():
+                logger.info("[MusicWatcher] 其他进程已有实例运行，跳过重复启动")
+                return
+            self._active_instance = self
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop, name="music-watcher", daemon=True
@@ -73,6 +91,51 @@ class MusicWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._instance_lock:
+            if self._active_instance is self:
+                self._active_instance = None
+            self._release_process_lock()
+
+    @classmethod
+    def _acquire_process_lock(cls) -> bool:
+        if cls._process_lock_handle is not None:
+            return True
+        try:
+            import msvcrt
+            path = get_user_data_dir() / "music_watcher.lock"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a+b")
+            handle.seek(0)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                handle.close()
+                return False
+            cls._process_lock_handle = handle
+            return True
+        except Exception:
+            return True
+
+    @classmethod
+    def _release_process_lock(cls) -> None:
+        handle = cls._process_lock_handle
+        cls._process_lock_handle = None
+        if handle is None:
+            return
+        try:
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -93,12 +156,14 @@ class MusicWatcher:
                 # 连续切歌计数：上一首从未被评论过 => 被用户跳过
                 if prev_key is not None and prev_key not in self._reported:
                     self._consecutive_skips += 1
+                    self._emit_status("skipped", state)
                 else:
                     self._consecutive_skips = 0
                 # 新歌统一进入"试听门槛"流程：切歌即取消上一首的 pending（跳过的歌不评论）
                 self._pending_key = key
                 self._pending_since = now
                 self._song_started_at = now
+                self._emit_status("waiting", state)
                 print("[MusicWatcher] 检测到新歌: " + str(state.get("name")) + " id=" + str(state.get("id")))
             if key in self._reported:
                 self._pending_key = None
@@ -108,27 +173,61 @@ class MusicWatcher:
                     and now - self._last_feedback_at >= self._min_interval
                     and self._enabled_check()):
                 self._pending_key = None
+                self._emit_status("analyzing", state)
                 self._fire(state, rapid_skips=self._consecutive_skips)
         elif not key:
             self._last_key = None
             self._pending_key = None
+            self._emit_status("idle", state or {})
+
+    def _emit_status(self, status: str, state: dict) -> None:
+        if status == self._status:
+            return
+        self._status = status
+        if self._on_status:
+            try:
+                self._on_status(status, dict(state or {}))
+            except Exception as exc:
+                logger.debug("[MusicWatcher] 状态回调失败: %s", exc)
 
     def _key_of(self, state: Optional[dict]) -> Optional[tuple]:
         if not state:
             return None
-        sid = state.get("id")
+        sid = state.get("id") or state.get("songId") or state.get("trackId")
+        if not sid:
+            sid = state.get("name") or state.get("title")
         if not sid:
             return None
         return (str(sid), bool(state.get("active")))
 
     def _read_state(self) -> Optional[dict]:
+        if self._state_provider is not None:
+            try:
+                state = self._state_provider()
+                if state and (state.get("active") or state.get("source") or state.get("playing")):
+                    return self._normalize_state(state)
+            except Exception as exc:
+                logger.debug("[MusicWatcher] 状态提供器读取失败，回退状态文件: %s", exc)
         try:
             if not self._state_file.exists():
                 return None
-            return json.loads(self._state_file.read_text(encoding="utf-8"))
+            return self._normalize_state(json.loads(self._state_file.read_text(encoding="utf-8")))
         except Exception as exc:
             logger.warning("[MusicWatcher] 读取状态失败: %s", exc)
             return None
+
+    @staticmethod
+    def _normalize_state(state: dict) -> dict:
+        """Normalize the 8765 API state and the legacy state-file shape."""
+        result = dict(state)
+        result.setdefault("name", result.get("title") or "")
+        result.setdefault("title", result.get("name") or "")
+        result.setdefault("id", result.get("songId") or result.get("trackId") or result.get("name"))
+        result.setdefault("firstLyrics", result.get("lyrics") or [])
+        result.setdefault("wiki", {})
+        if "active" not in result:
+            result["active"] = bool(result.get("playing")) and not bool(result.get("paused"))
+        return result
 
     def _fire(self, state: dict, force: bool = False, rapid_skips: int = 0) -> None:
         # 与主对话错峰：主对话请求进行中时延后反馈，避免抢占中转站单并发。
@@ -136,6 +235,7 @@ class MusicWatcher:
         if main_request_active():
             self._pending_key = self._key_of(state)
             self._pending_since = time.time()
+            self._emit_status("busy", state)
             print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
             return
         text = self._generate_feedback(state, rapid_skips=rapid_skips)
@@ -158,6 +258,7 @@ class MusicWatcher:
             print("[MusicWatcher] 听歌反馈: " + str(text))
             if self._on_feedback:
                 self._on_feedback(text)
+            self._emit_status("ready", state)
         else:
             logger.info("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
             print("[MusicWatcher] 本轮未生成反馈，等待后续轮询")
@@ -245,6 +346,12 @@ class MusicWatcher:
                     dt = dt.replace(tzinfo=datetime.timezone.utc)
                 return max(0.0, now - dt.timestamp())
             except Exception:
+                pass
+        progress = state.get("progress")
+        if progress is not None:
+            try:
+                return max(0.0, float(progress))
+            except (TypeError, ValueError):
                 pass
         return max(0.0, now - self._song_started_at)
 

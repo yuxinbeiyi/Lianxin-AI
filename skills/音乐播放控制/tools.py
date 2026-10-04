@@ -52,6 +52,15 @@ TOOL_DEFINITIONS = [
 
 
 def _control_music(action: str) -> str:
+    service = _get_service()
+    if service is not None:
+        try:
+            mapped = {"prev": "previous", "loop": "mode"}.get(action, action)
+            payload = {"mode": "shuffle"} if action == "loop" else {}
+            result = service.control(mapped, payload)
+            return f"音乐操作已完成：{action}。当前状态：{result.get('name') or result.get('title') or '未知歌曲'}"
+        except Exception as exc:
+            return f"音乐操作失败：{exc}"
     cb = _brain_tools._music_control_callback
     if cb:
         return cb(action)
@@ -59,6 +68,12 @@ def _control_music(action: str) -> str:
 
 
 def _get_music_playlist() -> str:
+    service = _get_service()
+    if service is not None:
+        try:
+            return service.playlist_text()
+        except Exception as exc:
+            return f"读取网易云播放队列失败：{exc}"
     cb = _brain_tools._music_info_callback
     if cb:
         return cb("playlist")
@@ -66,6 +81,12 @@ def _get_music_playlist() -> str:
 
 
 def _get_music_status() -> str:
+    service = _get_service()
+    if service is not None:
+        try:
+            return service.status_text()
+        except Exception as exc:
+            return f"读取网易云播放状态失败：{exc}"
     cb = _brain_tools._music_info_callback
     if cb:
         return cb("status")
@@ -73,10 +94,24 @@ def _get_music_status() -> str:
 
 
 def _get_music_stats() -> str:
+    service = _get_service()
+    if service is not None:
+        try:
+            return service.stats_text()
+        except Exception as exc:
+            return f"读取网易云音乐统计失败：{exc}"
     cb = _brain_tools._music_info_callback
     if cb:
         return cb("stats")
     return "音乐统计未就绪。"
+
+
+def _get_service():
+    try:
+        from brain.music_service import get_music_service
+        return get_music_service()
+    except Exception:
+        return None
 
 
 TOOL_EXECUTORS = {
