@@ -52,6 +52,7 @@ class ProactiveChatScheduler:
         except (TypeError, ValueError):
             self._last_fire_time = None
         self._defer_until: datetime | None = None          # 因用户活跃而推迟到的时间
+        self._last_user_active_at: datetime | None = None  # 最近一次用户发消息的时间
         # 新建的桌面会话如果始终没有用户消息，需要在等待期后主动破冰。
         # 该状态只属于当前运行，不持久化，避免重启后误判历史会话。
         self._empty_session_started_at: datetime | None = None
@@ -664,6 +665,13 @@ class ProactiveChatScheduler:
         self._empty_session_waiting = False
         self._empty_session_started_at = None
         self._defer_until = datetime.now() + timedelta(minutes=self.user_defer_minutes)
+        self._last_user_active_at = datetime.now()
+
+    def user_active_within(self, seconds: float) -> bool:
+        """用户是否在最近 seconds 秒内发过消息（听歌反馈据此判断能不能提问）。"""
+        if self._last_user_active_at is None or seconds <= 0:
+            return False
+        return (datetime.now() - self._last_user_active_at).total_seconds() <= float(seconds)
 
     def notify_fired(self):
         """主动消息已成功发送时调用，记录时间。"""

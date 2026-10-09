@@ -30,7 +30,11 @@ except Exception:  # pragma: no cover
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
 
-PLACEHOLDER_LYRICS = {"纯音乐，请欣赏", "暂无歌词", "纯音乐", "（暂无歌词）"}
+try:
+    # 与 brain/music_lyrics 共用同一份占位歌词规则，避免前后端两套判定漂移。
+    from brain.music_lyrics import PLACEHOLDER_LYRICS
+except ImportError:  # pragma: no cover - 兼容以 brain/ 为根的直接导入
+    from music_lyrics import PLACEHOLDER_LYRICS
 
 
 def _as_int(value: Any, default: int = -1) -> int:

@@ -185,3 +185,7 @@ frontend/tsconfig.node.tsbuildinfo
 frontend/vite.config.d.ts
 frontend/vite.config.js
 frontend/dist/
+
+# 用户本地资源 / 启动日志（本地保留，不提交）
+startup_log.txt
+莲心预览图2.png

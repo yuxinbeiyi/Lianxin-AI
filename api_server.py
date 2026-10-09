@@ -1729,6 +1729,13 @@ class LianxinBridge:
             f"播放队列同步超时：期望 {len(expected_ids)} 首，实际 {len(actual_ids)} 首，歌曲顺序未确认"
         )
 
+    def _music_user_recently_active(self) -> bool:
+        """最近 5 分钟内用户是否发过消息（听歌反馈据此决定能不能提问）。"""
+        try:
+            return bool(self.get_proactive_scheduler().user_active_within(300))
+        except Exception:
+            return False
+
     def start_music_watcher(self) -> dict:
         with self._music_watcher_lock:
             if self._music_watcher is not None:
@@ -1745,6 +1752,7 @@ class LianxinBridge:
                 tracker=self.music_service.playback_tracker,
                 stats=self.music_service.stats_store,
                 song_cooldown_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_song_cooldown_seconds", 600)),
+                user_active_check=self._music_user_recently_active,
             )
             watcher.start()
             self._music_watcher = watcher

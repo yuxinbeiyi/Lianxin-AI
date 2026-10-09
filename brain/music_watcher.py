@@ -10,11 +10,14 @@
 
 import json
 import logging
+import random
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 from utils.paths import get_netease_state_file, get_user_data_dir
+from brain.music_lyrics import clean_lines, format_for_prompt, is_instrumental
 
 logger = logging.getLogger("MusicWatcher")
 
@@ -27,7 +30,26 @@ _MUSIC_SYSTEM = """你是莲心，正和用户一起听歌。根据当前歌曲�
 - 围绕歌词、曲风或歌手的某个细节聊，不要复述歌名/歌手本身，不要写成报告。
 - 禁止 AI 腔：不说"这首歌展现了""希望你喜欢""如果需要""总之"。
 - 不要说"需要帮忙吗""要不要我..."这类服务性话语。
+- 如果是纯音乐或没有可用歌词，就别谈歌词，聊编曲、乐器、氛围或情绪。
+- 默认不要写问句；只有用户刚发过消息、你们正在对话时，才可以问一句。
 - 如果这首歌没什么好说的，只回复 EMPTY。"""
+
+# 输出不合格时的纠错提示：首次不合格会带着它重试一次。
+_RETRY_HINTS = {
+    "truncated": "刚才那句说到一半就断了。重新用一句完整的话说，20~50 字，结尾要有标点。",
+    "dangling": "刚才那句没收尾。重新用一句完整的话说，20~50 字，结尾要有标点。",
+    "question": "刚才是问句，但此刻不该向用户提问。改成一句陈述句，不要出现问号。",
+}
+
+# 以这些词结尾说明话没说完（截断/断句），不要直接发出去。
+_DANGLING_RE = re.compile(
+    r"(地|得|和|跟|与|把|被|让|给|而|却|然后|而且|以及|或者|因为|所以|如果|不过|只是|"
+    r"虽然|于是|接着|比如|像|居然|竟然|简直|甚至|尤其|除了|为了|要是|万一|省得|并且|"
+    r"反正|毕竟|到底|关于|对于|随着|通过|等到|即使|哪怕)$"
+)
+
+# 问句判定：出现问号，或以"吗"收尾。
+_QUESTION_RE = re.compile(r"[?？]|吗[。！…~～]?$")
 
 
 class MusicWatcher:
@@ -50,6 +72,7 @@ class MusicWatcher:
         stats: object = None,
         song_cooldown_seconds: float = 600.0,
         on_feedback_meta: Callable[[str, dict], None] = None,
+        user_active_check: Callable[[], bool] = None,
     ):
         self._state_file = Path(state_file or _DEFAULT_STATE_FILE)
         self._on_feedback = on_feedback
@@ -72,6 +95,9 @@ class MusicWatcher:
         self._consecutive_skips: int = 0
         self._last_feedback_at: float = 0.0
         self._reported: set = set()
+        self._user_active_check = user_active_check
+        self._recent: list = []          # 最近几条反馈（曲名 + 说过的话），供下一句参考
+        self._last_template: str = ""
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -187,7 +213,8 @@ class MusicWatcher:
                     self._emit_status("cooldown", state)
                     print("[MusicWatcher] 该曲已反馈或在按曲冷却期内，跳过", flush=True)
                 else:
-                    self._emit_status("analyzing", state)
+                    # analyzing 改由 _fire 在真正发起请求前推送：原先在起跑线就推，
+                    # 界面会先显示"正在整理感受"再干等（最长 30s 超时）才出结果。
                     self._fire(state, rapid_skips=self._consecutive_skips)
         elif not key:
             self._last_key = None
@@ -238,7 +265,11 @@ class MusicWatcher:
         result.setdefault("name", result.get("title") or "")
         result.setdefault("title", result.get("name") or "")
         result.setdefault("id", result.get("songId") or result.get("trackId") or result.get("name"))
-        result.setdefault("firstLyrics", result.get("lyrics") or [])
+        # firstLyrics 一律保持"字符串列表"语义；结构化歌词走 lyric_lines，
+        # 避免把 [{"time":..,"text":..}] 直接 str() 拼进 prompt（曾导致模型朗读字典）。
+        lyric_lines = clean_lines(result.get("lyrics") or result.get("firstLyrics") or [])
+        result["lyric_lines"] = lyric_lines
+        result["firstLyrics"] = [entry["text"] for entry in lyric_lines[:4]]
         result.setdefault("wiki", {})
         if "active" not in result:
             result["active"] = bool(result.get("playing")) and not bool(result.get("paused"))
@@ -296,21 +327,17 @@ class MusicWatcher:
             self._emit_status("busy", state)
             print("[MusicWatcher] 主对话进行中，暂缓听歌反馈", flush=True)
             return
+        self._emit_status("analyzing", state)
         text = self._generate_feedback(state, rapid_skips=rapid_skips)
         if not text and force:
             # 手动切歌保底：LLM 失败/EMPTY 也保证给一句反馈，避免"反馈为空，跳过"
             name = state.get("name") or "未知歌曲"
             style = state.get("style") or ""
-            first = state.get("firstLyrics") or []
-            lyric_text = (
-                " / ".join(str(x) for x in first[:4])
-                if isinstance(first, list)
-                else str(first or "（暂无歌词）")
-            )
-            text = self._fallback_feedback(name, style, lyric_text)
+            text = self._fallback_feedback(name, style, self._is_instrumental_state(state))
         if text:
             self._last_feedback_at = time.time()
             self._reported.add(self._key_of(state))
+            self._remember_feedback(state, text)
             source, track_id = self._track_id_of(state)
             session_id = self._session_id(state)
             meta = {
@@ -347,11 +374,12 @@ class MusicWatcher:
             artist = state.get("artist") or "未知歌手"
             album = state.get("album") or ""
             style = state.get("style") or ""
-            first = state.get("firstLyrics") or []
-            if isinstance(first, list):
-                lyric_text = " / ".join(str(x) for x in first[:6])
-            else:
-                lyric_text = str(first or "（暂无歌词）")
+            now = time.time()
+            lyric_lines = self._lyric_lines_of(state)
+            instrumental = bool(state.get("instrumental")) or is_instrumental(lyric_lines)
+            position = self._playback_position(state)
+            duration = self._duration_seconds(state)
+            lyric_block = "" if instrumental else format_for_prompt(lyric_lines, position)
             wiki = state.get("wiki") or {}
             genre = ""
             if isinstance(wiki, dict):
@@ -359,7 +387,7 @@ class MusicWatcher:
                     genre = str(wiki["genre"])
                 elif isinstance(wiki.get("genres"), list):
                     genre = "、".join(str(x) for x in wiki["genres"][:3])
-            played = int(self._played_seconds(state, time.time()))
+            played = int(self._played_seconds(state, now))
             rapid_hint = ""
             if rapid_skips >= 3:
                 rapid_hint = (
@@ -385,29 +413,60 @@ class MusicWatcher:
                 snapshot=snapshot,
                 scene="proactive",
             )
+            style_line = f"\n平台标签（可能不准，不确定就别猜曲风）：{style}" if style else ""
+            progress_line = ""
+            if duration > 0:
+                ratio = max(0.0, min(100.0, position / duration * 100.0))
+                progress_line = f"\n播放进度：约{int(position)}秒 / 共{int(duration)}秒（{ratio:.0f}%）"
+            if instrumental:
+                lyric_section = "这首歌没有人声或没有可用歌词：别谈歌词内容，聊编曲、乐器、氛围或情绪。"
+            elif lyric_block:
+                lyric_section = "以下是按当前播放进度取的几句歌词（→ 标的是正在唱的那句）：\n" + lyric_block
+            else:
+                lyric_section = "这首歌暂时取不到可用歌词，不要编造歌词内容。"
             user_text = (
-                f"当前歌曲：{name}\n歌手：{artist}\n专辑：{album}\n曲风：{style}"
+                f"当前歌曲：{name}\n歌手：{artist}\n专辑：{album}"
+                + style_line
                 + (f"\n类型标签：{genre}" if genre else "")
-                + f"\n已播放：约{played}秒\n接下来几句歌词：{lyric_text}"
+                + f"\n本次已听：约{played}秒" + progress_line
+                + "\n" + lyric_section
                 + rapid_hint
             )
-            response = litellm.completion(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_text},
-                    {"role": "user", "content": user_text},
-                ],
-                api_key=api_cfg["api_key"],
-                api_base=api_cfg["base_url"],
-                temperature=0.7,
-                max_tokens=120,
-                timeout=30,
-            )
-            raw = (response.choices[0].message.content or "").strip()
-            if not raw or raw.upper() == "EMPTY":
-                logger.info("[MusicWatcher] 模型返回 EMPTY，使用保底反馈")
-                return self._fallback_feedback(name, style, lyric_text)
-            return raw
+            messages = [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text + self._history_hint(state)},
+            ]
+            allow_question = self._user_recently_active()
+            last_reason = ""
+            for attempt in (1, 2):
+                response = litellm.completion(
+                    model=model,
+                    messages=messages,
+                    api_key=api_cfg["api_key"],
+                    api_base=api_cfg["base_url"],
+                    temperature=0.7,
+                    max_tokens=200,
+                    timeout=30,
+                )
+                choice = response.choices[0]
+                raw = (choice.message.content or "").strip()
+                ok, reviewed, reason = self._review_feedback(
+                    raw, getattr(choice, "finish_reason", "") or "", allow_question,
+                )
+                if ok:
+                    return reviewed
+                last_reason = reason
+                if reason == "empty":
+                    logger.info("[MusicWatcher] 模型返回 EMPTY，使用保底反馈")
+                    break
+                if attempt == 1:
+                    logger.info("[MusicWatcher] 听歌反馈不合格(%s)，带纠错提示重试一次", reason)
+                    messages = messages + [
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": _RETRY_HINTS.get(reason, _RETRY_HINTS["dangling"])},
+                    ]
+            logger.info("[MusicWatcher] 听歌反馈不可用(%s)，改用保底反馈", last_reason or "empty")
+            return self._fallback_feedback(name, style, instrumental)
         except Exception as exc:
             logger.warning("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: %s", exc)
             print("[MusicWatcher] LLM 生成反馈失败，将在后续轮询重试: " + str(exc))
@@ -432,19 +491,128 @@ class MusicWatcher:
                 return max(0.0, now - dt.timestamp())
             except Exception:
                 pass
-        progress = state.get("progress")
-        if progress is not None:
-            try:
-                return max(0.0, float(progress))
-            except (TypeError, ValueError):
-                pass
+        # 注意：state["position"]/["progress"] 是"播放位置"而不是"已听时长"，
+        # 跳转/续播时会失真（曾出现"才十三秒"的错判），这里不再拿它兜底。
+        if self._song_started_at <= 0:
+            # watcher 刚启动、还没记录到新歌起点时不要返回 epoch 级的天文数字。
+            return 0.0
         return max(0.0, now - self._song_started_at)
 
     @staticmethod
-    def _fallback_feedback(name: str, style: str, lyric_text: str) -> str:
-        """为纯音乐或稀疏歌词保留一条简短的主动反馈。"""
-        if lyric_text and lyric_text not in {"纯音乐，请欣赏", "（暂无歌词）"}:
-            return f"《{name}》这段旋律挺有画面感，先安静听一会儿。"
-        if style:
-            return f"《{name}》的{style}很适合当下这段时间，先陪你听着。"
-        return f"《{name}》是纯音乐，旋律先替我们把气氛撑住了。"
+    def _lyric_lines_of(state: dict) -> list:
+        lines = state.get("lyric_lines")
+        if lines is None:
+            lines = clean_lines(state.get("lyrics") or state.get("firstLyrics") or [])
+        return list(lines or [])
+
+    @classmethod
+    def _is_instrumental_state(cls, state: dict) -> bool:
+        if state.get("instrumental") is not None:
+            return bool(state.get("instrumental"))
+        return is_instrumental(cls._lyric_lines_of(state))
+
+    @staticmethod
+    def _playback_position(state: dict) -> float:
+        """歌曲播放位置（秒），用来挑"即将唱到"的歌词。"""
+        for key in ("position", "progress"):
+            value = state.get(key)
+            if value is None:
+                continue
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    @staticmethod
+    def _duration_seconds(state: dict) -> float:
+        try:
+            return max(0.0, float(state.get("duration") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _user_recently_active(self) -> bool:
+        """用户是否刚跟莲心说过话（决定这条听歌反馈能不能提问）。"""
+        if self._user_active_check is None:
+            return False
+        try:
+            return bool(self._user_active_check())
+        except Exception:
+            return False
+
+    def _remember_feedback(self, state: dict, text: str) -> None:
+        """记住最近几条反馈，供下一句保持前后一致（避免自相矛盾/重复）。"""
+        _, track_id = self._track_id_of(state)
+        self._recent.append({
+            "track_id": track_id,
+            "name": state.get("name") or state.get("title") or "",
+            "text": str(text or "").strip(),
+            "at": time.time(),
+        })
+        del self._recent[:-3]
+
+    def _history_hint(self, state: dict) -> str:
+        """把最近说过的话拼成上下文：同一首别反复说，也别跟前一首矛盾。"""
+        if not self._recent:
+            return ""
+        _, track_id = self._track_id_of(state)
+        same = None
+        previous = None
+        for item in reversed(self._recent):
+            if track_id and item.get("track_id") == track_id:
+                if same is None:
+                    same = item
+            elif previous is None:
+                previous = item
+            if same is not None and previous is not None:
+                break
+        parts = []
+        if same is not None:
+            parts.append("这首歌你之前评论过：“" + same["text"] + "”。换个角度说，别重复同样的说法，也别自相矛盾。")
+        if previous is not None:
+            parts.append("你上一首在听《" + str(previous.get("name") or "") + "》，你当时说：“" + previous["text"] + "”。")
+        if not parts:
+            return ""
+        return "\n（上下文：" + " ".join(parts) + "）"
+
+    @classmethod
+    def _review_feedback(cls, raw: str, finish_reason: str, allow_question: bool) -> tuple:
+        """检查模型输出是否可用，返回 (是否合格, 文本, 不合格原因)。"""
+        text = str(raw or "").strip()
+        if not text or text.upper() == "EMPTY":
+            return False, "", "empty"
+        if str(finish_reason or "").strip().lower() == "length":
+            return False, text, "truncated"
+        if not allow_question and _QUESTION_RE.search(text):
+            return False, text, "question"
+        if _DANGLING_RE.search(text):
+            return False, text, "dangling"
+        return True, cls._cap_length(text), ""
+
+    @staticmethod
+    def _cap_length(text: str, limit: int = 140) -> str:
+        """过长的输出截到最后一个句末标点，别把半句发出去。"""
+        if len(text) <= limit:
+            return text
+        window = text[:limit]
+        cut = max(window.rfind(mark) for mark in "。！？…~～")
+        return window[:cut + 1] if cut > 0 else window
+
+    def _fallback_feedback(self, name: str, style: str, instrumental: bool = False) -> str:
+        """LLM 连续失败时的保底反馈；同一句模板不连着用两次。"""
+        if instrumental:
+            options = [
+                f"《{name}》没有词，旋律自己把气氛撑住了，我跟着听。",
+                f"《{name}》是纯器乐，{style}那点底色挺贴当下。" if style else f"《{name}》是纯器乐，我跟着听一会儿。",
+                f"《{name}》没歌词可聊，那就只听编排了，挺耐听的。",
+            ]
+        else:
+            options = [
+                f"《{name}》这段旋律挺有画面感，先安静听一会儿。",
+                f"《{name}》的{style}配着这些词，先陪你听着。" if style else f"《{name}》配着这些词，先陪你听着。",
+                f"《{name}》我先不说话，跟着听一段。",
+            ]
+        options = [opt for opt in options if opt and opt != self._last_template] or options
+        picked = random.choice(options)
+        self._last_template = picked
+        return picked

@@ -23,7 +23,7 @@ type MusicStats = {
   tracks?: MusicStatsTrack[]; recent?: MusicStatsTrack[];
 };
 type UserPlaylist = { id: string; name: string; trackCount?: number; creator?: string; coverUrl?: string };
-type PlaylistDetail = { id: string; name: string; tracks?: Array<{ id: string; name?: string; artist?: string; album?: string; durationMs?: number; coverUrl?: string }> };
+type PlaylistDetail = { id: string; name: string; creator?: string; trackCount?: number; tracks?: Array<{ id: string; name?: string; artist?: string; album?: string; durationMs?: number; coverUrl?: string }> };
 
 const LYRIC_DEPTH = [
   { opacity: 1, scale: 1, blur: 0 },
@@ -59,6 +59,7 @@ const MUSIC_SOURCE_LABEL: Record<string, string> = { netease: "网易云", local
 
 const API_ORIGIN = "http://127.0.0.1:8766";
 const MUSIC_EVENT_CURSOR_KEY = "lianxin.musicEventsCursor";
+const PLAYLIST_PAGE_SIZE = 24;
 
 export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; onRefresh?: () => void; errorMsg?: string; onDismissError?: () => void }) {
   const [tab, setTab] = useState<"queue" | "lyrics" | "playlists" | "feedback" | "stats">("queue");
@@ -81,6 +82,9 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const [playlistDetailLoading, setPlaylistDetailLoading] = useState(false);
   const [playlistPlayLoading, setPlaylistPlayLoading] = useState(false);
   const [playlistError, setPlaylistError] = useState("");
+  const [playlistPage, setPlaylistPage] = useState(0);
+  const [playlistTotal, setPlaylistTotal] = useState(0);
+  const [playlistHasMore, setPlaylistHasMore] = useState(false);
   const [killArmed, setKillArmed] = useState(false);
   const [seekDrag, setSeekDrag] = useState<number | null>(null);
   const [seekConfirm, setSeekConfirm] = useState<number | null>(null);
@@ -126,16 +130,41 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
     return () => { alive = false; };
   }, []);
 
+  const loadPlaylists = (page = 0) => {
+    setPlaylistLoading(true);
+    lianxinApi.musicPlaylists(page * PLAYLIST_PAGE_SIZE, PLAYLIST_PAGE_SIZE)
+      .then((data) => {
+        setPlaylists(data.playlists ?? []);
+        setPlaylistTotal(typeof data.total === "number" ? data.total : (data.playlists ?? []).length);
+        setPlaylistHasMore(Boolean(data.hasMore));
+        setPlaylistPage(page);
+      })
+      .catch(() => undefined)
+      .finally(() => setPlaylistLoading(false));
+  };
+
   useEffect(() => {
     if (tab !== "playlists" || playlists.length) return;
-    setPlaylistLoading(true);
-    lianxinApi.musicPlaylists().then((data) => setPlaylists(data.playlists ?? [])).catch(() => undefined).finally(() => setPlaylistLoading(false));
+    loadPlaylists(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, playlists.length]);
 
-  const loadPlaylists = () => {
-    setPlaylistLoading(true);
-    lianxinApi.musicPlaylists().then((data) => setPlaylists(data.playlists ?? [])).catch(() => undefined).finally(() => setPlaylistLoading(false));
-  };
+  const playlistPageCount = Math.max(1, Math.ceil(playlistTotal / PLAYLIST_PAGE_SIZE));
+  const playlistPageNumbers = (() => {
+    const total = playlistPageCount;
+    const current = playlistPage;
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+    const picked = new Set<number>([0, total - 1, current, current - 1, current + 1]);
+    const sorted = [...picked].filter((page) => page >= 0 && page < total).sort((a, b) => a - b);
+    const result: Array<number | "..."> = [];
+    let previous = -1;
+    for (const page of sorted) {
+      if (previous >= 0 && page - previous > 1) result.push("...");
+      result.push(page);
+      previous = page;
+    }
+    return result;
+  })();
 
   useEffect(() => {
     let alive = true;
@@ -467,12 +496,23 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
           </div>
         ) : tab === "playlists" ? (
           <div className="music-queue">
-            {!selectedPlaylist ? <button className="music-btn music-btn-primary" onClick={loadPlaylists} disabled={playlistLoading}>{playlistLoading ? "加载中..." : "加载歌单"}</button> : null}
+            <div className="music-playlist-bar">
+              <span className="music-playlist-count">{playlistTotal ? `共 ${playlistTotal} 个歌单` : "我的歌单"}</span>
+              <button className="music-btn music-btn-outline" onClick={() => loadPlaylists(playlistPage)} disabled={playlistLoading}>{playlistLoading ? "加载中..." : "刷新"}</button>
+            </div>
             {selectedPlaylist ? <>
+              {selectedPlaylist.trackCount && (selectedPlaylist.tracks?.length ?? 0) < selectedPlaylist.trackCount ? <p className="music-playlist-hint">{`共 ${selectedPlaylist.trackCount} 首，当前显示前 ${selectedPlaylist.tracks?.length ?? 0} 首`}</p> : null}
               <div className="music-feedback-panel"><p>{selectedPlaylist.name}</p><button className="music-btn music-btn-primary" disabled={playlistPlayLoading} onClick={() => { setPlaylistPlayLoading(true); setPlaylistError(""); lianxinApi.musicPlayPlaylist(selectedPlaylist.id).then(() => onRefresh?.()).catch((error) => setPlaylistError(String(error?.message || "歌单播放失败"))).finally(() => setPlaylistPlayLoading(false)); }}>{playlistPlayLoading ? "正在加载播放队列..." : "播放此歌单"}</button>{playlistError ? <p className="music-error-text">{playlistError}</p> : null}</div>
               {(selectedPlaylist.tracks ?? []).map((track, index) => <div className="music-queue-item" key={`${track.id}-${index}`}><span className="music-queue-index">{String(index + 1).padStart(2, "0")}</span><span className="music-queue-copy"><strong>{track.name || "未知歌曲"}</strong><em>{track.artist || "未知歌手"}</em></span><span className="music-track-actions"><button className="music-btn music-btn-small" title="下一首播放" onClick={() => onControl("queue-insert-next", { track })}>下一首</button><button className="music-btn music-btn-small" title="加入播放队列" onClick={() => onControl("queue-append", { track })}>加入</button></span></div>)}
               <button className="music-btn" onClick={() => setSelectedPlaylist(null)}>返回歌单列表</button>
             </> : playlistLoading ? <div className="music-empty">正在加载歌单...</div> : playlists.length ? playlists.map((item) => <button className="music-queue-item" key={item.id} onClick={() => { setPlaylistDetailLoading(true); lianxinApi.musicPlaylist(item.id).then((data) => setSelectedPlaylist(data.playlist ?? { id: item.id, name: item.name, tracks: data.tracks ?? [] })).catch(() => undefined).finally(() => setPlaylistDetailLoading(false)); }}><span className="music-queue-copy"><strong>{item.name}</strong><em>{playlistDetailLoading ? "正在加载详情..." : `${item.trackCount ?? 0} 首歌曲${item.creator ? ` · ${item.creator}` : ""}`}</em></span></button>) : <div className="music-empty">暂无歌单或网易云尚未登录，请点击“加载歌单”重试</div>}
+            {!selectedPlaylist && playlistPageCount > 1 ? (
+              <div className="music-pager">
+                <button className="music-pager-btn" disabled={playlistPage === 0 || playlistLoading} onClick={() => loadPlaylists(playlistPage - 1)}>上一页</button>
+                {playlistPageNumbers.map((item, index) => item === "..." ? <span className="music-pager-gap" key={`playlist-gap-${index}`}>…</span> : <button className={`music-pager-btn ${item === playlistPage ? "is-active" : ""}`} key={item} disabled={playlistLoading} onClick={() => loadPlaylists(Number(item))}>{Number(item) + 1}</button>)}
+                <button className="music-pager-btn" disabled={!playlistHasMore || playlistLoading} onClick={() => loadPlaylists(playlistPage + 1)}>下一页</button>
+              </div>
+            ) : null}
           </div>
         ) : tab === "feedback" ? (
           <div className="music-feedback-panel">
