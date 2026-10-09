@@ -48,8 +48,18 @@ export const lianxinApi = {
   musicState: () => request<Record<string, unknown>>("/music/state"),
   musicControl: (action: string, payload?: Record<string, unknown>) => request<Record<string, unknown>>("/music/control", { method: "POST", body: JSON.stringify({ action, ...(payload ?? {}) }) }),
   musicEnsure: () => request<{ online: boolean; url: string }>("/music/ensure"),
-  musicEvents: (after: number) => request<{ items: Array<{ id: number; type: string; content?: string; messageId?: number; status?: string; track?: string }>; latest: number }>(`/music/events?after=${after}`),
-  musicStats: () => request<{ total_seconds: number; total_hours: number; most_played: { name: string; seconds: number } | null }>("/music/stats"),
+  musicEvents: (after: number) => request<{ items: Array<{ id: number; type: string; content?: string; messageId?: number; status?: string; track?: string; trackId?: string }>; latest: number }>(`/music/events?after=${after}`),
+  musicStats: () => request<{
+    total_seconds: number;
+    total_hours: number;
+    today_seconds: number;
+    week_seconds: number;
+    play_count: number;
+    feedback_count: number;
+    most_played: { name: string; seconds: number } | null;
+    tracks: Array<{ source: string; track_id: string; name: string; artist: string; seconds: number; play_count: number; last_played: string }>;
+    recent: Array<{ source: string; track_id: string; name: string; artist: string; last_played: string }>;
+  }>("/music/stats"),
   musicPlaylists: (offset = 0, limit = 24) => request<{ playlists?: Array<{ id: string; name: string; trackCount?: number; creator?: string; coverUrl?: string }>; total?: number; hasMore?: boolean }>(`/music/playlists?offset=${offset}&limit=${limit}`),
   musicPlaylist: (id: string) => request<{ playlist?: { id: string; name: string; tracks?: Array<{ id: string; name?: string; artist?: string; durationMs?: number }> }; tracks?: Array<{ id: string; name?: string; artist?: string; durationMs?: number }> }>(`/music/playlist?id=${encodeURIComponent(id)}`),
   musicPlayPlaylist: (id: string) => request<Record<string, unknown>>("/music/play-playlist", { method: "POST", body: JSON.stringify({ id }) }),

@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover
     requests = None
 
 from utils.paths import get_user_data_dir
+from brain.music_state import NetEaseStateProvider, build_state, offline_state
 
 _COVER_CACHE_DIR = get_user_data_dir() / "netease_cover_cache"
 
@@ -53,8 +54,8 @@ class NetEaseMusicBridge(QObject):
         self._poll_inflight = False
         self._last_cover_url = None
         self._last_cover_local = ""
-        self._last_lyrics = []
-        self._last_lyrics_sig = ""
+        self._state_provider = NetEaseStateProvider(
+            base_url=self._base_url, timeout=1.2, headers=self._headers)
         try:
             _COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -69,6 +70,9 @@ class NetEaseMusicBridge(QObject):
         self._cleanup_timer.timeout.connect(self._cleanup_cover_cache)
         self._cleanup_timer.start(60 * 60 * 1000)
         self._cleanup_cover_cache()
+
+        # 统一状态抓取（后台线程，避免 GUI 线程被 HTTP 阻塞）
+        self._state_provider.start()
 
     # ---------- HTTP ----------
     def _headers(self):
@@ -298,89 +302,43 @@ class NetEaseMusicBridge(QObject):
 
     # ---------- 状态收集与轮询 ----------
     def collect_state(self) -> dict:
-        """从 8765 拉取状态并映射成前端 state"""
+        """复用 brain.music_state 的统一映射，把 8765 状态转成 Web 播放器 state。"""
+        extras = {"space_settings": self._space_settings_payload()}
+        state = None
         try:
-            status_data = self._get("/api/status") or {}
-            queue_data = self._get("/api/queue") or {}
+            state = self._state_provider.build(
+                cover_resolver=self._local_cover_url,
+                playlist_cover_resolver=self._local_cover_url,
+                extras=extras,
+            )
         except Exception:
-            status_data, queue_data = {}, {}
-        st = status_data.get("status") or {}
-        playback = status_data.get("playback") or {}
-        listening = status_data.get("listening") or {}
-        # 从 /api/status 的 listening 透传歌词/曲风/纯音乐标记（8765 与桥接共用同一数据源）
-        lyrics_raw = listening.get("lyrics") if isinstance(listening, dict) else None
-        lyrics = []
-        if isinstance(lyrics_raw, list):
-            for ln in lyrics_raw:
-                if not isinstance(ln, dict):
-                    continue
-                txt = str(ln.get("text") or "").strip()
-                if not txt:
-                    continue
-                try:
-                    t_sec = float(ln.get("time"))
-                except (TypeError, ValueError):
-                    t_sec = 0.0
-                lyrics.append({"time": t_sec, "text": txt})
-            lyrics.sort(key=lambda x: x["time"])
-        sig = "|".join("{:.2f}:{}".format(x["time"], x["text"]) for x in lyrics)
-        if sig != self._last_lyrics_sig:
-            self._last_lyrics = lyrics
-            self._last_lyrics_sig = sig
-        style = str(listening.get("style") or "") if isinstance(listening, dict) else ""
-        placeholder_set = {"纯音乐，请欣赏", "暂无歌词", "纯音乐", "（暂无歌词）"}
-        has_lyric = any(x["text"] not in placeholder_set for x in self._last_lyrics)
-        instrumental = not has_lyric
-        q = queue_data.get("queue") if isinstance(queue_data.get("queue"), list) else []
-        index = int(queue_data.get("index", -1) or -1)
-        mode = str(queue_data.get("mode", "sequence"))
-
+            state = None
+        if state is None:
+            # provider 未就绪 / 8765 不可用：退化为一次性直连（兼容旧行为）
+            try:
+                status_data = self._get("/api/status")
+                queue_data = self._get("/api/queue")
+            except Exception:
+                status_data, queue_data = None, None
+            if isinstance(status_data, dict) and status_data:
+                state = build_state(
+                    status_data,
+                    queue_data if isinstance(queue_data, dict) else {},
+                    cover_resolver=self._local_cover_url,
+                    playlist_cover_resolver=self._local_cover_url,
+                    extras=extras,
+                )
+            else:
+                state = offline_state("网易云播放器未连接")
+        # 兼容层：Web 播放器前端（web/app.js）按 0~1 读 volume、按 playing 判断播放中
+        state["volume"] = state.get("volumeRatio", 0.8)
+        state["playing"] = bool(state.get("active"))
+        playlist = state.get("playlist") or []
+        index = state.get("current_index", -1)
         with self._lock:
-            self._queue = q
-            self._queue_index = index
-            self._queue_mode = mode
-
-        playing = bool(st.get("playing")) and not bool(st.get("paused"))
-        position = float(st.get("position") or 0)
-        duration = float(st.get("duration") or 0)
-        if not duration and playback.get("durationMs"):
-            duration = float(playback.get("durationMs")) / 1000.0
-        volume = float(st.get("volume") or 80)
-        if volume > 1.0:
-            volume = volume / 100.0
-
-        playlist_items = []
-        for i, t in enumerate(q):
-            dur = float(t.get("durationMs") or 0) / 1000.0
-            playlist_items.append({
-                "title": t.get("name") or "未知曲目",
-                "duration": dur,
-                "index": i,
-                "favorite": False,
-            })
-
-        state = {
-            "playing": playing,
-            "current_index": index,
-            "title": playback.get("name") or "",
-            "artist": playback.get("artist") or "",
-            "album": playback.get("album") or "",
-            "duration": duration,
-            "position": position,
-            "playlist": playlist_items,
-            "loop_mode": "random" if mode == "shuffle" else "list",
-            "volume": max(0.0, min(1.0, volume)),
-            "has_playlist": bool(q),
-            "error": "",
-            "favorite": False,
-            "coverUrl": self._local_cover_url(playback.get("coverUrl") or ""),
-            "lyrics": self._last_lyrics,
-            "style": style,
-            "instrumental": instrumental,
-            "space_background": "",
-            "wallpaper": "",
-            "space_settings": self._space_settings_payload(),
-        }
+            self._queue = playlist
+            self._queue_index = index if isinstance(index, int) else -1
+            self._queue_mode = state.get("mode") or "sequence"
         self._last_state = state
         return state
 
@@ -470,5 +428,9 @@ class NetEaseMusicBridge(QObject):
         try:
             self._poll_timer.stop()
             self._cleanup_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._state_provider.stop()
         except Exception:
             pass

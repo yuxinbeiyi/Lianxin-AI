@@ -186,9 +186,17 @@ class MainWindow(QMainWindow):
 
 
         # ── 后台听歌反馈监听（netease-music-mcp 状态） ─────────
+        # 复用统一事件库：Qt 单独运行时也记录播放时长与反馈；与 api_server 的
+        # watcher 由 MusicWatcher 自带的进程锁互斥，实际只会有一个在跑。
+        from brain.music_service import MusicPlaybackTracker
+        from utils.music_stats import MusicStats
+        self._music_stats_store = MusicStats()
+        self._music_playback_tracker = MusicPlaybackTracker(stats=self._music_stats_store)
         self._listen_watcher = MusicWatcher(
             on_feedback=self._music_feedback_ready.emit,
             enabled_check=lambda: bool(getattr(self._proactive_scheduler, "music_feedback_enabled", True)),
+            tracker=self._music_playback_tracker,
+            stats=self._music_stats_store,
         )
         self._music_feedback_ready.connect(self._on_music_feedback)
         self._listen_watcher.start()
@@ -3943,6 +3951,8 @@ class MainWindow(QMainWindow):
         self._duty_scheduler.stop()
         if getattr(self, '_listen_watcher', None) is not None:
             self._listen_watcher.stop()
+        if getattr(self, '_music_playback_tracker', None) is not None:
+            self._music_playback_tracker.stop()
         self._alarm_timer.stop()
         if hasattr(self, '_auto_task_scheduler'):
             self._auto_task_scheduler.stop()

@@ -263,11 +263,17 @@ def _rewrite_sentences(content: str, unsupported: tuple[str, ...]) -> str:
     if not unsupported:
         return content
     pattern = re.compile(r"[^。！？!?\n]*(?:" + "|".join(re.escape(item) for item in unsupported) + r")[^。！？!?\n]*[。！？!?]?", re.IGNORECASE)
-    replacement = "原文未提供该句中的具体数字，我无法可靠确认。"
+    replacement = (
+        "我在当前已读取的网页内容中没有找到这个数字的直接依据，"
+        "所以暂时不能可靠确认；网页可能存在截断、动态加载或来源口径差异。"
+    )
     rewritten, count = pattern.subn(replacement, str(content or ""))
     if count:
         return rewritten.strip()
-    return "我在当前网页原文中没有找到回答所需的具体数字，因此不能可靠确认。"
+    return (
+        "我在当前已读取的网页内容中没有找到回答所需数字的直接依据，"
+        "所以暂时不能可靠确认；如果需要，可以继续核对原始来源。"
+    )
 
 
 def validate_web_evidence_claims(

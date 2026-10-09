@@ -595,6 +595,8 @@ class LianxinBridge:
         self._watched_song = None
         from brain.music_service import MusicService
         self.music_service = MusicService(self)
+        from brain.music_state import NetEaseStateProvider
+        self._music_state_provider = NetEaseStateProvider(poll_interval=1.0, timeout=1.2)
         self._study_room_bridge = None
         self._time_capsule_bridge = None
         self._study_room_lock = threading.RLock()
@@ -1448,6 +1450,18 @@ class LianxinBridge:
 
     def music_state(self) -> dict:
         # Prefer the real 8765 player API; the state file remains a safe fallback.
+        provider = getattr(self, "_music_state_provider", None)
+        if provider is not None:
+            try:
+                unified = provider.build(
+                    cover_resolver=self._proxy_cover_url,
+                    playlist_cover_resolver=self._proxy_cover_url,
+                )
+            except Exception:
+                unified = None
+            if unified is not None:
+                self._log_current_song(unified)
+                return unified
         try:
             import urllib.request
             with urllib.request.urlopen("http://127.0.0.1:8765/api/status", timeout=1.5) as response:
@@ -1541,27 +1555,47 @@ class LianxinBridge:
                 "coverUrl": self._proxy_cover_url(cover_url),
                 "progress": float(st.get("position") or 0), "duration": duration,
                 "volume": float(st.get("volume") or 0), "source": "netease-8765",
+                "id": current_track.get("id") or "",
+                "songId": current_track.get("id") or "",
+                "startedAt": playback.get("startedAt") or "",
                 "playlist": playlist, "current_index": index, "mode": mode,
                 "lyrics": lyrics, "style": style, "instrumental": not has_lyric,
             }
         except Exception:
             pass
+        from brain.music_state import build_state, legacy_payloads, offline_state
         try:
-            from brain.music_watcher import _DEFAULT_STATE_FILE
-            candidates = [_DEFAULT_STATE_FILE]
+            from utils.paths import get_netease_state_file_candidates
+            candidates = get_netease_state_file_candidates()
         except Exception:
             candidates = []
-        candidates += [
-            Path(__file__).parent / "参考项目" / "netease-music-mcp-main" / ".listening-state.json",
-            Path(__file__).parent / "参考项目" / "netease-music-mcp-main" / "listening-state.json",
-        ]
         for path in candidates:
             try:
                 if path.exists():
-                    return self._normalize_music_state(json.loads(path.read_text(encoding="utf-8")))
+                    status, queue = legacy_payloads(json.loads(path.read_text(encoding="utf-8")))
+                    state = build_state(
+                        status, queue,
+                        cover_resolver=self._proxy_cover_url,
+                        playlist_cover_resolver=self._proxy_cover_url,
+                    )
+                    state["serviceOnline"] = False
+                    state["source"] = "netease-state-file"
+                    return state
             except (OSError, ValueError, json.JSONDecodeError):
                 pass
-        return self._normalize_music_state({"active": False, "serviceOnline": False, "error": "播放器服务离线"})
+        return offline_state("播放器服务离线")
+
+    def _log_current_song(self, state: dict) -> None:
+        try:
+            title = str(state.get("name") or "").strip()
+            song_id = str(state.get("id") or "").strip()
+            current = (title, song_id)
+            if current != getattr(self, "_watched_song", None) and title:
+                text = "播放中" if state.get("active") else "已暂停"
+                bridge_log.log("MusicWatcher", f"当前歌曲: {title} id={song_id} [{text}]")
+                self._watched_song = current
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_music_state(state: dict) -> dict:
@@ -1702,12 +1736,15 @@ class LianxinBridge:
             from brain.music_watcher import MusicWatcher
             watcher = MusicWatcher(
                 state_provider=self.music_service.state,
-                on_feedback=self._on_music_feedback,
+                on_feedback_meta=self._on_music_feedback,
                 on_status=self._on_music_status,
                 enabled_check=lambda: bool(self.get_proactive_scheduler().music_feedback_enabled),
                 feedback_delay=float(self.get_proactive_scheduler()._settings.get("music_feedback_delay_seconds", 15)),
                 listen_min_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_min_seconds", 10)),
                 min_interval_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_cooldown_seconds", 120)),
+                tracker=self.music_service.playback_tracker,
+                stats=self.music_service.stats_store,
+                song_cooldown_seconds=float(self.get_proactive_scheduler()._settings.get("music_feedback_song_cooldown_seconds", 600)),
             )
             watcher.start()
             self._music_watcher = watcher
@@ -1719,9 +1756,39 @@ class LianxinBridge:
             self._music_watcher = None
         if watcher is not None:
             watcher.stop()
+        try:
+            self.music_service.playback_tracker.stop()
+        except Exception:
+            pass
         return {"running": False}
 
-    def _on_music_feedback(self, text: str) -> None:
+    def start_music_state(self) -> dict:
+        provider = getattr(self, "_music_state_provider", None)
+        if provider is None:
+            return {"running": False}
+        provider.start()
+        return {"running": True}
+
+    def stop_music_state(self) -> dict:
+        provider = getattr(self, "_music_state_provider", None)
+        if provider is not None:
+            provider.stop()
+        return {"running": False}
+
+    def _speak_feedback(self, text: str) -> None:
+        """后台朗读听歌反馈；失败只记日志，不影响反馈主流程。"""
+        try:
+            import pygame
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+        except Exception:
+            pass
+        try:
+            self.speak(str(text))
+        except Exception as exc:
+            bridge_log.log("音乐", f"听歌反馈朗读失败: {exc}")
+
+    def _on_music_feedback(self, text: str, meta: dict | None = None) -> None:
         content = str(text or "").strip()
         if not content:
             return
@@ -1737,12 +1804,14 @@ class LianxinBridge:
             except Exception as exc:
                 bridge_log.log("闊充箰", f"听歌反馈写入会话失败: {exc}")
         if bool(settings.get("music_feedback_auto_speak", False)):
-            threading.Thread(target=self._safe_speak, args=(self, content), daemon=True).start()
+            threading.Thread(target=self._speak_feedback, args=(content,), daemon=True).start()
         event = {
             "id": time.time_ns(),
             "type": "music.feedback_ready",
             "content": content,
             "messageId": message_id,
+            "trackId": (meta or {}).get("track_id") or "",
+            "track": (meta or {}).get("name") or "",
         }
         with self._music_watcher_lock:
             self._music_events.append(event)
@@ -1769,6 +1838,7 @@ class LianxinBridge:
             "delaySeconds": int(scheduler._settings.get("music_feedback_delay_seconds", 15)),
             "minimumListenSeconds": int(scheduler._settings.get("music_feedback_min_seconds", 10)),
             "cooldownSeconds": int(scheduler._settings.get("music_feedback_cooldown_seconds", 120)),
+            "songCooldownSeconds": int(scheduler._settings.get("music_feedback_song_cooldown_seconds", 600)),
             "autoSpeak": bool(scheduler._settings.get("music_feedback_auto_speak", False)),
             "saveToChat": bool(scheduler._settings.get("music_feedback_save_to_chat", True)),
         }
@@ -1781,6 +1851,7 @@ class LianxinBridge:
             "delaySeconds": ("music_feedback_delay_seconds", 3, 300),
             "minimumListenSeconds": ("music_feedback_min_seconds", 1, 600),
             "cooldownSeconds": ("music_feedback_cooldown_seconds", 10, 3600),
+            "songCooldownSeconds": ("music_feedback_song_cooldown_seconds", 10, 86400),
         }
         for key, (target, lower, upper) in mapping.items():
             if key in payload:
@@ -3691,6 +3762,7 @@ def main():
     try:
         bridge.start_proactive_runtime()
         bridge.start_music_watcher()
+        bridge.start_music_state()
         bridge_log.log("主动", "主动聊天运行时已启动")
     except Exception as exc:
         bridge_log.log("主动", f"主动聊天运行时启动失败: {exc}")
@@ -3723,6 +3795,10 @@ def main():
             pass
         try:
             bridge.stop_music_watcher()
+        except Exception:
+            pass
+        try:
+            bridge.stop_music_state()
         except Exception:
             pass
         try:

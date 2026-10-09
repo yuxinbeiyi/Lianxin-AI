@@ -1,4 +1,5 @@
 # utils/paths.py
+import os
 from pathlib import Path
 import shutil
 from pathlib import Path
@@ -51,3 +52,42 @@ def migrate_legacy_files():
         if src.exists() and not dst.exists():
             shutil.move(str(src), str(dst))
             print(f"[迁移] 已移动 {src} -> {dst}")
+
+
+# ── 网易云（netease-music-mcp）播放状态文件 ─────────────────────────
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _netease_state_candidates() -> list:
+    return [
+        get_user_data_dir() / "netease" / ".listening-state.json",
+        _PROJECT_ROOT / "参考项目" / "netease-music-mcp-main" / ".listening-state.json",
+        _PROJECT_ROOT / "参考项目" / "netease-music-mcp-main" / "listening-state.json",
+    ]
+
+
+def get_netease_state_file() -> Path:
+    """netease-music-mcp 播放状态文件位置。
+
+    优先使用环境变量 LIANXIN_NETEASE_STATE_FILE；否则依次探测用户数据目录、
+    参考项目目录，返回第一个已存在的路径；都不存在时返回参考项目默认路径。
+    """
+    override = os.environ.get("LIANXIN_NETEASE_STATE_FILE", "").strip()
+    if override:
+        return Path(override)
+    candidates = _netease_state_candidates()
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return candidates[1]
+
+
+def get_netease_state_file_candidates() -> list:
+    """按优先级返回所有可能的状态文件路径（兼容历史命名）。"""
+    override = os.environ.get("LIANXIN_NETEASE_STATE_FILE", "").strip()
+    if override:
+        return [Path(override)]
+    return _netease_state_candidates()

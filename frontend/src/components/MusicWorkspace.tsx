@@ -15,7 +15,13 @@ type SpaceSettingsData = {
   settings: { wallpaper: string; wallpaper_opacity: number; content_mask_opacity: number; fit: string };
 };
 type FeedbackSettings = { enabled: boolean; delaySeconds: number; minimumListenSeconds: number; cooldownSeconds: number; autoSpeak: boolean; saveToChat: boolean };
-type MusicStats = { total_seconds: number; total_hours: number; most_played: { name: string; seconds: number } | null };
+type MusicStatsTrack = { source?: string; track_id?: string; name?: string; artist?: string; seconds?: number; play_count?: number; last_played?: string };
+type MusicStats = {
+  total_seconds: number; total_hours: number;
+  today_seconds?: number; week_seconds?: number; play_count?: number; feedback_count?: number;
+  most_played: { name: string; seconds: number } | null;
+  tracks?: MusicStatsTrack[]; recent?: MusicStatsTrack[];
+};
 type UserPlaylist = { id: string; name: string; trackCount?: number; creator?: string; coverUrl?: string };
 type PlaylistDetail = { id: string; name: string; tracks?: Array<{ id: string; name?: string; artist?: string; album?: string; durationMs?: number; coverUrl?: string }> };
 
@@ -32,7 +38,27 @@ function fmt(sec?: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+function fmtSpan(sec?: number): string {
+  const s = Math.max(0, Math.floor(sec ?? 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h} 小时 ${m} 分`;
+  if (m > 0) return `${m} 分钟`;
+  return `${s} 秒`;
+}
+
+function fmtWhen(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+const MUSIC_SOURCE_LABEL: Record<string, string> = { netease: "网易云", local: "本地" };
+
 const API_ORIGIN = "http://127.0.0.1:8766";
+const MUSIC_EVENT_CURSOR_KEY = "lianxin.musicEventsCursor";
 
 export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; onRefresh?: () => void; errorMsg?: string; onDismissError?: () => void }) {
   const [tab, setTab] = useState<"queue" | "lyrics" | "playlists" | "feedback" | "stats">("queue");
@@ -113,7 +139,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
 
   useEffect(() => {
     let alive = true;
-    let cursor = 0;
+    let cursor = Number(window.localStorage.getItem(MUSIC_EVENT_CURSOR_KEY) || 0) || 0;
     const poll = async () => {
       try {
         const [settings, stat] = await Promise.all([lianxinApi.musicFeedbackSettings(), lianxinApi.musicStats()]);
@@ -123,6 +149,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
         const events = await lianxinApi.musicEvents(cursor);
         if (!alive) return;
         cursor = events.latest;
+        try { window.localStorage.setItem(MUSIC_EVENT_CURSOR_KEY, String(cursor)); } catch { /* ignore */ }
         const latest = [...events.items].reverse().find((event) => event.type === "music.feedback_ready" && event.content);
         if (latest?.content) setLastFeedback(latest.content);
         const status = [...events.items].reverse().find((event) => event.status);
@@ -453,10 +480,40 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
             <p>{lastFeedback || "等待下一次听歌反馈"}</p>
           </div>
         ) : (
-          <div className="music-feedback-panel">
-            <p>累计听歌：{(stats?.total_hours ?? 0).toFixed(1)} 小时</p>
-            <p>最常听：{stats?.most_played?.name || "暂无记录"}</p>
-            <p>累计时长：{Math.floor((stats?.most_played?.seconds ?? 0) / 60)} 分钟</p>
+          <div className="music-feedback-panel music-stats-panel">
+            <div className="music-stats-grid">
+              <div className="music-stats-cell"><span>{"今日听歌"}</span><strong>{fmtSpan(stats?.today_seconds)}</strong></div>
+              <div className="music-stats-cell"><span>{"本周听歌"}</span><strong>{fmtSpan(stats?.week_seconds)}</strong></div>
+              <div className="music-stats-cell"><span>{"累计听歌"}</span><strong>{fmtSpan(stats?.total_seconds)}</strong></div>
+              <div className="music-stats-cell"><span>{"播放次数"}</span><strong>{`${stats?.play_count ?? 0} 次`}</strong></div>
+              <div className="music-stats-cell"><span>{"听歌反馈"}</span><strong>{`${stats?.feedback_count ?? 0} 条`}</strong></div>
+              <div className="music-stats-cell"><span>{"最常听"}</span><strong title={stats?.most_played?.name || ""}>{stats?.most_played?.name || "暂无记录"}</strong></div>
+            </div>
+            {stats?.most_played ? <p className="music-stats-note">{`《${stats.most_played.name}》累计 ${fmtSpan(stats.most_played.seconds)}`}</p> : null}
+            <p className="music-stats-title">{"最近在听"}</p>
+            {(stats?.recent ?? []).length > 0 ? (
+              <div className="music-stats-list">
+                {(stats?.recent ?? []).slice(0, 6).map((item, index) => (
+                  <div className="music-stats-row" key={`recent-${item.source ?? ""}-${item.track_id ?? index}`}>
+                    <span className="music-stats-badge">{MUSIC_SOURCE_LABEL[item.source ?? ""] || item.source || "未知"}</span>
+                    <span className="music-stats-copy"><strong>{item.name || "未知曲目"}</strong>{item.artist ? <em>{item.artist}</em> : null}</span>
+                    <span className="music-stats-when">{fmtWhen(item.last_played)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="music-empty">{"暂无记录"}</div>}
+            <p className="music-stats-title">{"常听曲目"}</p>
+            {(stats?.tracks ?? []).length > 0 ? (
+              <div className="music-stats-list">
+                {(stats?.tracks ?? []).slice(0, 6).map((item, index) => (
+                  <div className="music-stats-row" key={`track-${item.source ?? ""}-${item.track_id ?? index}`}>
+                    <span className="music-stats-badge">{MUSIC_SOURCE_LABEL[item.source ?? ""] || item.source || "未知"}</span>
+                    <span className="music-stats-copy"><strong>{item.name || "未知曲目"}</strong>{item.artist ? <em>{item.artist}</em> : null}</span>
+                    <span className="music-stats-when">{`${fmtSpan(item.seconds)} · ${item.play_count ?? 0} 次`}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="music-empty">{"暂无记录"}</div>}
           </div>
         )}
       </div>

@@ -461,10 +461,10 @@ class AchievementService:
         }
         projected_presence = sum(int(row["presence_seconds"] or 0) for row in rows)
         legacy_presence = int(legacy.get("total_seconds", 0) or 0)
-        # 音乐盒已有独立本地统计，成就只读取累计秒数，不读取曲目或播放历史。
+        # 音乐统计以统一事件库为事实来源，成就只读取累计秒数，不读取曲目或播放历史。
         try:
-            music_seconds = max(0, int(MusicStats().data.get("total_seconds", 0) or 0))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            music_seconds = max(0, int(MusicStats().statistics().get("total_seconds", 0) or 0))
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             music_seconds = 0
         metrics = dict(total)
         avatar_detail = {key: baseline[key] + int(total.get(key, 0)) for key in AVATAR_METRIC_MAP}

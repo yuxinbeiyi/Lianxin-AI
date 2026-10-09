@@ -252,15 +252,16 @@ def _status_music_space() -> dict:
             result.update(available=True, health="正常", last_activity_summary=_short(raw), limitations=[])
     except Exception as exc:
         result.update(health="错误", limitations=[f"读取播放器状态失败：{type(exc).__name__}"])
-    stats_path = _data_root() / "music_stats.json"
     try:
-        data = json.loads(stats_path.read_text(encoding="utf-8")) if stats_path.exists() else {}
-        songs = data.get("songs", {})
-        best = max(songs.values(), key=lambda item: item.get("seconds", 0), default={})
-        result["metrics"].update({"total_seconds": int(data.get("total_seconds", 0) or 0),
-                                   "song_count": len(songs), "most_played_song": best.get("name", "")})
-    except (OSError, ValueError, json.JSONDecodeError):
-        result["limitations"].append("音乐统计文件不可读")
+        from utils.music_stats import MusicStats
+        data = MusicStats().statistics()
+        result["metrics"].update({
+            "total_seconds": int(data.get("total_seconds", 0) or 0),
+            "song_count": len(data.get("tracks", []) or []),
+            "most_played_song": (data.get("most_played") or {}).get("name", "") or "",
+        })
+    except Exception as exc:
+        result["limitations"].append(f"音乐统计不可读：{type(exc).__name__}")
     return result
 
 

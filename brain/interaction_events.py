@@ -157,5 +157,47 @@ class InteractionEventStore:
         return [dict(row) for row in rows]
 
 
+    def list_events(
+        self,
+        *,
+        feature: str | None = None,
+        event_type: str | None = None,
+        source_id: str | None = None,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Read events in chronological order, optionally filtered by feature/type."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if feature:
+            clauses.append("feature = ?")
+            params.append(str(feature))
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(str(event_type))
+        if source_id is not None:
+            clauses.append("source_id = ?")
+            params.append(str(source_id))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, min(int(limit), 50000)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM interaction_events" + where
+                + " ORDER BY occurred_at ASC, id ASC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def event_exists(self, event_key: str) -> bool:
+        """Return True when an event with this idempotency key already exists."""
+        if not event_key:
+            return False
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM interaction_events WHERE event_key = ? LIMIT 1",
+                (str(event_key),),
+            ).fetchone()
+        return row is not None
+
+
 def record_interaction(**kwargs) -> int:
     return InteractionEventStore().record(**kwargs)

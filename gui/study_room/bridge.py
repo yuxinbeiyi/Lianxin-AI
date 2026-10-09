@@ -92,6 +92,7 @@ class StudyRoomBridge(QObject):
         }
 
     def _state_payload(self):
+        self.timer.refresh()
         return {
             "tasks": self._task_payload(),
             "stats": self._stats_payload(),
@@ -349,7 +350,9 @@ class StudyRoomBridge(QObject):
     def _on_tick(self, remaining, phase):
         self.timer_tick.emit(self._json({"remaining": remaining, "total": self.timer.total, "phase": phase,
                                          "task_name": self.timer.task_name,
-                                         "repeat_enabled": self.timer.repeat_enabled}))
+                                         "repeat_enabled": self.timer.repeat_enabled,
+                                         "active": self.timer.active,
+                                         "paused": self.timer.paused}))
 
     def _on_phase_changed(self, phase):
         self.phase_changed.emit(phase)

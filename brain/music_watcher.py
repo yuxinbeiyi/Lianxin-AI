@@ -14,15 +14,12 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
-from utils.paths import get_user_data_dir
+from utils.paths import get_netease_state_file, get_user_data_dir
 
 logger = logging.getLogger("MusicWatcher")
 
-# netease-music-mcp 写入的播放状态文件（相对莲心项目根目录）
-_DEFAULT_STATE_FILE = (
-    Path(__file__).resolve().parent.parent
-    / "参考项目" / "netease-music-mcp-main" / ".listening-state.json"
-)
+# netease-music-mcp 写入的播放状态文件（路径可配置，见 utils.paths.get_netease_state_file）
+_DEFAULT_STATE_FILE = get_netease_state_file()
 
 _MUSIC_SYSTEM = """你是莲心，正和用户一起听歌。根据当前歌曲和歌词，用你自己的性格（口语化、短句、可以调侃或吐槽、偶尔用颜文字）说一句 20~50 字的听歌感想或评论，像朋友在旁边一起听一样自然。
 
@@ -49,9 +46,14 @@ class MusicWatcher:
         enabled_check: Callable[[], bool] = None,
         state_provider: Callable[[], Optional[dict]] = None,
         on_status: Callable[[str, dict], None] = None,
+        tracker: object = None,
+        stats: object = None,
+        song_cooldown_seconds: float = 600.0,
+        on_feedback_meta: Callable[[str, dict], None] = None,
     ):
         self._state_file = Path(state_file or _DEFAULT_STATE_FILE)
         self._on_feedback = on_feedback
+        self._on_feedback_meta = on_feedback_meta
         self._poll_interval = poll_interval
         self._feedback_delay = feedback_delay
         self._listen_min = listen_min_seconds
@@ -59,6 +61,9 @@ class MusicWatcher:
         self._enabled_check = enabled_check or (lambda: True)
         self._state_provider = state_provider
         self._on_status = on_status
+        self._tracker = tracker
+        self._stats = stats
+        self._song_cooldown = max(0.0, float(song_cooldown_seconds or 0.0))
         self._status = "idle"
         self._last_key: Optional[tuple] = None
         self._pending_key: Optional[tuple] = None
@@ -147,6 +152,11 @@ class MusicWatcher:
 
     def _poll_once(self) -> None:
         state = self._read_state()
+        if self._tracker is not None:
+            try:
+                self._tracker.tick(state or {})
+            except Exception as exc:
+                logger.debug("[MusicWatcher] 播放时长记录失败: %s", exc)
         key = self._key_of(state)
         now = time.time()
         if key and bool(state.get("active")):
@@ -173,8 +183,12 @@ class MusicWatcher:
                     and now - self._last_feedback_at >= self._min_interval
                     and self._enabled_check()):
                 self._pending_key = None
-                self._emit_status("analyzing", state)
-                self._fire(state, rapid_skips=self._consecutive_skips)
+                if self._feedback_blocked(state):
+                    self._emit_status("cooldown", state)
+                    print("[MusicWatcher] 该曲已反馈或在按曲冷却期内，跳过", flush=True)
+                else:
+                    self._emit_status("analyzing", state)
+                    self._fire(state, rapid_skips=self._consecutive_skips)
         elif not key:
             self._last_key = None
             self._pending_key = None
@@ -198,7 +212,8 @@ class MusicWatcher:
             sid = state.get("name") or state.get("title")
         if not sid:
             return None
-        return (str(sid), bool(state.get("active")))
+        session_id = self._session_id(state) if self._tracker is not None else None
+        return (str(sid), bool(state.get("active")), str(session_id or ""))
 
     def _read_state(self) -> Optional[dict]:
         if self._state_provider is not None:
@@ -229,6 +244,49 @@ class MusicWatcher:
             result["active"] = bool(result.get("playing")) and not bool(result.get("paused"))
         return result
 
+    @staticmethod
+    def _track_id_of(state: dict) -> tuple:
+        state = state or {}
+        current = state.get("currentTrack") if isinstance(state.get("currentTrack"), dict) else {}
+        source = str(state.get("source") or "netease").split("-", 1)[0] or "netease"
+        track_id = str(
+            state.get("id") or state.get("songId") or current.get("id") or ""
+        ).strip()
+        if not track_id:
+            track_id = str(
+                state.get("name") or state.get("title") or current.get("title") or ""
+            ).strip()
+        return source, track_id
+
+    def _session_id(self, state: dict):
+        if self._tracker is None:
+            return None
+        try:
+            return self._tracker.current_session_id(state)
+        except Exception:
+            return None
+
+    def _feedback_blocked(self, state: dict) -> bool:
+        """同一次播放会话已反馈，或该曲仍在按曲冷却期内 => 不再反馈。"""
+        store = self._stats
+        if store is None:
+            return False
+        source, track_id = self._track_id_of(state)
+        if not track_id:
+            return False
+        session_id = self._session_id(state)
+        try:
+            if session_id and store.has_feedback(
+                    source=source, track_id=track_id, session_id=session_id):
+                return True
+            last = store.last_feedback_time(source=source, track_id=track_id)
+        except Exception:
+            return False
+        if last is not None and self._song_cooldown > 0:
+            if (time.time() - last) < self._song_cooldown:
+                return True
+        return False
+
     def _fire(self, state: dict, force: bool = False, rapid_skips: int = 0) -> None:
         # 与主对话错峰：主对话请求进行中时延后反馈，避免抢占中转站单并发。
         from brain.llm_gate import main_request_active
@@ -253,10 +311,30 @@ class MusicWatcher:
         if text:
             self._last_feedback_at = time.time()
             self._reported.add(self._key_of(state))
-            if len(self._reported) > 200:
-                self._reported.clear()
+            source, track_id = self._track_id_of(state)
+            session_id = self._session_id(state)
+            meta = {
+                "source": source,
+                "track_id": track_id,
+                "session_id": session_id,
+                "name": state.get("name") or state.get("title") or "",
+            }
+            if self._stats is not None and track_id:
+                try:
+                    self._stats.record_feedback(
+                        source=source, track_id=track_id,
+                        name=meta["name"], content=text,
+                        session_id=session_id or str(int(time.time() * 1000)),
+                    )
+                except Exception as exc:
+                    logger.debug("[MusicWatcher] 反馈落库失败: %s", exc)
             print("[MusicWatcher] 听歌反馈: " + str(text))
-            if self._on_feedback:
+            if self._on_feedback_meta is not None:
+                try:
+                    self._on_feedback_meta(text, meta)
+                except Exception as exc:
+                    logger.debug("[MusicWatcher] 反馈回调失败: %s", exc)
+            elif self._on_feedback:
                 self._on_feedback(text)
             self._emit_status("ready", state)
         else:
@@ -337,6 +415,13 @@ class MusicWatcher:
 
     def _played_seconds(self, state: dict, now: float) -> float:
         """当前歌曲已连续播放的秒数（优先用服务端 startedAt，缺省按本地检测时间估算）。"""
+        if self._tracker is not None:
+            try:
+                value = self._tracker.current_seconds(state)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                pass
         started = state.get("startedAt")
         if started:
             try:

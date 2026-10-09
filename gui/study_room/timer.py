@@ -25,6 +25,7 @@ class FocusTimer(QObject):
         self.task_name = ""
         self.elapsed_before_pause = 0
         self._last_tick = 0.0
+        self._paused = False
 
     @property
     def active(self):
@@ -32,7 +33,12 @@ class FocusTimer(QObject):
 
     @property
     def paused(self):
-        return self.active and not self._timer.isActive()
+        return self.active and self._paused
+
+    def refresh(self):
+        """Reconcile elapsed time when the host Qt event loop is not ticking."""
+        if self.active and not self.paused:
+            self._on_tick()
 
     def start_focus(self, seconds: int, break_seconds: int, task_name: str = "", repeat_enabled: bool = False):
         self.phase = "focus"
@@ -44,6 +50,7 @@ class FocusTimer(QObject):
         self.started_at = time.strftime("%Y-%m-%d %H:%M:%S")
         self.task_name = task_name
         self.elapsed_before_pause = 0
+        self._paused = False
         self._last_tick = time.monotonic()
         self.phase_changed.emit(self.phase)
         self.tick.emit(self.remaining, self.phase)
@@ -54,9 +61,11 @@ class FocusTimer(QObject):
             return
         if self._timer.isActive():
             self._timer.stop()
+            self._paused = True
         else:
             self._last_tick = time.monotonic()
             self._timer.start()
+            self._paused = False
         self.phase_changed.emit("paused" if self.paused else self.phase)
 
     def stop(self):
@@ -64,6 +73,7 @@ class FocusTimer(QObject):
             return 0
         elapsed = max(0, self.total - self.remaining)
         self._timer.stop()
+        self._paused = False
         self.phase = "idle"
         self.remaining = 0
         self.phase_changed.emit(self.phase)

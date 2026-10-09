@@ -109,6 +109,7 @@ let timerState = {
   task_name: '',
   active: false,
   paused: false,
+  preview: false,
 };
 
 function formatDuration(seconds) {
@@ -677,7 +678,7 @@ function previewSelectedTask() {
   const option = q('#task-select').selectedOptions[0];
   const activePreset = q('.preset.active');
   const minutes = Number(option?.dataset.estimate || activePreset?.dataset.focus || roomSettings.focus_minutes || 25);
-  timerState = { ...timerState, remaining: minutes * 60, total: minutes * 60, phase: 'idle', active: false, paused: false };
+  timerState = { ...timerState, remaining: minutes * 60, total: minutes * 60, phase: 'idle', active: false, paused: false, preview: true };
   updateGoal();
   renderTimer();
 }
@@ -690,7 +691,7 @@ function startSelectedFocus() {
   const taskEstimate = Number(selected?.dataset.estimate || 0);
   const focus = taskEstimate > 0 ? taskEstimate : Number(preset?.dataset.focus || roomSettings.focus_minutes || 25);
   const rest = roomSettings.auto_break ? Number(selected?.dataset.break || preset?.dataset.break || roomSettings.break_minutes || 5) : 0;
-  timerState = { ...timerState, remaining: focus * 60, total: focus * 60, phase: 'focus', active: true, paused: false, task_name: selected?.dataset.estimate ? selected.textContent : '' };
+  timerState = { ...timerState, remaining: focus * 60, total: focus * 60, phase: 'focus', active: true, paused: false, preview: false, task_name: selected?.dataset.estimate ? selected.textContent : '' };
   renderTimer();
   bridge.start_focus(focus, rest, Number(q('#task-select').value));
   enterFocusView();
@@ -764,7 +765,17 @@ function connectBridge() {
     });
 
     bridge.timer_tick.connect(payload => {
-      timerState = { ...timerState, ...JSON.parse(payload), active: true };
+      const next = JSON.parse(payload);
+      const keepPreview = next.phase === 'idle' && timerState.preview;
+      timerState = {
+        ...timerState,
+        ...next,
+        remaining: keepPreview ? timerState.remaining : next.remaining,
+        total: keepPreview ? timerState.total : next.total,
+        active: next.phase !== 'idle',
+        paused: Boolean(next.paused),
+        preview: keepPreview,
+      };
       renderTimer();
     });
     bridge.clock_changed.connect(payload => renderClock(JSON.parse(payload)));
@@ -783,6 +794,9 @@ function connectBridge() {
       if (phase === 'paused') setCompanion('我会在这里安静等你，准备好后再继续。');
       if (phase === 'break') q('#focus-companion').textContent = '这一段已经完成了。站起来走走，喝口水，再回来也不迟。';
       if (phase === 'idle') {
+        timerState.preview = false;
+        timerState.remaining = 0;
+        timerState.total = 0;
         if (currentView === 'focus') leaveFocusView();
         q('#focus-companion').textContent = '这一段专注已经结束，可以回到自习室看看今天的记录。';
       }

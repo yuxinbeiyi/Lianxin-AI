@@ -370,6 +370,22 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 @keyframes music-settings-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes music-settings-pop { from { opacity: 0; transform: scale(.96) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 
+/* ---- 2d: 听歌统计面板 ---- */
+.music-stats-panel { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--lx-text); }
+.music-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; }
+.music-stats-cell { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--lx-border); border-radius: 12px; background: rgba(25, 49, 57, .4); }
+.music-stats-cell span { font-size: 12px; color: var(--lx-text-muted); }
+.music-stats-cell strong { font-size: 15px; font-weight: 600; color: var(--lx-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.music-stats-note { margin: 0; font-size: 12px; color: var(--lx-accent); }
+.music-stats-title { margin: 6px 0 0; font-size: 12px; letter-spacing: .4px; color: var(--lx-text-muted); }
+.music-stats-list { display: flex; flex-direction: column; gap: 4px; }
+.music-stats-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid transparent; border-radius: 10px; background: rgba(25, 49, 57, .28); }
+.music-stats-badge { flex: 0 0 auto; padding: 2px 7px; font-size: 11px; color: var(--lx-accent); border: 1px solid rgba(105, 215, 195, .3); border-radius: 999px; background: rgba(105, 215, 195, .08); }
+.music-stats-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.music-stats-copy strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-stats-copy em { font-style: normal; font-size: 11px; color: var(--lx-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-stats-when { flex: 0 0 auto; font-size: 11px; color: var(--lx-text-muted); font-variant-numeric: tabular-nums; }
+
 /* ---- 2c UX: ??????? + ???/?????? ---- */
 .album-art { overflow: hidden; }
 .album-art img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; background: #0a1a22; }
