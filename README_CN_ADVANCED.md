@@ -455,7 +455,7 @@ MCP 是**外部工具服务接入层**，让文件系统、搜索、浏览器等
 
 ### 1. 创建环境
 
-支持 Windows 10/11 与 Python 3.11、3.12。新用户推荐直接运行 `bootstrap.bat`：它会在项目目录创建 `.venv`，安装基础桌面版依赖，并在当前用户目录初始化配置文件。普通启动使用 `run.bat`，不需要管理员权限。
+支持 Windows 10/11 与 Python 3.11、3.12。新用户推荐直接运行 `bootstrap.bat`：它会在项目目录创建 `.venv`，安装基础桌面版依赖，并在当前用户目录初始化配置文件。普通启动使用 `run.bat`，不需要管理员权限。 `run.bat` 以脚本自身所在目录（`%~dp0`）为基准解析所有路径，不写死任何盘符，整个项目文件夹可以随意移动或换盘；它默认启动**新版界面（React + TypeScript + Vite + Tauri 2）**，旧版界面仍用 `python main.py` 启动。
 
 ```powershell
 .\bootstrap.bat
@@ -483,6 +483,8 @@ pip install -r requirements.txt
 - **浏览器**：Playwright 浏览器自动化与网页提取
 - **桥接**：QQ / 微信桥接及 MCP 接入
 - **开发**：开发与持续集成工具
+
+新版界面（`frontend/`，React + TypeScript + Vite + Tauri 2）**不需要任何额外的 Python 包**：它的后端接口是项目根目录的 `api_server.py`，只用到标准库和本仓库已有模块。它额外需要的是系统级工具，`pip` 装不了：Node.js 18+、Rust 工具链（rustup + cargo），以及 Windows 10/11 通常自带的 WebView2 Runtime。
 
 ```powershell
 pip install -r requirements.txt
@@ -515,6 +517,25 @@ pip install -r requirements.txt
 
 ### 3. 启动
 
+**新版界面（推荐体验，React + TypeScript + Vite + Tauri 2）**
+
+```powershell
+.\run.bat
+```
+
+`run.bat` 会检查 Python / Node.js / npm / cargo，首次运行自动执行 `npm install`，然后拉起后端 `api_server.py`（`http://127.0.0.1:8766`）与新版界面窗口；它不写死任何盘符，可随项目目录一起移动。只做依赖体检、不真正启动时，先设置 `LIANXIN_DRYRUN=1`。
+
+也可以手动分两步启动：
+
+```powershell
+python api_server.py            # 后端接口
+cd frontend
+npm install                     # 仅首次需要
+npm run tauri dev               # 新版界面窗口
+```
+
+**旧版 PyQt5 主界面**
+
 ```powershell
 conda activate lianxin
 python main.py
@@ -538,6 +559,9 @@ python main.py
 莲心AI/
 ├── main.py                    # 程序入口、启动体检、单实例保护
 ├── config.py                  # 全局配置管理（模型、API、桥接等）
+├── api_server.py              # 新版界面后端接口（仅标准库）
+├── frontend/                  # 新版界面（React + TypeScript + Vite + Tauri 2）
+├── run.bat                    # 新版界面一键启动（路径不写死）
 ├── brain/                     # 核心智能层
 │   ├── agent.py               # AgentCore：意图路由、工具循环、回复保护
 │   ├── tools.py               # 工具定义、权限边界、执行器
