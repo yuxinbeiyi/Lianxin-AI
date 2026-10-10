@@ -7,6 +7,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12"/>
   <img src="https://img.shields.io/badge/GUI-PyQt5-41CD52?logo=qt&logoColor=white" alt="PyQt5"/>
+  <img src="https://img.shields.io/badge/New%20UI-React%20%2B%20Tauri%202-24C8DB?logo=tauri&logoColor=white" alt="React and Tauri 2"/>
   <img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white" alt="Windows 10 and 11"/>
   <img src="https://img.shields.io/badge/LLM-LiteLLM-orange" alt="LiteLLM"/>
   <img src="https://img.shields.io/badge/Memory-SQLite%20%2B%20RAG-blue" alt="SQLite and RAG"/>
@@ -15,7 +16,7 @@
 
 > A Windows desktop AI companion with persistent memory, emotional state, editable personas, and proactive behaviors.
 
-Lianxin AI is a Python desktop companion for Windows 10 and 11. It combines a PyQt5 interface with cloud or local LLMs through LiteLLM. Rather than treating every prompt as an isolated exchange, it keeps local, inspectable state across conversations: factual memory, a knowledge graph, working memory, persona snapshots, emotional dynamics, and scheduled responsibilities.
+It ships two desktop interfaces: the original **PyQt5** window and a newer **React + TypeScript + Vite + Tauri 2** shell under `frontend/`, both driving cloud or local LLMs through LiteLLM.
 
 The project is inspired by the Endless Library setting from *Anomaly Handler*. It is designed as an AI character that can converse, remember, help with daily work, interact with local tools under permission boundaries, and reach users through optional QQ and WeChat bridges.
 
@@ -281,14 +282,40 @@ For a stable lightweight setup:
 - Python 3.11 or 3.12
 - At least one supported text-model provider
 
+The new desktop interface in `frontend/` (React + TypeScript + Vite + Tauri 2) has its own system requirements:
+
+- Node.js 18 or newer (bundles npm)
+- The Rust toolchain from [rustup](https://rustup.rs/) — Tauri uses `cargo` to build the native window
+- WebView2 Runtime, already present on most Windows 10/11 systems
+
+It needs **no additional Python package**: its backend is `api_server.py` in the project root, which relies on the standard library plus modules already shipped in this repository.
+
 The recommended first-run path creates a project-local virtual environment, installs the base desktop dependencies, and initializes user configuration under your home directory:
 
 ```powershell
 .\bootstrap.bat
+```
+
+### Launching the desktop UI
+
+`run.bat` is the one-click launcher for the **new Tauri interface**. It resolves every path from its own location (`%~dp0`), so the project folder can be moved, renamed, or placed on another drive. It verifies Python, Node.js, and Rust, runs `npm install` on the first launch, then starts the backend and the desktop window.
+
+```powershell
 .\run.bat
 ```
 
-Or create an environment manually:
+Equivalent manual steps:
+
+```powershell
+python api_server.py     # backend on http://127.0.0.1:8766
+cd frontend
+npm install              # first run only
+npm run tauri dev        # new desktop window
+```
+
+Set `LIANXIN_DRYRUN=1` to run `run.bat` as a dependency check only, without launching anything.
+
+The legacy PyQt5 window is still available:
 
 ```powershell
 conda create -n lianxin python=3.12
@@ -308,6 +335,8 @@ All dependencies live in the single `requirements.txt`, organized into labeled s
 - **Browser** – Playwright browser automation and web extraction
 - **Bridge** – QQ / WeChat bridges and MCP integration
 - **Dev** – development and CI tools
+
+The Tauri interface requires **no extra Python package**: `requirements.txt` stays as-is. Only the system tools listed in [Quick Start](#quick-start) (Node.js, Rust, WebView2) are added on top.
 
 ```powershell
 pip install -r requirements.txt
@@ -354,6 +383,9 @@ QQ and WeChat bridges are optional. The QQ settings panel can manage the bridge 
 Lianxin-AI/
 ├── main.py                 # Application entry point and startup checks
 ├── config.py               # Configuration and provider settings
+├── api_server.py           # HTTP/JSON backend for the new UI (standard library only)
+├── frontend/               # New React + TypeScript + Vite + Tauri 2 desktop UI
+├── run.bat                 # One-click launcher for the new UI (no hard-coded paths)
 ├── brain/                  # Agent, tools, memory, emotion, personas, MCP
 ├── gui/                    # PyQt5 UI, charts, persona hub, Study Room
 ├── workers/                # Background model, bridge, voice, and maintenance workers
@@ -407,6 +439,7 @@ Read [ASSET_NOTICE.md](ASSET_NOTICE.md) for asset availability and additional co
 
 - [LiteLLM](https://github.com/BerriAI/litellm) for unified LLM access
 - [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) for the desktop UI
+- [Tauri](https://tauri.app/) and [React](https://react.dev/) for the new desktop interface
 - [AstrBot](https://github.com/AstrBotProject/AstrBot) for messaging-bridge support
 - [SiliconFlow](https://siliconflow.cn/) for cloud visual APIs
 - [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS), [FunASR](https://github.com/modelscope/FunASR), and [Whisper](https://github.com/openai/whisper) for voice-related capabilities

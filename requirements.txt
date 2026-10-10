@@ -7,7 +7,21 @@
 # 物理世界模拟器服务仅需 aiohttp，已含于“核心依赖”。
 # ============================================================================
 
+# ── 新版界面（frontend/ = React + TypeScript + Vite + Tauri 2）说明 ─────────
+# 新版界面**不需要任何额外的 Python 包**。它的后端接口由根目录的 api_server.py
+# 提供，只用到标准库（http.server / urllib / json）和本项目已有模块。
+# 新版界面需要的是系统级工具，pip 装不了，请自行安装：
+#   - Node.js 18+（自带 npm）        https://nodejs.org/
+#   - Rust 工具链（rustup + cargo）  https://rustup.rs/
+#   - WebView2 Runtime（Windows 10/11 通常已内置）
+# 装好后双击项目根目录的 run.bat 即可一键启动新版界面；
+# 旧版 PyQt5 主界面仍然用 python main.py 启动。
+# ───────────────────────────────────────────────────────────────────────────
+
 # ── 核心依赖（桌面版基础：云端对话、SQLite 记忆、PyQt 界面、具身模拟器） ──
+# 注：PyQt5 / PyQtWebEngine / QDarkStyle 服务于旧版 PyQt5 主界面与内嵌 WebEngine
+#     面板；新版 Tauri 界面不加载这些界面组件（api_server.py 只在 QQ 桥接等
+#     少数功能里按需引用 PyQt5）。
 aiohttp==3.13.5
 aiosqlite==0.22.1
 APScheduler==3.11.3
