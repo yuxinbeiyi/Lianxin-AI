@@ -9,6 +9,12 @@ rem  设计原则：所有路径都以本脚本所在目录（%~dp0）为基准�
 rem  不写死任何盘符或用户名，因此整个项目文件夹可以随意移动、改名、换盘。
 rem
 rem  本脚本只启动新版 Tauri 界面；旧版 PyQt5 主界面请用 python main.py。
+rem  · 选 Python 时会逐个候选做「真实依赖探测」(PyQt5 / aiohttp / litellm)，
+rem    避免选中「存在但依赖没装完」的环境（例如空的 .venv）——否则后端起不来，
+rem    界面会退回离线模式：壁纸、头像、莲心自习室等都会空白。
+rem  · 想固定使用某个已装好依赖的环境，二选一（只影响本机，不会被提交）：
+rem      1) 设置环境变量 LIANXIN_PYTHON 指向 python.exe；
+rem      2) 在项目根目录新建 run.python.txt，第一行写 python.exe 完整路径。
 rem  本脚本刻意不使用 goto（UTF-8 批处理里 goto 会触发字节错位），
 rem  统一用 FAIL 标记收集错误后在结尾一次性退出。
 rem
@@ -22,6 +28,8 @@ cd /d "%ROOT%"
 set "LOG=%ROOT%startup_log.txt"
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 set "FAIL="
+set "PYFROM="
+set "OPTMISS="
 
 echo ============================================
 echo   莲心 AI · 新版界面（React + Tauri 2）
@@ -44,19 +52,44 @@ if not exist "%ROOT%frontend\start_ui.cmd" (
     set "FAIL=1"
 )
 
-rem ── 1. 找一个可用的 Python 解释器 ──────────────────────────────────────
+rem ── 1. 选 Python：逐个候选做依赖探测，取第一个能用的 ─────────────────
 set "PY="
-if exist "%ROOT%.venv\Scripts\python.exe" set "PY=%ROOT%.venv\Scripts\python.exe"
-if not defined PY if defined LIANXIN_PYTHON if exist "%LIANXIN_PYTHON%" set "PY=%LIANXIN_PYTHON%"
-if not defined PY (
-    where python >nul 2>nul
-    if not errorlevel 1 set "PY=python"
+
+if not defined LIANXIN_PYTHON if exist "%ROOT%run.python.txt" for /f "usebackq tokens=* delims=" %%P in ("%ROOT%run.python.txt") do set "LIANXIN_PYTHON=%%P"
+
+if not defined PY if defined LIANXIN_PYTHON if exist "%LIANXIN_PYTHON%" (
+    "%LIANXIN_PYTHON%" -c "import PyQt5.QtCore, aiohttp, litellm" >nul 2>nul
+    if not errorlevel 1 (
+        set "PY=%LIANXIN_PYTHON%"
+        set "PYFROM=LIANXIN_PYTHON / run.python.txt"
+    )
+)
+if not defined PY if exist "%ROOT%.venv\Scripts\python.exe" (
+    "%ROOT%.venv\Scripts\python.exe" -c "import PyQt5.QtCore, aiohttp, litellm" >nul 2>nul
+    if not errorlevel 1 (
+        set "PY=%ROOT%.venv\Scripts\python.exe"
+        set "PYFROM=项目内 .venv"
+    )
 )
 if not defined PY (
-    echo [错误] 没有找到 Python 解释器，以下任选一种：
-    echo        1^) 先运行同目录的 bootstrap.bat 创建项目内 .venv；
-    echo        2^) 设置环境变量 LIANXIN_PYTHON 指向你的 python.exe；
-    echo        3^) 把 Python 加入系统 PATH。
+    where python >nul 2>nul
+    if not errorlevel 1 (
+        python -c "import PyQt5.QtCore, aiohttp, litellm" >nul 2>nul
+        if not errorlevel 1 (
+            set "PY=python"
+            set "PYFROM=PATH 上的 python"
+        )
+    )
+)
+if not defined PY (
+    echo [错误] 没有找到依赖完整的 Python 环境 ^(需要 PyQt5 / aiohttp / litellm^)。
+    echo        检查顺序：LIANXIN_PYTHON 或 run.python.txt -^> 项目内 .venv -^> PATH 上的 python
+    echo        常见原因：项目内 .venv 存在但依赖没装完 ^(pip install 中途失败^)，
+    echo                  此时它会被自动跳过，而不是拿它硬跑把后端拖挂。
+    echo        解决办法任选其一：
+    echo          1^) 运行同目录的 bootstrap.bat 补齐依赖 ^(首次安装，需要几分钟^)；
+    echo          2^) 设置环境变量 LIANXIN_PYTHON 指向已装好依赖的 python.exe；
+    echo          3^) 在项目根目录新建 run.python.txt，第一行写该 python.exe 完整路径。
     set "FAIL=1"
 )
 
@@ -95,6 +128,25 @@ node -v
 echo        Cargo  :
 cargo -V
 echo.
+
+rem ── 3.5 可选依赖体检（缺失只警告，不中断）────────────────────────────
+"%PY%" -c "import PyQt5.QtWebEngineWidgets" >nul 2>nul
+if errorlevel 1 set "OPTMISS=%OPTMISS% 莲心自习室:PyQt5.QtWebEngineWidgets;"
+"%PY%" -c "import edge_tts" >nul 2>nul
+if errorlevel 1 set "OPTMISS=%OPTMISS% 语音合成:edge-tts;"
+"%PY%" -c "import jieba" >nul 2>nul
+if errorlevel 1 set "OPTMISS=%OPTMISS% 中文分词与记忆:jieba;"
+"%PY%" -c "import networkx" >nul 2>nul
+if errorlevel 1 set "OPTMISS=%OPTMISS% 知识图谱:networkx;"
+"%PY%" -c "import apscheduler" >nul 2>nul
+if errorlevel 1 set "OPTMISS=%OPTMISS% 后台调度:APScheduler;"
+
+if defined OPTMISS (
+    echo [提示] 当前 Python 缺少部分可选依赖，对应功能可能空白或不可用：
+    echo        %OPTMISS%
+    echo        补齐方式：在选中的环境里执行 pip install -r requirements.txt
+    echo.
+)
 
 rem ── 4. 前端依赖（首次运行自动安装）────────────────────────────────────
 if exist "%ROOT%frontend\node_modules" (

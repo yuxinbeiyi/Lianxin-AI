@@ -298,7 +298,7 @@ The recommended first-run path creates a project-local virtual environment, inst
 
 ### Launching the desktop UI
 
-`run.bat` is the one-click launcher for the **new Tauri interface**. It resolves every path from its own location (`%~dp0`), so the project folder can be moved, renamed, or placed on another drive. It verifies Python, Node.js, and Rust, runs `npm install` on the first launch, then starts the backend and the desktop window.
+`run.bat` is the one-click launcher for the **new Tauri interface**. It resolves every path from its own location (`%~dp0`), so the project folder can be moved, renamed, or placed on another drive. It verifies Python, Node.js, and Rust, runs `npm install` on the first launch, then starts the backend and the desktop window. It also probes every Python candidate for the packages the backend imports at startup (`PyQt5`, `aiohttp`, `litellm`) and skips incomplete ones, such as a half-installed `.venv`. Pin a specific interpreter with the `LIANXIN_PYTHON` environment variable, or by writing its path on the first line of `run.python.txt` (a machine-local file that is git-ignored).
 
 ```powershell
 .\run.bat

@@ -523,7 +523,7 @@ pip install -r requirements.txt
 .\run.bat
 ```
 
-`run.bat` 会检查 Python / Node.js / npm / cargo，首次运行自动执行 `npm install`，然后拉起后端 `api_server.py`（`http://127.0.0.1:8766`）与新版界面窗口；它不写死任何盘符，可随项目目录一起移动。只做依赖体检、不真正启动时，先设置 `LIANXIN_DRYRUN=1`。
+`run.bat` 会检查 Python / Node.js / npm / cargo，首次运行自动执行 `npm install`，然后拉起后端 `api_server.py`（`http://127.0.0.1:8766`）与新版界面窗口；它不写死任何盘符，可随项目目录一起移动。它还会逐个候选探测后端启动时就要导入的依赖（PyQt5 / aiohttp / litellm），自动跳过「存在但依赖没装完」的环境（例如半成品 .venv），避免后端起不来导致壁纸、头像、自习室空白；想固定使用某个环境，可设置环境变量 `LIANXIN_PYTHON`，或在项目根目录 `run.python.txt` 第一行写该 python.exe 路径（该文件仅本机生效，已加入 .gitignore）。只做依赖体检、不真正启动时，先设置 `LIANXIN_DRYRUN=1`。
 
 也可以手动分两步启动：
 

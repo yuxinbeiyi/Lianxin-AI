@@ -189,3 +189,5 @@ frontend/dist/
 # 用户本地资源 / 启动日志（本地保留，不提交）
 startup_log.txt
 莲心预览图2.png
+# 本机专用：run.bat 使用的 Python 解释器路径（每台机器不同，不提交）
+run.python.txt
