@@ -63,12 +63,47 @@ def _detect_ordered(message: str, is_technical: bool) -> bool:
     return bool(_ORDERED_GIVE.search(message))
 
 
+# 短回复里这些属于"温暖附和/玩笑"，不能当成敷衍。
+# 注意：纯语气词（嗯/哦/好/行）故意不列入白名单——它们正是敷衍的典型
+# 形态；只有带明确正向含义或玩笑色彩的短句才排除在敷衍判断之外。
+_WARM_SHORT_RE = re.compile(
+    r"^(?:谢谢(?:啦|你)?|辛苦了|哈哈+|嘿嘿|嘻嘻|好耶|好呀|没问题|"
+    r"我也觉得|我也这么想|我也一样|同感|确实)[~～!！。，]*$"
+)
+# 提问或呼唤不是敷衍（例如「莲心？」）。
+_QUESTION_SHORT_RE = re.compile(r"[?？]$|(?:吗|呢|么)[?？]?$")
+
+
+def _short_reply_kind(text: str) -> str:
+    """把一条消息分成 'plain' / 'warm' / 'question' / ''（非短回复）。"""
+    value = str(text or "").strip()
+    if not value or len(value) > 5:
+        return ""
+    if _WARM_SHORT_RE.match(value):
+        return "warm"
+    if _QUESTION_SHORT_RE.search(value):
+        return "question"
+    return "plain"
+
+
 def _detect_brushed_off(message: str, context: AppraisalContext) -> bool:
-    """连续短回复（≥2 条 ≤5 字）视为被敷衍。"""
-    if len(message) > 5 or not context or not context.recent_messages:
+    """只有连续三条及以上的"平淡短回复"才算被敷衍。
+
+    单条短回复非常常见（「嗯」「我也觉得」），提问和温暖附和也不算冷落；
+    原先"任意一条短回复即判定"的规则会把正常对话误判成被冷落。
+    """
+    if not context or not context.recent_messages:
         return False
-    previous = [str(item).strip() for item in context.recent_messages[-2:]]
-    return any(0 < len(item) <= 5 for item in previous)
+    if _short_reply_kind(message) != "plain":
+        return False
+    streak = 0
+    for item in reversed(list(context.recent_messages)):
+        if _short_reply_kind(item) != "plain":
+            break
+        streak += 1
+        if streak >= 2:
+            break
+    return streak >= 2
 
 
 def appraise_deterministic(text: str, context: AppraisalContext | None = None) -> AffectDelta:
@@ -212,7 +247,7 @@ def appraise_deterministic(text: str, context: AppraisalContext | None = None) -
         delta.pride += 0.03
         delta.confidence = 0.66
         delta.significance = max(delta.significance, 0.30)
-        delta.summary = "对方用连续短回复敷衍了你"
+        delta.summary = "对方连续多条平淡短回复，像在敷衍你"
 
     return delta.bounded()
 

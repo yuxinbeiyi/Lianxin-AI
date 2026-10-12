@@ -204,8 +204,50 @@ def _check_stt() -> CheckResult:
     return _ok(detail)
 
 
+def _probe_edge_tts(voice: str) -> str:
+    """真正合成一小段音频验证可用性；成功返回空串，失败返回可读原因。"""
+    import asyncio
+    import tempfile
+
+    try:
+        import edge_tts
+    except ImportError:
+        return "未安装 edge-tts"
+
+    fd, path = tempfile.mkstemp(suffix=".mp3", prefix="lianxin_tts_probe_")
+    os.close(fd)
+    try:
+        async def _run():
+            await edge_tts.Communicate("莲心语音合成自检。", voice).save(path)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        if size < 256:
+            return f"合成结果为空（{size} 字节）"
+        return ""
+    except Exception as exc:
+        detail = str(exc)
+        if "403" in detail:
+            return "服务端拒绝（HTTP 403，微软 Edge Read Aloud 未放行该网络出口）"
+        if "401" in detail or "404" in detail:
+            return "服务端拒绝（HTTP 4xx）"
+        if "timeout" in detail.lower() or "timed out" in detail.lower():
+            return "连接超时"
+        return detail[:120] or exc.__class__.__name__
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+
+
 def _check_tts() -> CheckResult:
-    """检测语音合成（GPT-SoVITS + Edge-TTS）。"""
+    """检测语音合成：GPT-SoVITS 路径 + Edge-TTS 试合成（import 成功不代表可用）。"""
     try:
         from config import get_tts_config
         cfg = get_tts_config()
@@ -213,29 +255,63 @@ def _check_tts() -> CheckResult:
         return _skip()
 
     engine = cfg.get("engine", "auto")
+    voice = str(cfg.get("edge_tts_voice") or "zh-CN-XiaoxiaoNeural")
     parts = []
+    problems = []
 
-    # GPT-SoVITS
-    sovits_path = cfg.get("gpt_sovits_path", "")
+    # GPT-SoVITS（本地主引擎）
+    sovits_path = str(cfg.get("gpt_sovits_path", "") or "").strip()
     if sovits_path:
-        p = Path(sovits_path)
-        if p.exists():
+        if Path(sovits_path).exists():
             parts.append("GPT-SoVITS: 路径有效")
         else:
             parts.append("GPT-SoVITS: 路径不存在")
+            problems.append("GPT-SoVITS 路径无效")
     elif engine in ("gpt_sovits", "auto"):
         parts.append("GPT-SoVITS: 未配置路径")
 
-    # Edge-TTS
-    try:
-        import edge_tts
-        parts.append("Edge-TTS: 可用")
-    except ImportError:
-        parts.append("Edge-TTS: 未安装")
+    # Edge-TTS 回退引擎：必须真的合成成功一次才算可用
+    status, probe = _run_with_timeout(
+        lambda: _probe_edge_tts(voice), timeout=15.0, default=""
+    )
+    if status == "ok" and not probe:
+        parts.append("Edge-TTS: 试合成正常")
+    elif status == "ok":
+        parts.append(f"Edge-TTS: 合成失败（{probe}）")
+        problems.append(f"Edge-TTS 不可用：{probe}")
+    elif status == "timeout":
+        parts.append("Edge-TTS: 试合成超时")
+        problems.append("Edge-TTS 试合成超时")
+    else:
+        parts.append(f"Edge-TTS: 检测异常（{probe}）")
+        problems.append(f"Edge-TTS 检测异常：{probe}")
 
     if not parts:
         return _skip("无 TTS 引擎")
-    return _ok("; ".join(parts))
+    detail = "; ".join(parts)
+    if problems:
+        return _warn("语音合成存在问题（详见下方）", detail)
+    return _ok(detail)
+
+
+def _check_ffmpeg() -> CheckResult:
+    """检测 FFmpeg：QQ 语音 SILK 转换与 pydub 依赖它。"""
+    try:
+        from brain.audio_utils import _resolve_ffmpeg
+    except Exception as exc:
+        return _err("FFmpeg 检测模块不可用", str(exc)[:160])
+
+    try:
+        path = _resolve_ffmpeg()
+    except Exception as exc:
+        return _warn("未找到 FFmpeg（QQ 语音回复会失败）", str(exc)[:200])
+
+    try:
+        import pydub  # noqa: F401
+        pydub_note = "pydub: 可用"
+    except ImportError:
+        pydub_note = "pydub: 未安装"
+    return _ok(f"FFmpeg: {path}", pydub_note)
 
 
 def _check_playwright() -> CheckResult:
@@ -410,6 +486,7 @@ _CHECKS = [
     ("视觉 API",       _check_vision_api),
     ("语音识别",       _check_stt),
     ("语音合成",       _check_tts),
+    ("FFmpeg",        _check_ffmpeg),
     ("Playwright",    _check_playwright),
     ("QQ 桥接",        _check_qq_bridge),
     ("微信桥接",       _check_wechat_bridge),

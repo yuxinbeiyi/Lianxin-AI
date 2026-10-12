@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import os as _os
 _os.environ.setdefault("LITELLM_LOG", "ERROR")  # 抑制 litellm 导入时的 WARNING
+# 使用随包内置的计价表，避免每次启动都去 GitHub 拉取远程 cost map（离线时必失败）。
+_os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import litellm
 litellm.set_verbose = False
 litellm.suppress_debug_info = True  # 关闭 "Give Feedback" stderr 输出
@@ -93,7 +95,7 @@ _RESPONSE_FORMAT_POLICY = """【重要 — 回复格式要求】
 如果情绪不在列表中，输出【表情：默认】。不要创造列表外的情绪。"""
 
 _COMPACT_CORE_POLICY = """【本轮规则】
-自然、简短地回答当前消息。只可依据本轮真实上下文陈述事实；没有检索或执行过工具时，不得假称已经查过、读过、保存或修改。只有纯文本确实不足以完成任务时，才调用 request_tools 申请所需能力。"""
+自然、简短地回答当前消息。只可依据本轮真实上下文陈述事实；没有检索或执行过工具时，不得假称已经查过、读过、保存或修改。如果这件事确实需要外部能力、而本轮没有给你对应工具，就直接说明你需要什么工具（例如「这需要调用搜索工具」），不要用文字假装已经完成。"""
 
 _COMPACT_MEMORY_POLICY = """【回忆规则】
 只依据本轮注入的、带来源的真实记忆或日记内容回答；没有证据时明确说不确定，不得补写经历。"""
@@ -237,7 +239,22 @@ def _get_group_lock(group: str) -> threading.Lock:
 # ── Prompt 调试转储 ─────────────────────────────────────
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(str(text or "")) // 2)
+    """粗估 token 数。
+
+    实测（DeepSeek）中文约 1.26 字符/token，旧的"字符数÷2"会把中文 prompt
+    低估约 37%。这里按"中日韩字符≈1 token、其余≈1/4 token"估算。
+    """
+    value = str(text or "")
+    if not value:
+        return 0
+    cjk = 0
+    for ch in value:
+        code = ord(ch)
+        if (0x3400 <= code <= 0x9FFF or 0x3000 <= code <= 0x303F
+                or 0xFF00 <= code <= 0xFFEF):
+            cjk += 1
+    other = len(value) - cjk
+    return max(1, int(round(cjk + other / 4)))
 
 
 def _dump_prompt_debug(messages: list, all_tools: list,
@@ -267,7 +284,9 @@ def _dump_prompt_debug(messages: list, all_tools: list,
             "message_count": len(messages),
             "total_chars": total_chars,
             "tool_count": tool_count,
-            "est_tokens": total_chars // 2,  # 粗估：中文约2字符/token
+            "est_tokens": _estimate_tokens(
+                "\n".join(str(m.get("content") or "") for m in messages)
+            ),
             "request_mode": getattr(getattr(route, "mode", None), "value", ""),
             "route_reason": getattr(route, "reason", ""),
         },
@@ -3522,7 +3541,7 @@ class AgentCore:
                                 ),
                             })
                             continue
-                        return "（检测到异常的内部工具协议，已阻止其显示。请重新发送消息。）"
+                        return "（刚才那句没生成好，我咽回去了。你再说一遍？）"
                     self._last_reasoning = reasoning if reasoning else None
                     try:
                         from brain.text_hygiene import strip_parenthetical_asides
@@ -3543,7 +3562,8 @@ class AgentCore:
                         import time as _time
                         _time.sleep(1.5)
                         continue
-                    return f"（API 调用失败：{e}）"
+                    print(f"[模型调用失败] {e}", flush=True)
+                    return "（我这边的服务暂时没连上，稍后再说一次就好。）"
 
 
         MAX_ITERATIONS = 20          # 绝对安全上限，正常不会触发
@@ -4044,14 +4064,14 @@ class AgentCore:
                                 flush=True,
                             )
                             return (
-                                "（这轮操作的工具步骤已经完成，但我在组织最终回答时出现内部异常。"
-                                "你可以让我重新描述一下结果。）"
+                                "（这轮操作已经执行完了，只是我没把结果说清楚。"
+                                "你让我复述一遍就行。）"
                             )
                         print(
                             "[协议防泄漏] 最终回复两次被丢弃且本轮无工具结果，改用通用模板兜底。",
                             flush=True,
                         )
-                        return "（刚才的回复生成出现内部异常，请重新发送一次。）"
+                        return "（刚才没接住你的消息，再说一次我接着处理。）"
                 # 工具激活重试：只补充当前语义类别或模型明确点名的工具。
                 if (not self._use_local and not _full_tools_injected
                         and not any(t.get("function", {}).get("name") == "request_tools" for t in all_tools)

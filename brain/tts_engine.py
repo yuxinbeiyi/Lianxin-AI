@@ -547,11 +547,25 @@ def _pick_ref(text: str, mood_hint: Optional[str] = None) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════
 
 def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-XiaoxiaoNeural") -> bool:
-    """Edge-TTS 语音合成（原 generate_audio.py 实现）。返回 bool。"""
+    """Edge-TTS 语音合成（原 generate_audio.py 实现）。返回 bool。
+
+    永久性错误（403/401/404/握手被拒）快速失败并计入熔断，不再做无意义重试；
+    暂时性错误（超时、连接重置、空音频）保留原有的指数退避重试。
+    """
     import asyncio
     import edge_tts
     import random
     from brain.audio_utils import _configure_pydub_ffmpeg
+    from brain import tts_health
+
+    breaker = tts_health.get_breaker()
+    remaining = breaker.open_remaining()
+    if remaining > 0:
+        logger.info(
+            "Edge-TTS 处于熔断中（剩余 %.0f 秒），跳过合成：%s",
+            remaining, breaker.reason(),
+        )
+        return False
 
     mp3_path = output_path + ".mp3"
     max_retries = 3
@@ -573,9 +587,17 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
                 audio = AudioSegment.from_mp3(mp3_path)
                 audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)
                 audio.export(output_path, format="wav")
+                breaker.record_success()
                 return True
             except Exception as exc:
                 last_error = exc
+                kind = tts_health.note_failure(exc)
+                if kind == tts_health.PERMANENT:
+                    logger.error(
+                        "Edge-TTS 永久性失败，不再重试：%s",
+                        tts_health.describe_error(exc),
+                    )
+                    break
                 if attempt < max_retries:
                     base_delay = 1.5 * (2 ** attempt)
                     jitter = random.uniform(0, 0.5)

@@ -31,16 +31,66 @@ _IMAGE_FLOW_LOG = Path(__file__).resolve().parent / "logs" / "image_flow_diagnos
 _IMAGE_FLOW_LOG_LOCK = threading.Lock()
 
 
+_IMAGE_FLOW_LOG_READY = False
+_IMAGE_FLOW_POLL_TICK = 0
+
+
 def _image_flow_log(message: str) -> None:
     """Write bounded image-flow diagnostics without recording image bytes or full text."""
+    global _IMAGE_FLOW_LOG_READY
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [IMAGE_FLOW] {message}\n"
     try:
         _IMAGE_FLOW_LOG.parent.mkdir(parents=True, exist_ok=True)
         with _IMAGE_FLOW_LOG_LOCK:
+            if not _IMAGE_FLOW_LOG_READY:
+                # 与 debug.log 一致：每次启动轮转并只保留最近几份，
+                # 避免这个文件无界增长（曾累积到 22MB / 22 万行）。
+                from utils.bridge_log import rotate_log
+                rotate_log(_IMAGE_FLOW_LOG, keep=5)
+                _IMAGE_FLOW_LOG_READY = True
             with _IMAGE_FLOW_LOG.open("a", encoding="utf-8") as handle:
                 handle.write(line)
     except OSError:
         pass
+
+
+def _clean_vision_description(text: str) -> str:
+    """把视觉模型返回的原始描述整理成中性素材。
+
+    去 Markdown 排版（避免模型模仿其格式）、去客套开头（"以下是…详细描述"）、
+    折叠多余空白。按用户要求不设长度上限，只做去噪。
+    """
+    import re
+    value = str(text or "").replace("\r\n", "\n")
+    if not value.strip():
+        return ""
+    value = re.sub(r"```[\s\S]*?```", "", value)
+    value = re.sub(r"^\s*#{1,6}\s*", "", value, flags=re.MULTILINE)
+    value = re.sub(r"^\s*[-*+]\s+", "", value, flags=re.MULTILINE)
+    value = re.sub(r"^\s*\d+[.、)]\s+", "", value, flags=re.MULTILINE)
+    value = value.replace("**", "").replace("__", "")
+    value = re.sub(r"(?<!\w)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\w)", r"\1", value)
+    value = value.replace("`", "")
+    # 去掉独立的客套/说明行（如"以下是关于图片内容的详细描述："）
+    value = re.sub(
+        r"(?m)^[ \t]*(?:以下是[^\n]{0,40}?描述[：:]?|图片描述[：:]?|"
+        r"这张图片[^\n]{0,20}[：:]|下面[^\n]{0,20}描述[：:]?)[ \t]*$",
+        "",
+        value,
+    )
+    # 去掉开头多余的"好的，"
+    value = re.sub(r"^[ \t]*好的[，,]?[ \t]*", "", value.lstrip())
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _image_flow_log_poll(message: str) -> None:
+    """空轮询降噪：默认每 60 次才记录一条，避免前端轮询把日志刷爆。"""
+    global _IMAGE_FLOW_POLL_TICK
+    _IMAGE_FLOW_POLL_TICK += 1
+    if _IMAGE_FLOW_POLL_TICK % 60 == 1:
+        _image_flow_log(f"{message} [sampled 1/60]")
 
 
 LEGACY_FEATURES = {
@@ -687,10 +737,14 @@ class LianxinBridge:
             1 for item in items for attachment in (item.get("attachments", []) or [])
             if str(attachment.get("description") or "").strip()
         )
-        _image_flow_log(
+        _poll_message = (
             f"messages_response session={session_id} items={len(items)} "
             f"attachments={attachment_count} descriptions={description_count}"
         )
+        if items or attachment_count or description_count:
+            _image_flow_log(_poll_message)
+        else:
+            _image_flow_log_poll(_poll_message)
         for item in items:
             for attachment in item.get("attachments", []) or []:
                 path = str(attachment.get("path") or "")
@@ -852,7 +906,9 @@ class LianxinBridge:
                                 f"description_chars={len(description)}"
                             )
                             context_parts.append(
-                                f"[用户发了一张图片，视觉分析结果如下]\n{description}\n[图片描述结束]"
+                                "[系统观察：以下是图片的原始观察记录]\n"
+                                f"{_clean_vision_description(description)}\n"
+                                "[观察记录结束]"
                             )
                             events.put({"type": "image_analysis_result", "index": index,
                                         "fileName": str(attachment.get("fileName") or "image"),
@@ -957,6 +1013,19 @@ class LianxinBridge:
                 voice = str(get_tts_config().get("edge_tts_voice") or "zh-CN-XiaoxiaoNeural")
             except Exception:
                 voice = "zh-CN-XiaoxiaoNeural"
+        from brain import tts_health
+        breaker = tts_health.get_breaker()
+        remaining = breaker.open_remaining()
+        if remaining > 0:
+            reason = breaker.reason()
+            notice = tts_health.take_notification()
+            bridge_log.log("语音", f"TTS 熔断中（剩余 {remaining:.0f}s），跳过朗读：{reason}")
+            with self._voice_lock:
+                self._voice_events.append({
+                    "id": time.time_ns(), "type": "voice.tts_unavailable",
+                    "reason": reason, "notice": notice,
+                })
+            return {"speaking": False, "unavailable": True, "reason": reason, "notice": notice}
         speaker = VoiceSpeaker(voice=voice)
         def run():
             voice_manager = self._voice
@@ -2706,6 +2775,9 @@ class LianxinBridge:
         log_dir = Path(__file__).with_name("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"legacy_ui_{feature}.log"
+        # 每次拉起都轮转，避免子进程日志无界增长（曾累积到 1MB / 1.8 万行，
+        # 且同一条异常被重复打印上万次）。
+        bridge_log.rotate_log(log_path, keep=3)
         log_file = log_path.open("a", encoding="utf-8")
         process = subprocess.Popen(
             [sys.executable, str(launcher), feature],

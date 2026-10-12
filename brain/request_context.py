@@ -20,6 +20,11 @@ _QUOTE_PREFIX = "[引用回复]"
 _IMAGE_RESULT_MARKER = "[用户发了一张图片，视觉分析结果如下]"
 _IMAGE_FAILURE_MARKER = "[图片分析失败]"
 _IMAGE_RESULT_END = "[图片描述结束]"
+
+# 新版包装文案（不再向模型暴露"视觉分析"这类内部术语）。解析时统一折算成
+# 旧文案，这样历史记录里的旧格式和新格式都能被正确剥离。
+_IMAGE_RESULT_MARKER_V2 = "[系统观察：以下是图片的原始观察记录]"
+_IMAGE_RESULT_END_V2 = "[观察记录结束]"
 _ACK_RE = re.compile(
     r"(?:看过|刷到过|看过了|知道了|了解了|收到|谢谢(?:推荐|分享|提醒)?|"
     r"不用了|不必了|已经看过|见过了|听过了|了解啦|知道啦)",
@@ -93,6 +98,10 @@ def extract_image_blocks(raw_text: str) -> tuple[str, tuple[str, ...]]:
     也不能把描述正文当用户意图。``[图片分析失败]`` 是单行块，同样剥离。
     """
     raw = str(raw_text or "")
+    # 新旧包装文案统一折算，保证历史消息与新消息都能被识别。
+    if _IMAGE_RESULT_MARKER_V2 in raw or _IMAGE_RESULT_END_V2 in raw:
+        raw = raw.replace(_IMAGE_RESULT_MARKER_V2, _IMAGE_RESULT_MARKER)
+        raw = raw.replace(_IMAGE_RESULT_END_V2, _IMAGE_RESULT_END)
     if _IMAGE_RESULT_MARKER not in raw and _IMAGE_FAILURE_MARKER not in raw:
         return raw, ()
 

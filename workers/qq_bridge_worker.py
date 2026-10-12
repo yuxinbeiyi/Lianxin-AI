@@ -1269,22 +1269,21 @@ class QQBridgeWorker(QThread):
                     f"不要在其他QQ好友面前混淆她的身份。"
                     f"{group_note}"
                     f"\n\n【重要：工具调用规则】\n"
-                    f"- 你有完整的工具使用权（打开App、查时间、搜索、读取文件、生成文档等）。\n"
-                    f"- 当主人要求你执行操作时，必须调用对应的工具——不要用文字假装执行。\n"
-                    f"- 例如：主人说「打开网易云」→ 调用 open_app；说「现在几点」→ 调用 get_current_time。\n"
-                    f"- 如果主人要求把文件发到QQ上（如'把这份文档发给我'），调用 send_file_to_qq 工具。\n"
+                    f"- 可用工具由系统按本轮需要提供，以你实际收到的工具列表为准。\n"
+                    f"- 只要本轮提供了对应工具，主人要求执行操作时就必须真正调用——不要用文字假装执行。\n"
+                    f"- 如果本轮没有提供对应工具，就如实说明暂时做不到，绝不要假装已经完成。\n"
                     f"- 只有工具返回成功结果后，你才能告知主人操作已完成。\n"
-                    f"- 【严禁胡编目录内容】当主人询问某个文件夹里有什么文件时，必须先调用 list_directory 或 glob_files 查看真实结果。\n"
+                    f"- 当本轮工具列表里有文件/目录类工具（如 list_directory、glob_files）且主人询问某个文件夹里有什么文件时，必须先调用它查看真实结果。\n"
                     f"-   ⚠ 绝对禁止凭记忆或猜测列出文件名——那是欺骗主人。如果工具调用失败，如实报告错误。\n"
-                    f"- 【严禁擅自发文件】send_file_to_qq 只在主人明确要求发送文件时才调用。禁止自作主张把文件发给主人。"
+                    f"- 【严禁擅自发文件】只有当本轮工具列表里有 send_file_to_qq，且主人明确要求发送文件时才调用它。禁止自作主张把文件发给主人。"
                     f"\n\n【QQ 文件接收】\n"
                     f"- 当用户在 QQ 上直接向你发送文件（如 .doc/.docx/.txt/.pdf/.xlsx 等），系统会自动读取文件内容并注入到对话上下文中。\n"
                     f"- 你会看到文件内容和文件名，可以直接针对内容进行回答、总结或分析。\n"
                     f"- 长文件会显示前 5000 字符，超出部分会标注已截断。如需阅读完整文件，可以主动调用 read_file 工具。\n"
                     f"- Excel 表格（.xlsx）会以「工作表名 + 制表符分隔」的形式展示所有行。"
-                    f"\n\n【记忆规则 — 必须执行】\n"
+                    f"\n\n【记忆规则 — 当本轮提供 save_memory 时必须执行】\n"
                     f'- 当主人向你介绍某人时（如"他叫XX""他是XX""称呼他为XX"），必须立即调用 save_memory 保存到长期记忆。\n'
-                    f'- 绝对禁止只说"记住了"而不调用 save_memory——那只是在假装记住。\n'
+                    f'- 绝对禁止只说"记住了"而不调用 save_memory——那只是在假装记住；本轮没有提供该工具时才用文字说明。\n'
                     f"\n【快捷指令】\n"
                     f"- 在QQ聊天中，如果在消息最开头写入「【指令】」，例如「【指令】打开网易云」，"
                     f"系统会直接执行工具并返回结果，不走模型推理。\n"
@@ -1320,6 +1319,7 @@ class QQBridgeWorker(QThread):
                     source_channel=source_channel,
                     participant_id=user_id,
                     owner_scope=is_owner,
+                    scene="qq_chat",
                 )
                 self._log(f"[*] 恢复会话: {session_key} (session_id={db_session_id})")
             else:
@@ -1331,6 +1331,7 @@ class QQBridgeWorker(QThread):
                     source_channel=source_channel,
                     participant_id=user_id,
                     owner_scope=is_owner,
+                    scene="qq_chat",
                 )
                 db_session_id = agent._session_id
                 self._session_map[session_key] = db_session_id
@@ -3249,6 +3250,26 @@ class QQBridgeWorker(QThread):
         label = f"[{nick}(QQ{uid}){msg_time}]" if uid and uid != "0" else f"[{nick}{msg_time}]"
         return f"{label}: {content}"
 
+    def _announce_tts_unavailable_once(self, msg: dict) -> None:
+        """语音链路熔断后，每轮故障只提醒主人一次，之后静默降级为文字。"""
+        try:
+            from brain import tts_health
+            notice = tts_health.take_notification()
+        except Exception:
+            return
+        if not notice:
+            return
+        try:
+            self._send_msg({
+                "message_type": msg.get("message_type"),
+                "user_id": msg.get("user_id"),
+                "group_id": msg.get("group_id"),
+                "message": [{"type": "text", "data": {"text": notice}}],
+            })
+            self._log(f"[语音] 已发送一次性提示: {notice}")
+        except Exception as exc:
+            self._log(f"[语音] 一次性提示发送失败: {exc}")
+
     def _send_voice_reply(self, text: str, msg: dict):
         """生成语音回复并发送。
 
@@ -3285,6 +3306,7 @@ class QQBridgeWorker(QThread):
             ok = convert_text_to_voice(voice_text, silk_path, debug_log=self._log)
             if not ok:
                 self._log("[语音] TTS→SILK 转换失败，退回文字回复")
+                self._announce_tts_unavailable_once(msg)
                 return False
 
             # 读取 SILK 文件并 base64 编码

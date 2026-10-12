@@ -49,6 +49,19 @@ class VoiceSpeaker:
             # 0. 先删分隔线
             text = re.sub(r'-{3,}|={3,}|~{3,}', '\n', text)
 
+            # 0b. 先剥离 URL / 裸域名 / BV 号。必须在符号替换之前做：
+            #     否则 "/" 会先被替换成空格，URL 就再也匹配不到了，
+            #     最终被拆成 "www dot bilibili dot com" 念出来。
+            text = re.sub(r'https?://[^\s，。！？、）】]*', '', text)
+            text = re.sub(r'\bwww\.[^\s，。！？、）】]*', '', text)
+            text = re.sub(
+                r'\b[a-zA-Z0-9-]+\.(?:com|cn|net|org|io|tv|me|cc|xyz|app|dev|top|info)'
+                r'(?:/[^\s，。！？、）】]*)?',
+                '',
+                text,
+            )
+            text = re.sub(r'\bBV[0-9A-Za-z]{8,}\b', '', text)
+
             # 1. Markdown 链接 [text](url) -> text
             text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
             # 2. 图片
@@ -219,6 +232,19 @@ class VoiceSpeaker:
         if current:
             merged.append(current)
 
+        # 第四步：丢弃清洗后残留的 URL/编号/纯符号碎片，避免 TTS 念出乱码。
+        def _is_junk(segment: str) -> bool:
+            if re.search(r'[\u4e00-\u9fff]', segment):
+                return False
+            core = re.sub(r"[\s\.\,\!\?\;\:\-\(\)\[\]\'\"]+", "", segment)
+            if not core:
+                return True
+            if re.fullmatch(r'[A-Za-z]{2,24}', core):
+                return False
+            return len(core) <= 16
+
+        merged = [p for p in merged if not _is_junk(p)]
+
         return [p.strip() for p in merged if p.strip()]
 
     def speak(self, text: str):
@@ -366,6 +392,16 @@ class VoiceSpeaker:
             logger.warning("GPT-SoVITS 合成失败，回退 Edge-TTS")
 
         mp3_path = self._new_temp_path(f"{tag}.mp3")
+        from brain import tts_health
+        breaker = tts_health.get_breaker()
+        remaining = breaker.open_remaining()
+        if remaining > 0:
+            logger.info(
+                "Edge-TTS 处于熔断中（剩余 %.0f 秒），跳过分句（text_len=%d）",
+                remaining, len(text),
+            )
+            self._remove_temp_file(mp3_path)
+            return None
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -383,8 +419,10 @@ class VoiceSpeaker:
                     return None
                 VoiceSpeaker._last_edge_tts_time = time.monotonic()
             logger.info(f"TTS 使用 Edge-TTS（MP3，text_len={len(text)}）")
+            breaker.record_success()
             return mp3_path
         except Exception as e:
+            tts_health.note_failure(e)
             logger.error(f"Edge-TTS 合成失败（已丢弃分句「{text[:30]}」）: {e}")
             self._remove_temp_file(mp3_path)
             return None

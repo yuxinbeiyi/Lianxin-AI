@@ -391,8 +391,8 @@ class QqSettingsDialog(QDialog):
                     self._bridge_signals.received.emit(result)
             except urllib.error.HTTPError as exc:
                 try:
-                    payload = json.loads(exc.read().decode("utf-8"))
-                    message = str(payload.get("error") or exc)
+                    error_body = json.loads(exc.read().decode("utf-8"))
+                    message = str(error_body.get("error") or exc)
                 except (OSError, ValueError, json.JSONDecodeError):
                     message = str(exc)
                 if not self._bridge_closed:

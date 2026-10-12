@@ -73,8 +73,12 @@ class _TeeWriter:
         return False
 
 
-def _rotate_log(target: Path) -> None:
-    """Move the previous session's log aside and prune old backups."""
+def rotate_log(target: Path, keep: int = 10) -> None:
+    """Move the previous session's log aside and prune old backups.
+
+    Reused by other log sinks (image-flow diagnostics, legacy UI subprocess
+    logs) so every sink has the same bounded growth behaviour as debug.log.
+    """
     if not target.exists():
         return
     try:
@@ -89,13 +93,17 @@ def _rotate_log(target: Path) -> None:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        for old in backups[10:]:
+        for old in backups[keep:]:
             try:
                 old.unlink()
             except Exception:
                 pass
     except Exception:
         pass
+
+
+# 兼容旧调用名
+_rotate_log = rotate_log
 
 
 def install(log_filename: str = "debug.log") -> Path:
