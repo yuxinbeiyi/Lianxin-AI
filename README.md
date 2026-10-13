@@ -60,7 +60,7 @@ The project is inspired by the Endless Library setting from *Anomaly Handler*. I
 | Time Capsule | Shared journals, a timeline, anonymous messages, a collection space, migration of legacy diaries, and memory links |
 | Tools and media | Weather, files, browser automation, music, screenshots, camera input, OCR, image generation, and speech |
 | VisionLab | Face recognition and enrollment, OK/thumbs-up/wave gesture recognition, presence and posture detection, with CPU/GPU switching |
-| Voice stack | Local FunASR speech recognition, full-duplex interruption, GPT-SoVITS multi-version voice synthesis, and Edge-TTS fallback |
+| Voice stack | Local FunASR speech recognition, full-duplex interruption, Edge-TTS cloud voice by default, and GPT-SoVITS multi-version voice synthesis as fallback |
 | Bridges | Optional QQ WebSocket and WeChat AstrBot integrations |
 | Automation | Natural-language scheduled tasks, execution records, failure handling, and ReAct tool execution |
 | Extensions | Dynamically discovered Skills packages and MCP services |
@@ -233,7 +233,7 @@ The tool layer includes weather, system information, files, browser actions, mus
 
 Visual capabilities include screenshots, camera input, OCR, image description, image generation, and the independent VisionLab window. VisionLab supports face recognition and personal-feature matching, OK/thumbs-up/wave gestures, presence and posture detection, hot-swappable features, and CPU/GPU inference selection. Local event recognition can feed character animation, emotion, or proactive behavior without sending every video frame to a model.
 
-Voice capabilities include local FunASR speech-to-text with CPU/GPU selection, full-duplex listening and interruption, reference-audio transcription, GPT-SoVITS v2/v3/v4 voice synthesis, emotion parameters, lazy model loading, and Edge-TTS fallback. Install the matching dependency profile and configure required external services. QQ voice delivery may require FFmpeg to convert generated audio to SILK.
+Voice capabilities include local FunASR speech-to-text with CPU/GPU selection, full-duplex listening and interruption, reference-audio transcription, Edge-TTS cloud voice by default, and automatic fallback to GPT-SoVITS v2/v3/v4 voice synthesis with emotion parameters and lazy model loading. Install the matching dependency profile and configure required external services. QQ voice delivery may require FFmpeg to convert generated audio to SILK.
 
 ### Companion modes and hardware
 
@@ -268,7 +268,7 @@ For a stable lightweight setup:
 |---|---|---|
 | Ollama | Local text models | Configure the provider as `local` and run Ollama separately |
 | SiliconFlow | Visual understanding | Used for screenshot analysis and camera observation when configured |
-| GPT-SoVITS / Edge-TTS | Speech output | Optional voice stack; some QQ voice flows require FFmpeg |
+| Edge-TTS / GPT-SoVITS | Speech output | Edge-TTS by default with optional GPT-SoVITS fallback; some QQ voice flows require FFmpeg |
 | QQ bridge | QQ message access | Configure a WebSocket endpoint and owner account details |
 | WeChat bridge | WeChat message access | Uses AstrBot integration |
 | Playwright | Browser automation | Install Chromium after installing the browser dependency profile |
