@@ -4862,10 +4862,10 @@ def capture_from_camera():
     from brain.observation import capture_live_camera_frame, analyze_observation
     path, source = capture_live_camera_frame()
     if not path:
-        return "拍照失败：无法打开摄像头，且视觉感知面板未提供当前画面"
+        return _CAMERA_CAPTURE_FAIL
     desc = analyze_observation(path, source or "摄像头")
     _save_observation(path, desc)
-    return desc
+    return _observation_tool_result(desc)
 
 
 def look_at_camera():
@@ -4880,23 +4880,49 @@ def look_at_camera():
     path, source = capture_live_camera_frame()
     print(f"[视觉工具] look_at_camera 获取画面: {path}（来源 {source}）")
     if not path:
-        return "拍照失败：无法打开摄像头，且视觉感知面板未提供当前画面"
+        return _CAMERA_CAPTURE_FAIL
     desc = analyze_observation(path, source or "视觉感知摄像头")
     _save_observation(path, desc)
-    return desc
+    return _observation_tool_result(desc)
 
 def capture_desktop():
     from brain.observation import capture_screen, analyze_observation
     path = capture_screen()
     if not path:
-        return "截屏失败"
+        return _SCREEN_CAPTURE_FAIL
     desc = analyze_observation(path, "截图")
     _save_observation(path, desc)
-    return desc
+    return _observation_tool_result(desc)
 
 
-# ── 观察结果全局存储（供 AgentWorker 读取并发送图片气泡） ──
+# ── 观察结果全局存储（供聊天界面读取并发送莲心侧图片气泡） ──
 _last_observation = {"path": None, "desc": None}
+
+_CAMERA_CAPTURE_FAIL = (
+    "拍照失败：这次没能拿到摄像头画面（摄像头被占用，或视觉感知面板暂无画面）。"
+    "请如实告诉主人你没看到，不要编造画面内容。"
+)
+_SCREEN_CAPTURE_FAIL = (
+    "截屏失败：这次没能抓取到屏幕画面。"
+    "请如实告诉主人你没看到，不要编造画面内容。"
+)
+
+
+def _observation_tool_result(desc: str) -> str:
+    """把"拍到了但识别失败"转成模型能正确应对的工具结果。
+
+    历史问题：失败被归一化成空串后，模型会从历史里翻出旧图片路径反复重试
+    （"C:/Users/Administrator/Desktop/screenshot_*.png" → [Errno 2]），
+    然后对着没看到的画面评论。这里明确禁止这两种行为。
+    """
+    from brain.observation_quality import is_vision_failure
+    if desc and not is_vision_failure(desc):
+        return desc
+    return (
+        f"{desc or '图片理解失败：视觉模型没有返回内容'}\n"
+        "[画面已拍到但识别失败] 请如实告诉主人你这次看不清，"
+        "禁止编造画面内容，也不要再用其它路径重复调用识图工具。"
+    )
 
 
 def _save_observation(path: str, desc: str):

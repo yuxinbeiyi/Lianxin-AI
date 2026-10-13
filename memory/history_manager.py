@@ -205,6 +205,26 @@ class HistoryManager:
             conn.commit()
             return int(cur.lastrowid)
 
+    def latest_message_id(self, session_id: int, role: str) -> int:
+        """该会话中指定角色最新一条消息的 id（没有则 0）。"""
+        row = self._conn().execute(
+            "SELECT id FROM messages WHERE session_id=? AND role=? ORDER BY id DESC LIMIT 1",
+            (int(session_id), str(role)),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def attach_metadata_to_message(self, message_id: int, metadata: dict) -> bool:
+        """按 id 精确挂载 UI metadata（比"挂到最新一条"安全：并发写入时不会错挂）。"""
+        if not message_id:
+            return False
+        with self._write_lock:
+            cur = self._conn().execute(
+                "UPDATE messages SET metadata_json=? WHERE id=?",
+                (json.dumps(metadata or {}, ensure_ascii=False, default=str), int(message_id)),
+            )
+            self._conn().commit()
+            return bool(cur.rowcount)
+
     def update_latest_message_metadata(self, session_id: int, role: str, metadata: dict) -> bool:
         """Attach UI metadata to the newest message without changing legacy content."""
         with self._write_lock:

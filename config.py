@@ -57,6 +57,12 @@ _SILICONFLOW_DEFAULTS = {
     "vision_model":  "Qwen/Qwen3-VL-30B-A3B-Instruct",
 }
 
+# 已知不适合使用的视觉模型 → 迁移原因（读取配置时会自动换回默认模型）
+_SLOW_VISION_MODELS = {
+    "deepseek-ai/deepseek-vl2": "该模型已被服务端弃用",
+    "Qwen/Qwen3-VL-8B-Instruct": "实测单图耗时 100s+，被服务端限速",
+}
+
 # ── 阿里云 STT 默认值 ───────────────────────────────────────
 _ALIYUN_STT_DEFAULTS = {
     "access_key_id":     "",
@@ -331,12 +337,23 @@ def get_siliconflow_config() -> dict:
     result = {}
     for k, v in _SILICONFLOW_DEFAULTS.items():
         result[k] = sf.get(k, v)
-    # 自动迁移：旧模型已被弃用，替换为新模型
-    if result.get("vision_model") == "deepseek-ai/deepseek-vl2":
+    # 自动迁移：弃用模型 / 实测被服务端严重限速的模型，统一换回默认模型。
+    # 2026-10-13 实测（同一 Key、同一张 64x64 图）：
+    #   Qwen/Qwen3-VL-8B-Instruct  第1次 103.1s、第2次 113.9s（非冷启动）
+    #   Qwen/Qwen3-VL-30B-A3B-Instruct         0.8s
+    # 即 8B 是被服务端限速/排队，会拖垮 120s 的工具超时预算。
+    bad_reason = _SLOW_VISION_MODELS.get(str(result.get("vision_model") or ""))
+    if bad_reason:
+        previous = result.get("vision_model")
         result["vision_model"] = _SILICONFLOW_DEFAULTS["vision_model"]
         sf["vision_model"] = _SILICONFLOW_DEFAULTS["vision_model"]
         full["siliconflow"] = sf
         _save_full_config(full)
+        print(
+            f"[配置] 视觉模型自动迁移：{previous}（{bad_reason}）→ "
+            f"{_SILICONFLOW_DEFAULTS['vision_model']}",
+            flush=True,
+        )
     return result
 
 

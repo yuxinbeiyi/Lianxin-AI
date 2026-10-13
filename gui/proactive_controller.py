@@ -46,6 +46,9 @@ class ProactivePresentationController:
         self._pending_mooyu_sources: list = []
         self._last_observation_context = ""
         self._last_observation_context_at = 0.0
+        # 待并入"莲心自己的那句话"的观察图片（见 handle_proactive_response）。
+        self._pending_observation = None
+        self._pending_observation_at = 0.0
 
     @staticmethod
     def _clean_text(text: str) -> str:
@@ -104,43 +107,41 @@ class ProactivePresentationController:
             return
         self._last_observation_context = content
         self._last_observation_context_at = now
-        stored = f"[观察] 莲心刚才观察到：{content[:1500]}"
-        self._save_message(f"莲心刚才观察到：{content[:1500]}")
-        self._remember_assistant_context(stored)
+        # 只注入模型上下文，不再单独落库：观察内容改由莲心自己的那句话
+        # （handle_proactive_response）连同图片一起呈现，避免历史里多出一条
+        # "莲心刚才观察到：…"的机械旁白。
+        self._remember_assistant_context(f"[观察] 莲心刚才观察到：{content[:1500]}")
 
     def handle_observation_image(self, img_path: str, desc: str):
+        """收下"莲心看到的画面"，暂存到 her 下一句话里一起呈现。
+
+        不在这里落库/显示：图片等 handle_proactive_response 拿到莲心自己的
+        那句话，再合成一条"她的话 + 她看到的图"的消息（见 _take_pending_observation）。
+        """
         try:
-            from brain.observation_quality import normalize_observation, observation_preview
+            from brain.observation_quality import normalize_observation
             desc = normalize_observation(desc)
             self.clear_observation_tip()
-            self._observations_dir.mkdir(parents=True, exist_ok=True)
-            ts = int(time.monotonic() * 1000)
-            ext = Path(img_path).suffix or ".png"
-            dst = self._observations_dir / f"obs_{ts}{ext}"
-            shutil.copy2(img_path, dst)
-            try:
-                os.remove(img_path)
-            except OSError:
-                pass
-
-            try:
-                files = sorted(
-                    self._observations_dir.glob("obs_*"),
-                    key=lambda path: path.stat().st_mtime,
-                    reverse=True,
-                )
-                for old in files[50:]:
-                    old.unlink()
-            except OSError:
-                pass
-
+            from brain.observation import OBSERVATIONS_DIR, adopt_observation_image
+            self._observations_dir = OBSERVATIONS_DIR
+            stored = adopt_observation_image(str(img_path))
+            if not stored:
+                raise RuntimeError(f"图片收纳失败：{img_path}")
+            self._pending_observation = {"path": stored, "desc": desc}
+            self._pending_observation_at = time.monotonic()
             self._remember_observation(desc)
-            summary = observation_preview(desc, 180)
-            self._chat_widget.add_image_message(
-                str(dst), desc=summary, full_text=desc, is_ai=True
-            )
         except Exception as exc:
             self._chat_widget.add_system_tip(f"[观察图片显示失败: {exc}]")
+
+    def _take_pending_observation(self):
+        """取出待合并的观察图片；超过 120s 未被合并则作废，避免挂到后续无关回复上。"""
+        observation = self._pending_observation
+        self._pending_observation = None
+        if not observation:
+            return None
+        if time.monotonic() - self._pending_observation_at > 120.0:
+            return None
+        return observation
 
     def handle_proactive_response(self, text: str):
         self.clear_observation_tip()
@@ -157,11 +158,23 @@ class ProactivePresentationController:
         if self._scheduler.desktop_enabled:
             if pending_sources:
                 self._chat_widget.add_mooyu_data_sources(pending_sources)
-            self._save_message(text)
+            observation = self._take_pending_observation()
+            delivered = False
+            if observation:
+                # "她的话 + 她看到的图"合成一条消息：图片气泡的正文就是莲心这句话。
+                try:
+                    delivered = bool(self._chat_widget.add_observation_bubble(
+                        observation["path"], text, observation.get("desc") or "",
+                    ))
+                except Exception as exc:
+                    print(f"[观察] 图片气泡交付失败: {exc}", flush=True)
+            if not delivered:
+                self._save_message(text)
             # SQLite 持久化不会自动更新当前 AgentCore.history；同步内存上下文，
             # 让用户紧接着追问时模型能看到刚才的主动发言。
             self._remember_assistant_context(f"[主动] {text}")
-            self._chat_widget.add_ai_message(text)
+            if not observation:
+                self._chat_widget.add_ai_message(text)
             self._notify_minimized()
             self._speak_func(text)
 

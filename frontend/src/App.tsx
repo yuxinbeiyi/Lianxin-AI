@@ -515,14 +515,22 @@ function TaskCard() {
 
 function ImageMessageContent({ message }: { message: Message }) {
   const [expanded, setExpanded] = useState(false);
-  const description = message.imageDescription || "";
+  const fromAssistant = message.role === "assistant";
+  // 莲心侧气泡：正文就是她自己的那句话（同一消息里渲染），
+  // 原始观察记录是给模型用的报告腔素材，不再塞进气泡（避免出戏）。
+  const description = fromAssistant ? "" : message.imageDescription || "";
   const collapsible = description.length > 100;
   const visibleDescription =
     expanded || !collapsible ? description : `${description.slice(0, 100)}...`;
   return (
     <>
-      <img src={message.imageUrl} alt={message.imageName || "发送的图片"} />
-      <span className="image-file-name">{message.imageName || "图片"}</span>
+      <img
+        src={message.imageUrl}
+        alt={fromAssistant ? "莲心看到的画面" : message.imageName || "发送的图片"}
+      />
+      <span className="image-file-name">
+        {fromAssistant ? "莲心看到的画面" : message.imageName || "图片"}
+      </span>
       {message.imageStatus === "pending" && (
         <span className="image-analysis-state">正在分析图片…</span>
       )}

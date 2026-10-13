@@ -71,6 +71,31 @@ from brain.web_evidence_cache import (
 logger = logging.getLogger("Agent")
 
 
+from brain.observation import OBSERVATION_TOOLS
+
+
+_STALE_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*\.(?:png|jpe?g|bmp|webp)", re.IGNORECASE)
+
+
+def _audit_result_text(name: str, result, is_error: bool) -> str:
+    """把工具结果压成审计行文本。
+
+    失败的"文件不存在"记录里带着旧路径，会被模型当成可重试线索反复调用
+    （历史上出现过整轮都在重试 C:/Users/Administrator/... 那张旧截图）。
+    这里抹掉路径，并对看图类工具明确禁止按历史路径重试。
+    """
+    text = str(result or "")[:240]
+    if not is_error:
+        return text
+    if "No such file or directory" in text or "不存在或不可读" in text:
+        if name in OBSERVATION_TOOLS or name == "describe_image":
+            return (
+                "图片路径不存在（那张图早已不在，禁止再用历史里的路径重试；"
+                "要看画面请重新截屏或拍照）"
+            )
+    return _STALE_PATH_RE.sub("<路径已失效>", text)
+
+
 def _safe_tool_args_for_log(name: str, args: dict) -> dict:
     """Return bounded, non-secret tool arguments for diagnostic logging."""
     value = dict(args or {})
@@ -1817,7 +1842,7 @@ class AgentCore:
             if call_key == last_key:
                 logger.warning(f"[ToolLoop] 重复工具调用: {name}，终止循环")
                 self._last_tool_was_duplicate = True
-                if name in ("capture_desktop", "capture_from_camera"):
+                if name in OBSERVATION_TOOLS:
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": "上一轮已经完成截图/观察，请直接根据已有结果回复用户，不要再次调用截图工具。"})
                     continue
                 messages.append({
@@ -1829,7 +1854,7 @@ class AgentCore:
             if call_key in self._loop_tool_call_history:
                 print(f"  [去重] 跳过重复调用: {name}（参数与之前完全相同）", flush=True)
                 self._last_tool_was_duplicate = True
-                if name in ("capture_desktop", "capture_from_camera"):
+                if name in OBSERVATION_TOOLS:
                     messages.append({
                         "role": "tool", "tool_call_id": tc.id,
                         "content": "上一轮已经完成截图/观察。请使用已有观察结果直接回复，禁止再次调用截图工具。",
@@ -2930,7 +2955,10 @@ class AgentCore:
             audit_lines = ["【本会话真实工具记录】只能据此声称工具是否调用或配置是否生效。"]
             for event in recent_audit:
                 status = "失败" if event.get("is_error") else "成功"
-                audit_lines.append(f"- {event.get('name', '')}: {status}；{str(event.get('result', ''))[:240]}")
+                audit_lines.append(
+                    f"- {event.get('name', '')}: {status}；"
+                    f"{_audit_result_text(event.get('name', ''), event.get('result', ''), bool(event.get('is_error')))}"
+                )
             messages.append({"role": "system", "content": "\n".join(audit_lines)})
         if (getattr(self, "_prepared_document_context", "")
                 and not route.is_light and not self._use_local):

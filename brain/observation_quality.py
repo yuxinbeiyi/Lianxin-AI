@@ -22,13 +22,34 @@ _INTRO_RE = re.compile(
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*|^\s*[-—]{3,}\s*$")
 _UNCERTAIN_APP_RE = re.compile(r"(?<!莲心)(?:瑶心|涟心|怜心)\s*AI", re.IGNORECASE)
 
+# 视觉链路失败时返回的原因前缀（见 brain/vision.py 的 _fail 与 observation.analyze_observation）
+VISION_FAILURE_PREFIXES = (
+    "错误：",
+    "图片理解失败",
+    "[截图分析失败",
+    "[摄像头分析失败",
+)
+
+
+def is_vision_failure(text: str) -> bool:
+    """判断文本是"视觉调用失败的原因"而不是真实的观察内容。
+
+    失败原因必须能被识别出来：历史上它被静默归一化成空串，
+    于是莲心拿到空结果照常评论，日志里也查不到任何错误。
+    """
+    return str(text or "").lstrip().startswith(VISION_FAILURE_PREFIXES)
+
 
 def normalize_observation(text: str, max_chars: int = 600) -> str:
-    """去掉报告腔、危险推断和常见 OCR 误认，并限制上下文体积。"""
+    """去掉报告腔、危险推断和常见 OCR 误认，并限制上下文体积。
+
+    失败原因统一返回空串——调用方应先 is_vision_failure() 判断，
+    绝不能把失败文本当成观察内容展示给用户。
+    """
     value = str(text or "").strip()
     if not value:
         return ""
-    if value.startswith(("错误：", "图片理解失败", "[截图分析失败", "[摄像头分析失败")):
+    if is_vision_failure(value):
         return ""
 
     value = _INTRO_RE.sub("", value)

@@ -5,9 +5,58 @@ Observation 模块：截图、摄像头抓拍、观察分析
 """
 
 import os
+import shutil
 import tempfile
 import time
+from pathlib import Path
 from typing import Optional
+
+# 会产出"莲心看到的画面"的工具：聊天界面据此显示莲心侧图片气泡。
+# 新增视觉工具时只需改这里（brain/agent.py、api_server.py 共用）。
+OBSERVATION_TOOLS = ("capture_desktop", "capture_from_camera", "look_at_camera")
+
+# 观察图片托管目录：api_server 的 /api/attachments 只放行
+# ~/.lianxin/{images,files,observations}，所以临时截图必须先搬进来才能被前端加载。
+OBSERVATIONS_DIR = Path.home() / ".lianxin" / "observations"
+OBSERVATION_KEEP = 50
+
+
+def adopt_observation_image(image_path: str, keep: int = OBSERVATION_KEEP) -> Optional[str]:
+    """把临时观察图片收进托管目录，返回新路径；失败返回 None。
+
+    顺带清理超出 keep 张的旧观察图；临时原图搬迁成功后删除。
+    """
+    try:
+        src = Path(str(image_path or ""))
+        if not src.is_file():
+            return None
+        OBSERVATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = src.suffix or ".png"
+        stamp = int(time.time() * 1000)
+        dst = OBSERVATIONS_DIR / f"obs_{stamp}{suffix}"
+        counter = 1
+        while dst.exists():
+            dst = OBSERVATIONS_DIR / f"obs_{stamp}_{counter}{suffix}"
+            counter += 1
+        shutil.copy2(src, dst)
+        try:
+            src.unlink()
+        except OSError:
+            pass
+        try:
+            files = sorted(
+                OBSERVATIONS_DIR.glob("obs_*"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for old in files[max(0, int(keep)):]:
+                old.unlink()
+        except OSError:
+            pass
+        return str(dst)
+    except Exception as exc:
+        print(f"[观察] 收纳观察图片失败: {exc}", flush=True)
+        return None
 
 
 def capture_screen() -> Optional[str]:
@@ -133,15 +182,29 @@ def capture_live_camera_frame(camera_index: int = 0, wait_seconds: int = 5):
 
 
 def analyze_observation(image_path: str, source_name: str = "截图") -> str:
-    """分析观察到的画面，返回自然语言描述。"""
+    """分析观察到的画面，返回自然语言描述。
+
+    失败时原样返回以"图片理解失败："开头的原因（不再静默归一化成空串），
+    这样工具结果里能看到失败原因，模型也不用靠猜或复用历史里的旧路径。
+    """
     print(f"[观察-调试] analyze_observation: {source_name}, path={image_path}")
     try:
         from brain.vision import describe_image
-        from brain.observation_quality import OBSERVATION_PROMPT, normalize_observation
+        from brain.observation_quality import (
+            OBSERVATION_PROMPT,
+            is_vision_failure,
+            normalize_observation,
+        )
         print("[观察-调试] analyze_observation: 调用 describe_image...")
-        result = normalize_observation(describe_image(image_path, prompt=OBSERVATION_PROMPT))
+        raw = describe_image(image_path, prompt=OBSERVATION_PROMPT)
+        if is_vision_failure(raw):
+            reason = str(raw or "").strip()
+            print(f"[观察-调试] analyze_observation: 视觉失败 -> {reason[:200]}", flush=True)
+            return reason
+        result = normalize_observation(raw)
         print(f"[观察-调试] analyze_observation: 完成, len={len(result)}")
         return result
     except Exception as e:
-        print(f"[观察-调试] analyze_observation: 失败 {e}")
-        return f"[{source_name}分析失败: {e}]"
+        reason = f"{source_name}分析异常（{type(e).__name__}: {e}）"
+        print(f"[观察-调试] analyze_observation: 失败 {reason}", flush=True)
+        return f"图片理解失败：{reason}"

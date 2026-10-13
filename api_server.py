@@ -54,6 +54,61 @@ def _image_flow_log(message: str) -> None:
         pass
 
 
+from brain.observation import OBSERVATION_TOOLS  # noqa: E402  (观察工具白名单，单一来源)
+
+
+def _latest_assistant_message_id(agent) -> int:
+    """当前会话里最新一条 assistant 消息的 id（用于判断本轮是否真的产生了回复）。"""
+    try:
+        history = agent.get_history_manager()
+        session_id = getattr(agent, "_session_id", None)
+        if history is None or session_id is None:
+            return 0
+        return int(history.latest_message_id(session_id, "assistant"))
+    except Exception:
+        return 0
+
+
+def _attach_observation_to_reply(agent, observation, assistant_id_before: int) -> None:
+    """把"莲心这次看到的画面"挂到她自己那条回复消息上。
+
+    新版界面把 assistant 消息的附件渲染成莲心侧图片气泡；挂在回复上
+    （而不是另存一条"莲心刚才观察到：…"旁白），就实现了
+    "她的话 + 她看到的图"合成同一条消息，历史里也不再有多余的机械旁白。
+    """
+    if not observation or not observation.get("path"):
+        return
+    try:
+        history = agent.get_history_manager()
+        session_id = getattr(agent, "_session_id", None)
+        if history is None or session_id is None:
+            return
+        message_id = int(history.latest_message_id(session_id, "assistant"))
+        if message_id <= int(assistant_id_before or 0):
+            _image_flow_log(
+                f"observe_attach_skipped session={session_id} reason=no_new_assistant_message"
+            )
+            return
+        from pathlib import Path as _Path
+
+        from brain.observation import adopt_observation_image
+        stored = adopt_observation_image(str(observation.get("path")))
+        if not stored:
+            _image_flow_log(f"observe_attach_skipped session={session_id} reason=adopt_failed")
+            return
+        history.attach_metadata_to_message(message_id, {"attachments": [{
+            "kind": "image",
+            "path": stored,
+            "fileName": _Path(stored).name,
+            "description": str(observation.get("desc") or ""),
+        }]})
+        _image_flow_log(
+            f"observe_attached session={session_id} message={message_id} path={stored}"
+        )
+    except Exception as exc:
+        _image_flow_log(f"observe_attach_failed error={exc}")
+
+
 def _clean_vision_description(text: str) -> str:
     """把视觉模型返回的原始描述整理成中性素材。
 
@@ -907,6 +962,8 @@ class LianxinBridge:
             f"kinds={[str(item.get('kind') or 'image') for item in attachments]}"
         )
         pending_tool_round = [None]
+        # 本轮"莲心看到的画面"（截图/摄像头），收尾时挂到她自己的回复消息上。
+        pending_observation = [None]
 
         def on_round_start(round_num):
             # AgentCore enters a model round even for ordinary text replies.
@@ -937,6 +994,14 @@ class LianxinBridge:
                 "type": "tool_result", "name": str(name), "preview": preview,
                 "isError": bool(is_error), "elapsedMs": float(elapsed_ms or 0),
             })
+            if str(name) in OBSERVATION_TOOLS:
+                try:
+                    from brain.tools import get_observation_image
+                    observation = get_observation_image()
+                    if observation.get("path"):
+                        pending_observation[0] = observation
+                except Exception as exc:
+                    _image_flow_log(f"observe_capture_failed tool={name} error={exc}")
 
         def run():
             with self._chat_lock:
@@ -1011,6 +1076,7 @@ class LianxinBridge:
                         f"original_text_present={bool(text.strip())} "
                         f"routing_preview={request_context.routing_text[:80]!r}"
                     )
+                    assistant_id_before = _latest_assistant_message_id(agent)
                     response = agent.chat(
                         agent_text,
                         forced_tool=forced_tool or None,
@@ -1019,6 +1085,10 @@ class LianxinBridge:
                         on_tool_call=on_tool_call,
                         on_tool_result=on_tool_result,
                     )
+                    _attach_observation_to_reply(
+                        agent, pending_observation[0], assistant_id_before
+                    )
+                    pending_observation[0] = None
                     if quote_text:
                         agent.get_history_manager().update_latest_message_content(
                             agent._session_id, "user", text.strip() or "看看这张图片"
@@ -3012,6 +3082,40 @@ class _HeadlessProactiveChatWidget:
             )
         except Exception as exc:
             bridge_log.log("主动", f"观察图片落库失败: {exc}")
+
+    def add_observation_bubble(self, image_path, caption="", raw_observation=""):
+        """把"莲心看到的画面"落库成她自己的一条 assistant 消息。
+
+        前端轮询到后渲染成莲心侧图片气泡（正文=她自己的话，附件=观察图片）。
+        返回 True 表示已自行持久化，调用方不要再 _save_message。
+        """
+        try:
+            agent = self._bridge.agent()
+            if agent is None:
+                return False
+            history = agent.get_history_manager()
+            session_id = getattr(agent, "_session_id", None)
+            if history is None or session_id is None:
+                return False
+            from pathlib import Path as _Path
+
+            from brain.observation import adopt_observation_image
+            stored = adopt_observation_image(str(image_path))
+            if not stored:
+                return False
+            history.save_message(
+                session_id, "assistant", str(caption or ""),
+                metadata={"attachments": [{
+                    "kind": "image",
+                    "path": stored,
+                    "fileName": _Path(stored).name,
+                    "description": str(raw_observation or ""),
+                }]},
+            )
+            return True
+        except Exception as exc:
+            bridge_log.log("观察", f"观察图片落库失败: {exc}")
+            return False
 
     def add_mooyu_data_sources(self, sources):
         pass

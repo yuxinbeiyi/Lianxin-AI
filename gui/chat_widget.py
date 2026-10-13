@@ -483,6 +483,17 @@ class ChatWidget(QScrollArea):
         self._schedule_layout_refresh()
         self._scroll_to_bottom()
 
+    def add_observation_bubble(self, image_path: str, caption: str = "", raw_observation: str = "") -> bool:
+        """莲心侧"她看到的画面"气泡：图片 + 她自己那句话（同一个气泡）。
+
+        桌面旧界面不做持久化（历史由 controller 的 _save_message 负责），
+        返回 False 让调用方照常写历史。
+        """
+        self.add_image_message(
+            image_path, desc=caption or "", full_text=raw_observation or caption or "", is_ai=True
+        )
+        return False
+
     def add_user_image(self, image_path: str, ocr_text: str = "", full_text: str = "", temporary: bool = False):
         """插入用户图片消息气泡（右侧）。ocr_text 为摘要，full_text 为完整描述（支持展开）。"""
         follow_bottom = self._is_near_bottom()
