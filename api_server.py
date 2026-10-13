@@ -3855,6 +3855,12 @@ def main():
     except Exception as exc:
         bridge_log.log("启动", f"MCP 初始化失败: {exc}")
     try:
+        from brain.music_startup import establish_music_baseline
+        _music_baseline = establish_music_baseline()
+        bridge_log.log("音乐", f"启动基线: {_music_baseline}")
+    except Exception as exc:
+        bridge_log.log("音乐", f"启动基线失败: {exc}")
+    try:
         bridge.start_proactive_runtime()
         bridge.start_music_watcher()
         bridge.start_music_state()

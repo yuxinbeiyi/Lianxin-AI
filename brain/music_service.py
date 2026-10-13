@@ -56,9 +56,20 @@ class MusicPlaybackTracker:
 
     @staticmethod
     def _is_active(state: dict) -> bool:
+        if state.get("ghostPlayback"):
+            # 幽灵播放（播放器谎报 playing，且没有真实曲目）：不计入真实时长。
+            return False
         if bool(state.get("active")):
             return True
-        return bool(state.get("playing")) and not bool(state.get("paused"))
+        if not (bool(state.get("playing")) and not bool(state.get("paused"))):
+            return False
+        # 兜底护栏：声称在播却既无曲长也无播放位置 => 没有真实曲目。
+        try:
+            duration = float(state.get("duration") or 0.0)
+            position = float(state.get("position") or state.get("progress") or 0.0)
+        except (TypeError, ValueError):
+            return True
+        return not (duration <= 0.0 and position <= 0.0)
 
     def tick(self, state: dict | None) -> None:
         state = state or {}

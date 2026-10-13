@@ -96,6 +96,9 @@ class MusicWatcher:
         self._last_feedback_at: float = 0.0
         self._reported: set = set()
         self._user_active_check = user_active_check
+        self._session_armed = False      # 启动后是否已见过"未播放"（未见过的首个 active 只作基线）
+        self._position_high: dict = {}   # key -> 观测到的最大播放位置（秒）
+        self._position_advance: dict = {}  # key -> 播放位置累计推进量（秒）
         self._recent: list = []          # 最近几条反馈（曲名 + 说过的话），供下一句参考
         self._last_template: str = ""
         self._stop = threading.Event()
@@ -185,10 +188,26 @@ class MusicWatcher:
                 logger.debug("[MusicWatcher] 播放时长记录失败: %s", exc)
         key = self._key_of(state)
         now = time.time()
-        if key and bool(state.get("active")):
+        active = bool(key) and bool(state.get("active"))
+        if not active:
+            # 见过"没在播"之后，后续的 inactive→active 跳变才算"新歌开始"；
+            # 启动后第一次看到的 active 只作为基线，不评论（每次重启都安静）。
+            self._session_armed = True
+            # 暂停/停止时清掉"当前播放键"，这样恢复播放或换歌都会被当成一次新开始
+            # （同一会话是否重复评论由 stats 里的 session 去重兜底）。
+            self._last_key = None
+            self._pending_key = None
+            if not key:
+                self._emit_status("idle", state or {})
+        else:
+            self._note_position(key, state)
             if key != self._last_key:
                 prev_key = self._last_key
                 self._last_key = key
+                if not self._session_armed:
+                    self._pending_key = None
+                    logger.info("[MusicWatcher] 启动基线曲目，不评论: %s", state.get("name"))
+                    return
                 # 连续切歌计数：上一首从未被评论过 => 被用户跳过
                 if prev_key is not None and prev_key not in self._reported:
                     self._consecutive_skips += 1
@@ -206,6 +225,7 @@ class MusicWatcher:
             elif (self._pending_key == key
                     and now - self._pending_since >= self._feedback_delay
                     and self._played_seconds(state, now) >= self._listen_min
+                    and self._progress_credit_ok(key, state)
                     and now - self._last_feedback_at >= self._min_interval
                     and self._enabled_check()):
                 self._pending_key = None
@@ -216,10 +236,40 @@ class MusicWatcher:
                     # analyzing 改由 _fire 在真正发起请求前推送：原先在起跑线就推，
                     # 界面会先显示"正在整理感受"再干等（最长 30s 超时）才出结果。
                     self._fire(state, rapid_skips=self._consecutive_skips)
-        elif not key:
-            self._last_key = None
-            self._pending_key = None
-            self._emit_status("idle", state or {})
+
+    def _note_position(self, key: tuple, state: dict) -> None:
+        """记录播放位置推进量，用来确认"确实在往前走"（对抗卡住的播放器）。"""
+        try:
+            position = float(state.get("position") or state.get("progress") or 0.0)
+        except (TypeError, ValueError):
+            return
+        if position <= 0.0:
+            return
+        if key not in self._position_high:
+            # 第一次看到的位置只作基线（可能本来就是 30 秒处恢复播放），不算推进量。
+            self._position_high[key] = position
+            self._position_advance.setdefault(key, 0.0)
+            return
+        high = self._position_high[key]
+        if position > high:
+            self._position_high[key] = position
+            self._position_advance[key] = self._position_advance.get(key, 0.0) + (position - high)
+        if len(self._position_high) > 32:
+            for stale in list(self._position_high)[:-16]:
+                self._position_high.pop(stale, None)
+                self._position_advance.pop(stale, None)
+
+    def _progress_credit_ok(self, key: tuple, state: dict) -> bool:
+        """确认播放确实在推进。
+
+        播放器给出真实 position 时要求它前进过；完全不暴露 position 时退化为
+        "曲长可信"（幽灵态本来就没有曲长，已被 L1 拦下）。
+        """
+        if self._duration_seconds(state) <= 0.0:
+            return False
+        if self._position_high.get(key, 0.0) <= 0.0:
+            return True
+        return self._position_advance.get(key, 0.0) >= 2.0
 
     def _emit_status(self, status: str, state: dict) -> None:
         if status == self._status:

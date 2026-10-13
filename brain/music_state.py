@@ -90,6 +90,72 @@ def _volume_pair(raw: Any) -> tuple:
     return round(ratio * 100.0, 2), ratio
 
 
+# 幽灵播放护栏（L1）
+# neteasecli 的 mpv.js 在 mpv 未运行时仍会无条件上报 playing: true，并把
+# get_property 的失败 catch 成 0（position/duration 都是 0）；同时残留的
+# .listening-state.json 还会让 playback.durationMs 看起来像"真曲长"。
+# 莲心若直接采信，就会显示"正在播放"、对着并不存在的歌评论，并虚增听歌时长。
+#
+# 判据用"拿不到播放位置"而不是"拿不到曲长"：mpv 真正播放时 time-pos 一定在推进，
+# 而曲长可能来自历史状态文件。
+GHOST_GRACE_POLLS = 3          # 至少连续这么多次可疑
+GHOST_GRACE_SECONDS = 3.0      # 且持续这么久（避免开播瞬间被误伤）
+
+_ghost_lock = threading.Lock()
+_ghost_streak = 0
+_ghost_since = 0.0
+
+
+def reset_ghost_guard() -> None:
+    """重置幽灵播放判定（启动基线 / 测试用）。"""
+    global _ghost_streak, _ghost_since
+    with _ghost_lock:
+        _ghost_streak = 0
+        _ghost_since = 0.0
+
+
+def _ghost_evidence_missing(position: float) -> bool:
+    """声称在播，却连播放位置都拿不到 => 缺少真实播放的证据。"""
+    return position <= 0.0
+
+
+# 判"mpv 不在运行"时只认新鲜结果：刚开播时 mpv 可能才被拉起来，
+# 用过期的 False 会冤枉真实的播放（开播瞬间短暂显示暂停）。
+_MPV_PROBE_MAX_AGE = 0.8
+
+
+def _mpv_process_alive() -> Optional[bool]:
+    """探测莲心自己的 mpv 进程：True/False，探测不可用时 None。"""
+    try:
+        from utils.net_ease_cleanup import netease_mpv_state
+    except Exception:
+        return None
+    try:
+        return netease_mpv_state(max_age=_MPV_PROBE_MAX_AGE)
+    except Exception:
+        return None
+
+
+def _ghost_guard_decision(suspect: bool, process_alive: Optional[bool], now: Optional[float] = None) -> bool:
+    """把"可疑"累积成判定：进程不在就立刻降级，否则要连续且持续足够久。"""
+    global _ghost_streak, _ghost_since
+    moment = time.monotonic() if now is None else now
+    with _ghost_lock:
+        if process_alive is False:
+            # 莲心自己的 mpv 根本不在 => 无论播放器怎么报，都按"没在播"处理。
+            _ghost_streak = GHOST_GRACE_POLLS
+            _ghost_since = 0.0
+            return True
+        if not suspect:
+            _ghost_streak = 0
+            _ghost_since = 0.0
+            return False
+        if _ghost_since <= 0.0:
+            _ghost_since = moment
+        _ghost_streak += 1
+        return _ghost_streak >= GHOST_GRACE_POLLS and (moment - _ghost_since) >= GHOST_GRACE_SECONDS
+
+
 def build_state(
     status_payload: Any,
     queue_payload: Any,
@@ -130,7 +196,20 @@ def build_state(
         duration = duration_ms / 1000.0
     if duration > 0 and position > duration + 1.0:
         position = position / 1000.0
+
     volume, volume_ratio = _volume_pair(st.get("volume"))
+
+    ghost_playback = False
+    if playing and not paused and _ghost_evidence_missing(position):
+        # 仅有嫌疑时才探测进程（PowerShell 探测有开销，函数内部带 3s 缓存）。
+        ghost_playback = _ghost_guard_decision(True, _mpv_process_alive())
+    else:
+        _ghost_guard_decision(False, None)
+    if ghost_playback:
+        # 降级为"暂停"：前端显示暂停态，播放器不再被当成在播。
+        playing = False
+        paused = True
+        active = False
 
     current_id = str(playback.get("id") or playback.get("songId") or "")
     if not (0 <= index < len(queue)):
@@ -182,6 +261,7 @@ def build_state(
         "updatedAt": time.time(),
         "source": "netease-8765",
         "active": active,
+        "ghostPlayback": ghost_playback,
         "playing": playing,
         "paused": paused,
         "name": title,
@@ -230,6 +310,7 @@ def offline_state(reason: str = "播放器服务离线", *, source: str = "netea
         "active": False,
         "playing": False,
         "paused": False,
+        "ghostPlayback": False,
         "name": "",
         "title": "",
         "artist": "",

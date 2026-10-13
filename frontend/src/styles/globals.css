@@ -393,6 +393,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 
 .music-error-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 10px 14px; font-size: 13px; color: #ffd9c7; background: rgba(214, 82, 58, .16); border: 1px solid rgba(242, 123, 105, .4); border-radius: 12px; }
 .music-error-banner button { display: inline-flex; align-items: center; justify-content: center; padding: 2px; color: inherit; background: transparent; border: none; cursor: pointer; }
+.music-error-countdown { min-width: 14px; font-size: 12px; font-variant-numeric: tabular-nums; opacity: .85; }
+.music-settings-hint { margin: 2px 0 0; font-size: 12px; color: #f0a868; }
+.music-tag.is-warn { color: #ffd9c7; border-color: rgba(242, 123, 105, .45); background: rgba(214, 82, 58, .16); }
 
 .music-progress-track { cursor: pointer; }
 .music-volume input[type="range"] { touch-action: none; }

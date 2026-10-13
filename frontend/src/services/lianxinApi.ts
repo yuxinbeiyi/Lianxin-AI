@@ -33,6 +33,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type MusicFeedbackSettings = {
+  enabled: boolean;
+  delaySeconds: number;
+  minimumListenSeconds: number;
+  cooldownSeconds: number;
+  autoSpeak: boolean;
+  saveToChat: boolean;
+};
+
 export const lianxinApi = {
   status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
   cancelChat: () => request<{ cancelled: boolean }>("/chat/cancel", { method: "POST", body: "{}" }),
@@ -63,8 +72,8 @@ export const lianxinApi = {
   musicPlaylists: (offset = 0, limit = 24) => request<{ playlists?: Array<{ id: string; name: string; trackCount?: number; creator?: string; coverUrl?: string }>; total?: number; hasMore?: boolean }>(`/music/playlists?offset=${offset}&limit=${limit}`),
   musicPlaylist: (id: string) => request<{ playlist?: { id: string; name: string; tracks?: Array<{ id: string; name?: string; artist?: string; durationMs?: number }> }; tracks?: Array<{ id: string; name?: string; artist?: string; durationMs?: number }> }>(`/music/playlist?id=${encodeURIComponent(id)}`),
   musicPlayPlaylist: (id: string) => request<Record<string, unknown>>("/music/play-playlist", { method: "POST", body: JSON.stringify({ id }) }),
-  musicFeedbackSettings: () => request<{ enabled: boolean; delaySeconds: number; minimumListenSeconds: number; cooldownSeconds: number; autoSpeak: boolean; saveToChat: boolean }>("/music/feedback-settings"),
-  saveMusicFeedbackSettings: (payload: Partial<{ enabled: boolean; autoSpeak: boolean; saveToChat: boolean }>) => request<Record<string, unknown>>("/music/feedback-settings", { method: "POST", body: JSON.stringify(payload) }),
+  musicFeedbackSettings: () => request<MusicFeedbackSettings>("/music/feedback-settings"),
+  saveMusicFeedbackSettings: (payload: Partial<MusicFeedbackSettings>) => request<MusicFeedbackSettings>("/music/feedback-settings", { method: "POST", body: JSON.stringify(payload) }),
   openPlayer: () => request<{ ok: boolean; online: boolean; url: string }>("/open-player", { method: "POST", body: "{}" }),
   musicSpaceSettings: () => request<{ wallpapers: Array<{ id: string; name: string; url: string }>; settings: { wallpaper: string; wallpaper_opacity: number; content_mask_opacity: number; fit: string } }>("/music/space-settings"),
   saveMusicSpaceSettings: (payload: { wallpaper: string; wallpaper_opacity: number; content_mask_opacity: number; fit: string }) => request<Record<string, unknown>>("/music/space-settings", { method: "POST", body: JSON.stringify(payload) }),

@@ -1,20 +1,20 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { Disc3, ExternalLink, ListMusic, Pause, Play, Power, Repeat, Repeat1, Settings2, Shuffle, SkipBack, SkipForward, Volume2, X } from "lucide-react";
-import { lianxinApi } from "../services/lianxinApi";
+import { lianxinApi, type MusicFeedbackSettings } from "../services/lianxinApi";
 
 type MusicTrack = { id?: string; title?: string; artist?: string; duration?: number; index?: number; coverUrl?: string };
 type LyricLine = { time?: number; text?: string };
 type MusicState = {
   active?: boolean; playing?: boolean; paused?: boolean; name?: string; artist?: string; album?: string;
   coverUrl?: string; progress?: number; duration?: number; volume?: number; mode?: string; current_index?: number;
-  playlist?: MusicTrack[]; lyrics?: LyricLine[]; style?: string; instrumental?: boolean;
+  playlist?: MusicTrack[]; lyrics?: LyricLine[]; style?: string; instrumental?: boolean; ghostPlayback?: boolean;
 };
 type SpaceWallpaper = { id: string; name: string; url: string };
 type SpaceSettingsData = {
   wallpapers: SpaceWallpaper[];
   settings: { wallpaper: string; wallpaper_opacity: number; content_mask_opacity: number; fit: string };
 };
-type FeedbackSettings = { enabled: boolean; delaySeconds: number; minimumListenSeconds: number; cooldownSeconds: number; autoSpeak: boolean; saveToChat: boolean };
+type FeedbackSettings = MusicFeedbackSettings;
 type MusicStatsTrack = { source?: string; track_id?: string; name?: string; artist?: string; seconds?: number; play_count?: number; last_played?: string };
 type MusicStats = {
   total_seconds: number; total_hours: number;
@@ -60,6 +60,7 @@ const MUSIC_SOURCE_LABEL: Record<string, string> = { netease: "网易云", local
 const API_ORIGIN = "http://127.0.0.1:8766";
 const MUSIC_EVENT_CURSOR_KEY = "lianxin.musicEventsCursor";
 const PLAYLIST_PAGE_SIZE = 24;
+const ERROR_BANNER_SECONDS = 3;
 
 export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismissError }: { music: MusicState; onControl: (action: string, payload?: Record<string, unknown>) => void; onRefresh?: () => void; errorMsg?: string; onDismissError?: () => void }) {
   const [tab, setTab] = useState<"queue" | "lyrics" | "playlists" | "feedback" | "stats">("queue");
@@ -73,6 +74,9 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const [settingsError, setSettingsError] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [feedbackSettings, setFeedbackSettings] = useState<FeedbackSettings | null>(null);
+  const [feedbackDraft, setFeedbackDraft] = useState<FeedbackSettings | null>(null);
+  const [feedbackDirty, setFeedbackDirty] = useState(false);
+  const [errorCountdown, setErrorCountdown] = useState(0);
   const [stats, setStats] = useState<MusicStats | null>(null);
   const [lastFeedback, setLastFeedback] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState("idle");
@@ -98,6 +102,8 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const volumeTimerRef = useRef<number | undefined>(undefined);
   const eqRef = useRef<HTMLCanvasElement>(null);
   const spectrumRef = useRef<number[] | null>(null);
+  const feedbackDirtyRef = useRef(false);
+  const dismissErrorRef = useRef(onDismissError);
 
   const playing = Boolean(music.active);
   const progress = seekDrag ?? (seekConfirm !== null && music.duration ? Math.min(100, (seekConfirm / music.duration) * 100) : (music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0));
@@ -174,6 +180,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
         const [settings, stat] = await Promise.all([lianxinApi.musicFeedbackSettings(), lianxinApi.musicStats()]);
         if (!alive) return;
         setFeedbackSettings(settings);
+        if (!feedbackDirtyRef.current) setFeedbackDraft(settings);
         setStats(stat);
         const events = await lianxinApi.musicEvents(cursor);
         if (!alive) return;
@@ -189,6 +196,31 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
     const timer = window.setInterval(() => void poll(), 3000);
     return () => { alive = false; window.clearInterval(timer); };
   }, []);
+
+  useEffect(() => {
+    dismissErrorRef.current = onDismissError;
+  }, [onDismissError]);
+
+  // Bug2：红色报错横幅 3 秒倒计时后自动消失（内容变化时重新计时）。
+  useEffect(() => {
+    if (!errorMsg) {
+      setErrorCountdown(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setErrorCountdown(ERROR_BANNER_SECONDS);
+    const timer = window.setInterval(() => {
+      const remain = ERROR_BANNER_SECONDS - Math.floor((Date.now() - startedAt) / 1000);
+      if (remain <= 0) {
+        window.clearInterval(timer);
+        setErrorCountdown(0);
+        dismissErrorRef.current?.();
+      } else {
+        setErrorCountdown(remain);
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [errorMsg]);
 
   useEffect(() => {
     if (tab !== "lyrics") return;
@@ -382,6 +414,13 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
     setFit("cover");
   };
 
+  const updateFeedbackDraft = (patch: Partial<FeedbackSettings>) => {
+    if (!feedbackDraft) return;
+    feedbackDirtyRef.current = true;
+    setFeedbackDirty(true);
+    setFeedbackDraft({ ...feedbackDraft, ...patch });
+  };
+
   const saveSettings = () => {
     if (settingsSaving) return;
     setSettingsSaving(true);
@@ -394,9 +433,18 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
       content_mask_opacity: maskOpacity / 100,
       fit,
       }),
-      feedbackSettings ? lianxinApi.saveMusicFeedbackSettings(feedbackSettings) : Promise.resolve(null),
+      feedbackDraft ? lianxinApi.saveMusicFeedbackSettings(feedbackDraft) : Promise.resolve(null),
     ])
-      .then(() => { setSettingsMsg("已保存"); setSettingsSaving(false); })
+      .then(([, savedFeedback]) => {
+        if (savedFeedback) {
+          setFeedbackSettings(savedFeedback);
+          setFeedbackDraft(savedFeedback);
+        }
+        feedbackDirtyRef.current = false;
+        setFeedbackDirty(false);
+        setSettingsMsg("已保存");
+        setSettingsSaving(false);
+      })
       .catch(() => { setSettingsMsg("保存失败"); setSettingsError(true); setSettingsSaving(false); });
   };
 
@@ -405,7 +453,12 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
       {errorMsg ? (
         <div className="music-error-banner" role="alert">
           <span>{errorMsg}</span>
-          <button onClick={onDismissError} title={"关闭"}><X size={14} /></button>
+          <button
+            onClick={() => dismissErrorRef.current?.()}
+            title={errorCountdown > 0 ? `${errorCountdown} 秒后自动关闭` : "关闭"}
+          >
+            {errorCountdown > 0 ? <span className="music-error-countdown">{errorCountdown}</span> : <X size={14} />}
+          </button>
         </div>
       ) : null}
       <div className="music-hero music-hero-vinyl">
@@ -434,6 +487,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
           <div className="music-tags">
             {music.style ? <span className="music-tag">{music.style}</span> : null}
             {music.instrumental ? <span className="music-tag">{"纯音乐"}</span> : null}
+            {music.ghostPlayback ? <span className="music-tag is-warn">{"播放器未响应"}</span> : null}
             <span className="music-tag">{mode === "shuffle" ? "随机播放" : mode === "single" ? "单曲循环" : "顺序播放"}</span>
           </div>
         </div>
@@ -596,9 +650,10 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
               </label>
               <div className="music-settings-block">
                 <span className="music-settings-label">{"听歌反馈"}</span>
-                <label className="music-settings-row"><span>{"启用反馈"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.enabled)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, enabled: e.target.checked } : current)} /></label>
-                <label className="music-settings-row"><span>{"自动朗读"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.autoSpeak)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, autoSpeak: e.target.checked } : current)} /></label>
-                <label className="music-settings-row"><span>{"写入聊天记录"}</span><input type="checkbox" checked={Boolean(feedbackSettings?.saveToChat)} onChange={(e) => setFeedbackSettings((current) => current ? { ...current, saveToChat: e.target.checked } : current)} /></label>
+                <label className="music-settings-row"><span>{"启用反馈"}</span><input type="checkbox" checked={Boolean(feedbackDraft?.enabled)} onChange={(e) => updateFeedbackDraft({ enabled: e.target.checked })} /></label>
+                <label className="music-settings-row"><span>{"自动朗读"}</span><input type="checkbox" checked={Boolean(feedbackDraft?.autoSpeak)} onChange={(e) => updateFeedbackDraft({ autoSpeak: e.target.checked })} /></label>
+                <label className="music-settings-row"><span>{"写入聊天记录"}</span><input type="checkbox" checked={Boolean(feedbackDraft?.saveToChat)} onChange={(e) => updateFeedbackDraft({ saveToChat: e.target.checked })} /></label>
+                {feedbackDirty ? <p className="music-settings-hint">{"改动尚未保存，点右下角「保存设置」生效"}</p> : null}
               </div>
             </div>
             <div className="music-settings-foot">
