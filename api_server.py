@@ -1017,15 +1017,28 @@ class LianxinBridge:
         breaker = tts_health.get_breaker()
         remaining = breaker.open_remaining()
         if remaining > 0:
-            reason = breaker.reason()
-            notice = tts_health.take_notification()
-            bridge_log.log("语音", f"TTS 熔断中（剩余 {remaining:.0f}s），跳过朗读：{reason}")
-            with self._voice_lock:
-                self._voice_events.append({
-                    "id": time.time_ns(), "type": "voice.tts_unavailable",
-                    "reason": reason, "notice": notice,
-                })
-            return {"speaking": False, "unavailable": True, "reason": reason, "notice": notice}
+            # Edge-TTS 熔断期间，只要还有本地 GPT-SoVITS 可以兜底就继续朗读
+            # （speaker.speak 会自动切到 GPT-SoVITS）；真正无引擎可用时才提示。
+            fallback_ok = False
+            try:
+                from config import get_tts_config
+                from brain.tts_engine import (
+                    TtsEngine, resolve_tts_mode, MODE_EDGE_FIRST,
+                )
+                if resolve_tts_mode(get_tts_config().get("engine")) == MODE_EDGE_FIRST:
+                    fallback_ok = TtsEngine().gpt_sovits_available
+            except Exception:
+                fallback_ok = False
+            if not fallback_ok:
+                reason = breaker.reason()
+                notice = tts_health.take_notification()
+                bridge_log.log("语音", f"TTS 熔断中（剩余 {remaining:.0f}s），跳过朗读：{reason}")
+                with self._voice_lock:
+                    self._voice_events.append({
+                        "id": time.time_ns(), "type": "voice.tts_unavailable",
+                        "reason": reason, "notice": notice,
+                    })
+                return {"speaking": False, "unavailable": True, "reason": reason, "notice": notice}
         speaker = VoiceSpeaker(voice=voice)
         def run():
             voice_manager = self._voice
@@ -1063,8 +1076,10 @@ class LianxinBridge:
         return {"speaking": False}
 
     def tts_state(self) -> dict:
+        from brain import tts_health
         with self._tts_lock:
-            return {"speaking": self._tts_worker is not None}
+            speaking = self._tts_worker is not None
+        return {"speaking": speaking, "stage": tts_health.current_stage()}
 
     def play_sound(self, name: str) -> dict:
         allowed = {

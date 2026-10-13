@@ -218,7 +218,8 @@ def _probe_edge_tts(voice: str) -> str:
     os.close(fd)
     try:
         async def _run():
-            await edge_tts.Communicate("莲心语音合成自检。", voice).save(path)
+            from voice import edge_tts_compat
+            await edge_tts_compat.save("莲心语音合成自检。", voice, path)
 
         loop = asyncio.new_event_loop()
         try:
@@ -233,7 +234,7 @@ def _probe_edge_tts(voice: str) -> str:
     except Exception as exc:
         detail = str(exc)
         if "403" in detail:
-            return "服务端拒绝（HTTP 403，微软 Edge Read Aloud 未放行该网络出口）"
+            return "服务端拒绝（HTTP 403，Edge Read Aloud 新旧端点均被拒）"
         if "401" in detail or "404" in detail:
             return "服务端拒绝（HTTP 4xx）"
         if "timeout" in detail.lower() or "timed out" in detail.lower():

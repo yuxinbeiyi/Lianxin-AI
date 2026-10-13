@@ -206,6 +206,11 @@ def _drain_stderr(proc: subprocess.Popen):
         pass
 
 
+def _worker_is_running() -> bool:
+    '''worker 子进程是否存活（存活即模型已加载，无需冷启动）。'''
+    return _worker_process is not None and _worker_process.poll() is None
+
+
 def _ensure_worker() -> subprocess.Popen:
     """确保持久 worker 进程在运行。模型只在此处加载一次。"""
     global _worker_process, _stderr_thread, _worker_version
@@ -553,7 +558,6 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
     暂时性错误（超时、连接重置、空音频）保留原有的指数退避重试。
     """
     import asyncio
-    import edge_tts
     import random
     from brain.audio_utils import _configure_pydub_ffmpeg
     from brain import tts_health
@@ -577,8 +581,9 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
             try:
                 loop = asyncio.new_event_loop()
                 try:
+                    from voice import edge_tts_compat
                     loop.run_until_complete(
-                        edge_tts.Communicate(text, voice).save(mp3_path)
+                        edge_tts_compat.save(text, voice, mp3_path)
                     )
                 finally:
                     loop.close()
@@ -618,6 +623,31 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
 
 
 # ══════════════════════════════════════════════════════════
+# 引擎模式解析
+# ══════════════════════════════════════════════════════════
+
+MODE_EDGE_FIRST = "edge_first"   # auto（默认）：Edge-TTS 优先，失败后切换 GPT-SoVITS
+MODE_EDGE_ONLY = "edge_only"     # edge_tts：仅使用 Edge-TTS
+MODE_GPT_ONLY = "gpt_only"       # gpt_sovits：仅使用 GPT-SoVITS
+
+
+def resolve_tts_mode(engine: Optional[str]) -> str:
+    """把配置里的 engine 归一化为三种合成模式之一。
+
+    - ``auto``（默认）→ ``edge_first``：先用 Edge-TTS；失败或熔断后切换
+      GPT-SoVITS 兜底；GPT-SoVITS 再失败就放弃，不再回头重试 Edge-TTS。
+    - ``edge_tts`` → ``edge_only``：只用 Edge-TTS。
+    - ``gpt_sovits`` → ``gpt_only``：只用 GPT-SoVITS。
+    """
+    value = (engine or "auto").strip().lower()
+    if value == "gpt_sovits":
+        return MODE_GPT_ONLY
+    if value == "edge_tts":
+        return MODE_EDGE_ONLY
+    return MODE_EDGE_FIRST
+
+
+# ══════════════════════════════════════════════════════════
 # TtsEngine
 # ══════════════════════════════════════════════════════════
 
@@ -654,6 +684,11 @@ class TtsEngine:
         return _is_gpt_sovits_available()
 
     @property
+    def worker_ready(self) -> bool:
+        """GPT-SoVITS worker 是否已加载就绪（False 表示下次合成要冷启动）。"""
+        return _worker_is_running()
+
+    @property
     def ref_style_count(self) -> int:
         """可用的参考音频风格数量。"""
         refs = _get_refs()
@@ -683,20 +718,28 @@ class TtsEngine:
         Returns:
             True 表示成功，False 表示失败
         """
-        # 读取引擎配置，决定是否使用 GPT-SoVITS
+        # 读取引擎配置，决定合成顺序（详见 resolve_tts_mode）
         from config import get_tts_config
         cfg = get_tts_config()
         voice = cfg.get("edge_tts_voice", "zh-CN-XiaoxiaoNeural")
+        mode = resolve_tts_mode(cfg.get("engine"))
 
-        # 优先 GPT-SoVITS（除非用户强制 Edge-TTS）
-        if cfg.get("engine") != "edge_tts" and _is_gpt_sovits_available():
-            try:
-                return self._synthesize_gpt_sovits(text, output_path, mood, speed)
-            except Exception as e:
-                logger.warning(f"GPT-SoVITS 合成失败，回退 Edge-TTS: {e}")
+        # 仅 GPT-SoVITS：失败也不回退 Edge-TTS
+        if mode == MODE_GPT_ONLY:
+            if not _is_gpt_sovits_available():
+                logger.info("配置为仅使用 GPT-SoVITS，但当前不可用")
+                return False
+            return self.synthesize_gpt_wav(text, output_path, mood, speed)
 
-        # 使用 Edge-TTS
-        return _fallback_edge_tts(text, output_path, voice)
+        # Edge-TTS 优先（auto 默认 / edge_tts）
+        if _fallback_edge_tts(text, output_path, voice):
+            return True
+
+        # 仅 auto 才切换到本地 GPT-SoVITS 兜底；它再失败就放弃，
+        # 不再回头重试 Edge-TTS，避免两端来回抖动。
+        if mode == MODE_EDGE_FIRST and _is_gpt_sovits_available():
+            return self.synthesize_gpt_wav(text, output_path, mood, speed)
+        return False
 
     def synthesize_gpt_wav(self, text: str, output_path: str,
                            mood: Optional[str] = None,
@@ -709,11 +752,20 @@ class TtsEngine:
         if not _is_gpt_sovits_available():
             logger.info("GPT-SoVITS 不可用，跳过 WAV 合成")
             return False
+        # 冷启动（worker 未运行）要加载模型，可能耗时数十秒；
+        # 期间给界面一个可见提示，避免用户以为莲心卡死。
+        from brain import tts_health
+        cold_start = not _worker_is_running()
+        if cold_start:
+            tts_health.set_stage("gpt_sovits_loading", tts_health.GPT_SOVITS_LOADING_TEXT)
         try:
             return self._synthesize_gpt_sovits(text, output_path, mood, speed)
         except Exception as e:
             logger.warning(f"GPT-SoVITS WAV 合成失败: {e}")
             return False
+        finally:
+            if cold_start:
+                tts_health.clear_stage("gpt_sovits_loading")
 
 
 

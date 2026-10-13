@@ -385,14 +385,20 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
         text: 要合成的文字
         wav_path: 输出 WAV 文件路径
         voice: Edge-TTS 音色名，为 None 时从配置读取
-        mood: GPT-SoVITS 情绪（仅 engine="auto" 或 "gpt_sovits" 时生效）
-        engine: "auto"=先试 GPT-SoVITS，失败回退 Edge-TTS
-                "edge_tts"=强制使用 Edge-TTS（QQ 桥接用，避免后台线程 GPT-SoVITS 音色异常）
+        mood: GPT-SoVITS 情绪（仅 "auto" 或 "gpt_sovits" 时生效）
+        engine: "auto"（默认）=Edge-TTS 优先，失败后切换 GPT-SoVITS
+                "edge_tts"=仅用 Edge-TTS（QQ 桥接用，避免后台线程 GPT-SoVITS 音色异常）
+                "gpt_sovits"=仅用 GPT-SoVITS
     """
     # 先清洗文本，防止 TTS 读符号/emoji
     text = clean_tts_text(text)
 
-    # 从配置读取 TTS 引擎偏好和 Edge-TTS 音色
+    from brain.tts_engine import (
+        TtsEngine, resolve_tts_mode, MODE_EDGE_FIRST, MODE_GPT_ONLY,
+    )
+    mode = resolve_tts_mode(engine)
+
+    # 从配置读取 Edge-TTS 音色
     try:
         from config import get_tts_config
         tts_cfg = get_tts_config()
@@ -400,32 +406,37 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
     except Exception:
         edge_voice = voice or "zh-CN-XiaoxiaoNeural"
 
-    # 尝试 TtsEngine（仅在 engine!="edge_tts" 时尝试）
-    if engine != "edge_tts":
-        try:
-            from brain.tts_engine import TtsEngine
-            eng = TtsEngine()
-            if eng.gpt_sovits_available:
-                success = eng.synthesize(text, wav_path, mood=mood)
-                if success:
-                    logger.info("TTS 使用 GPT-SoVITS")
-                    return
-        except Exception:
-            pass
+    # 仅 GPT-SoVITS：失败也不回退 Edge-TTS
+    if mode == MODE_GPT_ONLY:
+        if TtsEngine().synthesize_gpt_wav(text, wav_path, mood=mood):
+            logger.info("TTS 使用 GPT-SoVITS")
+            return
+        raise RuntimeError("GPT-SoVITS 合成失败（配置为仅 gpt_sovits，不回退 Edge-TTS）")
 
-    # Edge-TTS
+    # Edge-TTS 优先
     logger.info(f"TTS 使用 Edge-TTS (voice={edge_voice})")
     import asyncio
-    import edge_tts
     from pydub import AudioSegment
 
     mp3_path = wav_path + ".mp3"
     try:
         _configure_pydub_ffmpeg()
-        asyncio.run(edge_tts.Communicate(text, edge_voice).save(mp3_path))
+        from voice import edge_tts_compat
+        asyncio.run(edge_tts_compat.save(text, edge_voice, mp3_path))
         audio = AudioSegment.from_mp3(mp3_path)
         audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2)
         audio.export(wav_path, format="wav")
+        return
+    except Exception as e:
+        logger.warning(f"Edge-TTS 合成失败：{e}")
+        if mode != MODE_EDGE_FIRST:
+            raise
+        # auto：Edge 失败后切换本地 GPT-SoVITS 兜底；它再失败就放弃，
+        # 不再回头重试 Edge-TTS。
+        if TtsEngine().synthesize_gpt_wav(text, wav_path, mood=mood):
+            logger.info("TTS 使用 GPT-SoVITS 兜底")
+            return
+        raise RuntimeError("语音合成失败：Edge-TTS 与 GPT-SoVITS 均不可用") from e
     finally:
         for p in (mp3_path,):
             try:

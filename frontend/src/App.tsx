@@ -754,6 +754,7 @@ function ChatWorkspace({
   onVoiceInput,
   voiceInputText,
   ttsSpeaking,
+  ttsStage,
   silentMode,
   onToggleMute,
   onOpenNote = () => undefined,
@@ -777,6 +778,7 @@ function ChatWorkspace({
   onVoiceInput: () => void;
   voiceInputText: string;
   ttsSpeaking: boolean;
+  ttsStage: string;
   silentMode: boolean;
   onToggleMute: () => void;
   onOpenNote?: () => void;
@@ -864,7 +866,7 @@ function ChatWorkspace({
           size: file.size,
         } as Attachment;
         setAttachments((current) => [...current, item]);
-        if (autoSend && !busy)
+        if (autoSend)
           window.setTimeout(() => {
             onSend("看看这个附件", [item]);
             nearBottomRef.current = true;
@@ -876,7 +878,7 @@ function ChatWorkspace({
     });
   const submit = () => {
     const text = draft.trim();
-    if ((!text && !attachments.length) || busy) return;
+    if (!text && !attachments.length) return;
     onSend(
       text || "看看这张图片",
       attachments,
@@ -960,12 +962,12 @@ function ChatWorkspace({
             </div>
           )}
           <ToolRounds rounds={toolRounds} />
-          {(busy || interactionThinking || proactiveThinking) && (
+          {(busy || interactionThinking || proactiveThinking || ttsStage) && (
             <div className="typing-indicator">
               <span />
               <span />
               <span />
-              莲心正在思考…
+              {ttsStage || "莲心正在思考…"}
             </div>
           )}
         </div>
@@ -1112,15 +1114,24 @@ function ChatWorkspace({
               </button>
               <button
                 className="send-button"
-                onClick={busy ? onCancel : submit}
+                onClick={submit}
                 disabled={
-                  interactionThinking ||
-                  (!busy && !draft.trim() && !attachments.length)
+                  !draft.trim() && !attachments.length
                 }
-                title={busy ? "停止回复" : "发送"}
+                title={busy ? "加入回复队列" : "发送"}
               >
-                {busy ? <X size={18} /> : <Send size={18} />}
+                <Send size={18} />
               </button>
+              {busy && (
+                <button
+                  className="icon-button"
+                  onClick={onCancel}
+                  title="停止当前回复"
+                  aria-label="停止当前回复"
+                >
+                  <X size={18} />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2245,12 +2256,16 @@ export function App() {
     fingerprint: "",
   });
   const [ttsSpeaking, setTtsSpeaking] = useState(false);
+  const [ttsStage, setTtsStage] = useState("");
   const [silentMode, setSilentMode] = useState(false);
   useEffect(() => {
     const sync = () =>
       void lianxinApi
         .ttsStatus()
-        .then((state) => setTtsSpeaking(state.speaking))
+        .then((state) => {
+          setTtsSpeaking(state.speaking);
+          setTtsStage(state.stage?.text ?? "");
+        })
         .catch(() => undefined);
     sync();
     const timer = window.setInterval(sync, 500);
@@ -2471,7 +2486,10 @@ export function App() {
         setMessages(result.items.map(restoreMessage));
       })
       .catch(() => undefined);
-  const handleSend = async (
+  const sendQueueRef = useRef(Promise.resolve());
+  const pendingSendsRef = useRef(0);
+
+  const processSend = async (
     text: string,
     attachments: Attachment[] = [],
     selection: { forcedTool?: string; preferredTool?: string } = {},
@@ -2515,7 +2533,6 @@ export function App() {
     ]);
     setToolRounds([]);
     if (!backendOnline) return;
-    setBusy(true);
     try {
       let reply = "";
       for await (const event of lianxinApi.streamChat(
@@ -2631,9 +2648,28 @@ export function App() {
           time: "现在",
         },
       ]);
-    } finally {
-      setBusy(false);
     }
+  };
+  const handleSend = (
+    text: string,
+    attachments: Attachment[] = [],
+    selection: { forcedTool?: string; preferredTool?: string } = {},
+    quote?: { role: "user" | "assistant"; content: string },
+  ) => {
+    pendingSendsRef.current += 1;
+    setBusy(true);
+    sendQueueRef.current = sendQueueRef.current
+      .then(() => processSend(text, attachments, selection, quote))
+      .catch((error) => {
+        console.error("[CHAT_QUEUE] failed", error);
+      })
+      .finally(() => {
+        pendingSendsRef.current -= 1;
+        if (pendingSendsRef.current <= 0) {
+          pendingSendsRef.current = 0;
+          setBusy(false);
+        }
+      });
   };
   useEffect(() => {
     let cursor = 0;
@@ -3017,6 +3053,7 @@ export function App() {
                 onVoiceInput={toggleVoiceInput}
                 voiceInputText={voiceInputText}
                 ttsSpeaking={ttsSpeaking}
+                ttsStage={ttsStage}
                 silentMode={silentMode}
                 onToggleMute={toggleMute}
                 onOpenNote={() => openLegacy("note")}

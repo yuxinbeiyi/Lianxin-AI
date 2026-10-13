@@ -9,7 +9,6 @@ import os
 import re
 import tempfile
 import time
-import edge_tts
 import pygame
 
 logger = logging.getLogger("VoiceSpeaker")
@@ -268,16 +267,22 @@ class VoiceSpeaker:
             return
 
         from config import get_tts_config
+        from brain.tts_engine import (
+            TtsEngine, resolve_tts_mode, MODE_EDGE_ONLY, MODE_GPT_ONLY,
+        )
         tts_cfg = get_tts_config()
-        try:
-            from brain.tts_engine import TtsEngine
-            # Edge-TTS 模式不要初始化旧的 GPT-SoVITS/ffmpeg 引擎。
-            _temp = None if tts_cfg.get("engine") == "edge_tts" else TtsEngine()
-            engine = _temp if (tts_cfg.get("engine") != "edge_tts" and _temp.gpt_sovits_available) else None
+        mode = resolve_tts_mode(tts_cfg.get("engine"))
+        # Edge-TTS 优先（auto 默认 / edge_tts）；仅 gpt_sovits 时 GPT-SoVITS 才先上
+        prefer_edge = mode != MODE_GPT_ONLY
 
-        except Exception as e:
-            logger.warning(f"初始化 GPT-SoVITS 失败，将使用 Edge-TTS: {e}")
-            engine = None
+        engine = None
+        if mode != MODE_EDGE_ONLY:
+            try:
+                _temp = TtsEngine()
+                engine = _temp if _temp.gpt_sovits_available else None
+            except Exception as e:
+                logger.warning(f"初始化 GPT-SoVITS 失败，将仅使用 Edge-TTS: {e}")
+                engine = None
 
         # 整段文字统一检测情绪，避免每句随机选不同参考音频导致声音不一致
         from brain.tts_engine import _detect_mood
@@ -290,7 +295,8 @@ class VoiceSpeaker:
             tmp_path = None
             try:
                 tmp_path = self._synthesize_sentence(
-                    sentences[0], engine, unified_mood, tts_speed
+                    sentences[0], engine, unified_mood, tts_speed,
+                    prefer_edge=prefer_edge,
                 )
                 if tmp_path and not self._stop_flag:
                     self._play(tmp_path)
@@ -313,7 +319,8 @@ class VoiceSpeaker:
                     continue
 
                 tmp_path = self._synthesize_sentence(
-                    sent, engine, unified_mood, tts_speed, sequence=i
+                    sent, engine, unified_mood, tts_speed, sequence=i,
+                    prefer_edge=prefer_edge,
                 )
                 if tmp_path:
                     temp_files.append(tmp_path)
@@ -376,22 +383,36 @@ class VoiceSpeaker:
     _edge_tts_min_interval: float = 0.5
 
     def _synthesize_sentence(self, text: str, engine, mood: str,
-                             speed: float, sequence: int | None = None) -> str | None:
+                             speed: float, sequence: int | None = None,
+                             prefer_edge: bool = True) -> str | None:
         """合成单句并返回可播放文件。
 
-        GPT-SoVITS 原生输出 WAV，避免依赖 FFmpeg；只有 GPT 合成本身失败或
-        不可用时，才让 Edge-TTS 直接生成 MP3。
+        Edge-TTS 输出 MP3，GPT-SoVITS 输出 WAV（避免依赖 FFmpeg）。
+
+        prefer_edge=True（auto 默认）时：先试 Edge-TTS；失败/熔断后切换本地
+        GPT-SoVITS 兜底；GPT-SoVITS 再失败就放弃这一句，不再回头重试
+        Edge-TTS，避免两端来回抖动。
+        prefer_edge=False（仅 gpt_sovits）时：只用 GPT-SoVITS，失败即放弃。
         """
         tag = f"_s{sequence}" if sequence is not None else ""
+
+        if prefer_edge:
+            edge_path = self._synthesize_edge_mp3(text, tag)
+            if edge_path:
+                return edge_path
+
         if engine and engine.gpt_sovits_available:
             wav_path = self._new_temp_path(f"{tag}.wav")
             if engine.synthesize_gpt_wav(text, wav_path, mood=mood, speed=speed):
                 logger.info(f"TTS 使用 GPT-SoVITS（WAV，text_len={len(text)}）")
                 return wav_path
             self._remove_temp_file(wav_path)
-            logger.warning("GPT-SoVITS 合成失败，回退 Edge-TTS")
+            logger.warning("GPT-SoVITS 合成失败，这一句不再朗读")
 
-        mp3_path = self._new_temp_path(f"{tag}.mp3")
+        return None
+
+    def _synthesize_edge_mp3(self, text: str, tag: str = "") -> str | None:
+        """Edge-TTS 合成单个分句并返回 MP3 路径；熔断或失败时返回 None。"""
         from brain import tts_health
         breaker = tts_health.get_breaker()
         remaining = breaker.open_remaining()
@@ -400,8 +421,9 @@ class VoiceSpeaker:
                 "Edge-TTS 处于熔断中（剩余 %.0f 秒），跳过分句（text_len=%d）",
                 remaining, len(text),
             )
-            self._remove_temp_file(mp3_path)
             return None
+
+        mp3_path = self._new_temp_path(f"{tag}.mp3")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -422,7 +444,6 @@ class VoiceSpeaker:
             breaker.record_success()
             return mp3_path
         except Exception as e:
-            tts_health.note_failure(e)
             logger.error(f"Edge-TTS 合成失败（已丢弃分句「{text[:30]}」）: {e}")
             self._remove_temp_file(mp3_path)
             return None
@@ -432,32 +453,60 @@ class VoiceSpeaker:
     def _synthesize(self, text: str) -> str | None:
         """兼容旧调用：按当前配置合成一个可直接播放的临时文件。"""
         try:
-            from brain.tts_engine import TtsEngine
+            from brain.tts_engine import (
+                TtsEngine, resolve_tts_mode, MODE_EDGE_ONLY, MODE_GPT_ONLY,
+            )
             from config import get_tts_config
             engine = TtsEngine()
             cfg = get_tts_config()
-            selected = engine if cfg.get("engine") != "edge_tts" else None
+            mode = resolve_tts_mode(cfg.get("engine"))
+            prefer_edge = mode != MODE_GPT_ONLY
+            selected = engine if (
+                mode != MODE_EDGE_ONLY and engine.gpt_sovits_available
+            ) else None
             mood = cfg.get("default_mood", "auto")
             speed = cfg.get("speed", 1.0)
-            return self._synthesize_sentence(text, selected, mood, speed)
+            return self._synthesize_sentence(text, selected, mood, speed,
+                                             prefer_edge=prefer_edge)
         except Exception as e:
             print(f"[TTS合成出错] {e}")
             return None
 
     async def _async_synthesize(self, text: str, path: str):
+        """Edge-TTS 单次合成，带熔断感知的退避重试。
+
+        永久性错误（403/401/握手被拒）重试毫无意义，直接放弃并计入熔断；
+        只有超时/连接重置这类暂时性错误才退避重试。每次网络尝试都会计数，
+        保证一次 403 就能触发熔断，而不是白等三轮、连刷三行日志。
+        """
         import random
+        from brain import tts_health
+        breaker = tts_health.get_breaker()
         last_error = None
         max_retries = 3
         for attempt in range(max_retries + 1):
+            if not breaker.allow():
+                logger.info(
+                    "Edge-TTS 熔断中（剩余 %.0f 秒），中止重试：%s",
+                    breaker.open_remaining(), breaker.reason(),
+                )
+                break
             try:
                 self._remove_temp_file(path)
-                communicate = edge_tts.Communicate(text, self._voice)
-                await communicate.save(path)
+                from voice import edge_tts_compat
+                await edge_tts_compat.save(text, self._voice, path)
                 if not os.path.exists(path) or os.path.getsize(path) < 256:
                     raise RuntimeError("Edge-TTS returned an empty audio file")
                 return
             except Exception as exc:
                 last_error = exc
+                kind = tts_health.note_failure(exc)
+                if kind == tts_health.PERMANENT:
+                    logger.warning(
+                        "Edge-TTS 永久性失败，不再重试：%s",
+                        tts_health.describe_error(exc),
+                    )
+                    break
                 if attempt < max_retries:
                     base_delay = 1.5 * (2 ** attempt)
                     jitter = random.uniform(0, 0.5)
@@ -467,6 +516,8 @@ class VoiceSpeaker:
                         attempt + 1, max_retries, exc, delay,
                     )
                     await asyncio.sleep(delay)
+        if last_error is None:
+            raise RuntimeError("Edge-TTS 熔断中，跳过合成")
         raise last_error
 
     def _play(self, path: str):

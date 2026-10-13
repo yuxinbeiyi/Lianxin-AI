@@ -158,7 +158,7 @@ class SoundSettingsDialog(QDialog):
 
         self._tts_engine_combo = QComboBox()
         self._tts_engine_combo.addItems([
-            "auto — 优先 GPT-SoVITS（不可用则回退 Edge-TTS）",
+            "auto — 优先 Edge-TTS（失败后切换 GPT-SoVITS 兜底）",
             "edge_tts — 仅使用 Edge-TTS（云端标准发音）",
         ])
         engine_vbox.addWidget(self._tts_engine_combo)

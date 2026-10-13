@@ -179,3 +179,34 @@ def unavailable_reason() -> str:
 def take_notification() -> str:
     """取走本轮故障的一次性可见提示；无提示时返回空串。"""
     return _BREAKER.take_notification()
+
+
+# ── 运行期阶段提示（供界面显示） ──────────────────────────
+# GPT-SoVITS 冷启动要加载模型，可能耗时数十秒。界面必须有可见提示，
+# 否则用户只会以为莲心卡死了。/tts/status 每次轮询会读取这里。
+_STAGE_LOCK = threading.Lock()
+_STAGE = dict(key='', text='')
+
+GPT_SOVITS_LOADING_TEXT = '莲心正在加载GPT-SoVITS'
+
+
+def set_stage(key: str, text: str) -> None:
+    '''设置当前阶段提示（例如 GPT-SoVITS 加载中）。'''
+    with _STAGE_LOCK:
+        _STAGE['key'] = str(key or '')
+        _STAGE['text'] = str(text or '')
+
+
+def clear_stage(key: str = '') -> None:
+    '''清除阶段提示；传入 key 时只清匹配的那个，避免误清其它阶段。'''
+    with _STAGE_LOCK:
+        if key and _STAGE.get('key') != key:
+            return
+        _STAGE['key'] = ''
+        _STAGE['text'] = ''
+
+
+def current_stage() -> dict:
+    '''返回当前阶段提示副本（无提示时 text 为空串）。'''
+    with _STAGE_LOCK:
+        return dict(_STAGE)

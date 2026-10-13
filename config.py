@@ -1436,7 +1436,7 @@ def save_proxy_config(config: dict):
 
 # ── TTS 语音合成配置 ────────────────────────────────────────────
 _TTS_DEFAULTS = {
-    "engine": "auto",                # "auto" | "edge_tts" | "gpt_sovits"
+    "engine": "auto",                # "auto"=Edge优先失败切GPT | "edge_tts"=仅Edge | "gpt_sovits"=仅GPT
     "gpt_sovits_path": "",           # GPT-SoVITS 安装目录路径
     "gpt_sovits_version": "v2Pro",   # GPT-SoVITS 模型版本
     "gpt_sovits_gpt_path": "",        # 可选：自定义 GPT 权重
