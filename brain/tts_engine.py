@@ -269,6 +269,7 @@ def _ensure_worker() -> subprocess.Popen:
             errors="replace",
             env=env,
             cwd=gs_path,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         _worker_version = version
     except Exception:

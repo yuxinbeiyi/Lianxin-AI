@@ -121,7 +121,8 @@ def _ghost_evidence_missing(position: float) -> bool:
 
 # 判"mpv 不在运行"时只认新鲜结果：刚开播时 mpv 可能才被拉起来，
 # 用过期的 False 会冤枉真实的播放（开播瞬间短暂显示暂停）。
-_MPV_PROBE_MAX_AGE = 0.8
+# 进程枚举已改为 psutil（毫秒级、不弹窗），0.5s 只是轻微节流。
+_MPV_PROBE_MAX_AGE = 0.5
 
 
 def _mpv_process_alive() -> Optional[bool]:
@@ -201,7 +202,7 @@ def build_state(
 
     ghost_playback = False
     if playing and not paused and _ghost_evidence_missing(position):
-        # 仅有嫌疑时才探测进程（PowerShell 探测有开销，函数内部带 3s 缓存）。
+        # 仅有嫌疑时才探测进程（psutil 毫秒级、不弹窗，函数内部带缓存）。
         ghost_playback = _ghost_guard_decision(True, _mpv_process_alive())
     else:
         _ghost_guard_decision(False, None)

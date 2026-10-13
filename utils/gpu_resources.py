@@ -19,6 +19,7 @@ def get_gpu_memory() -> Optional[dict[str, int]]:
             text=True,
             timeout=2,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
             return None
