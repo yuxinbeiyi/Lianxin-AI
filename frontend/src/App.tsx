@@ -90,6 +90,7 @@ type Session = {
 };
 type MusicState = {
   stateVersion?: number;
+  updatedAt?: number;
   active?: boolean;
   playing?: boolean;
   paused?: boolean;
@@ -2225,6 +2226,15 @@ function Workspace({
     </section>
   );
 }
+function pickFresherMusicState(next: MusicState, current: MusicState): MusicState {
+  const nextAt = Number(next.updatedAt ?? 0);
+  const currentAt = Number(current.updatedAt ?? 0);
+  // 8765 的 stateVersion 在服务重启后会归零，只比它会把新状态全挡在门外
+  // （音乐面板会永久停在旧状态，包括假的"正在播放"）。改用后端每次都会刷新的
+  // updatedAt 判新鲜度，仅当两者完全相同时才退回 stateVersion。
+  if (nextAt > 0 && currentAt > 0 && nextAt !== currentAt) return nextAt > currentAt ? next : current;
+  return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current;
+}
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat");
   const [managementOpen, setManagementOpen] = useState(false);
@@ -2337,7 +2347,7 @@ export function App() {
         .musicState()
         .then((state) => setMusic((current) => {
           const next = state as MusicState;
-          return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current;
+          return pickFresherMusicState(next, current);
         }))
         .catch(() => undefined);
       void lianxinApi
@@ -2798,7 +2808,7 @@ export function App() {
       .then((state) => {
         setMusic((current) => {
           const next = state as MusicState;
-          return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current;
+          return pickFresherMusicState(next, current);
         });
         setMusicError("");
       })
@@ -3063,7 +3073,7 @@ export function App() {
                 workspace={activeWorkspace}
                 music={music}
                 onControl={controlMusic}
-                onRefreshMusic={() => { void lianxinApi.musicState().then((state) => setMusic((current) => { const next = state as MusicState; return (next.stateVersion ?? 0) >= (current.stateVersion ?? 0) ? next : current; })); }}
+                onRefreshMusic={() => { void lianxinApi.musicState().then((state) => setMusic((current) => { const next = state as MusicState; return pickFresherMusicState(next, current); })); }}
                 musicError={musicError}
                 onDismissMusicError={() => setMusicError("")}
               />

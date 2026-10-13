@@ -106,6 +106,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const dismissErrorRef = useRef(onDismissError);
 
   const playing = Boolean(music.active);
+  const hasTrack = Boolean(music.name);
   const progress = seekDrag ?? (seekConfirm !== null && music.duration ? Math.min(100, (seekConfirm / music.duration) * 100) : (music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0));
   const volume = Math.round(music.volume ?? 80);
   const mode = music.mode === "single" ? "single" : music.mode === "shuffle" ? "shuffle" : "sequence";
@@ -254,7 +255,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
       } catch {
         if (alive) spectrumRef.current = null;
       } finally {
-        if (alive) timer = window.setTimeout(poll, 40);
+        if (alive) timer = window.setTimeout(poll, 80);
       }
     };
     poll();
@@ -482,13 +483,13 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
         </div>
         <div className="music-meta">
           <span className="eyebrow">{"莲心 · 音乐空间"}</span>
-          <h1>{music.name || "未知曲目"}</h1>
-          <p>{music.artist || "未知歌手"}{music.album ? ` \u00b7 ${music.album}` : ""}</p>
+          <h1>{music.name || "暂无播放"}</h1>
+          <p>{hasTrack ? music.artist || "未知歌手" : "播放器空闲"}{music.album ? ` \u00b7 ${music.album}` : ""}</p>
           <div className="music-tags">
-            {music.style ? <span className="music-tag">{music.style}</span> : null}
-            {music.instrumental ? <span className="music-tag">{"纯音乐"}</span> : null}
+            {hasTrack && music.style ? <span className="music-tag">{music.style}</span> : null}
+            {hasTrack && music.instrumental ? <span className="music-tag">{"纯音乐"}</span> : null}
             {music.ghostPlayback ? <span className="music-tag is-warn">{"播放器未响应"}</span> : null}
-            <span className="music-tag">{mode === "shuffle" ? "随机播放" : mode === "single" ? "单曲循环" : "顺序播放"}</span>
+            {hasTrack ? <span className="music-tag">{mode === "shuffle" ? "随机播放" : mode === "single" ? "单曲循环" : "顺序播放"}</span> : null}
           </div>
         </div>
         <div className="music-controls">

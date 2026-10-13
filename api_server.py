@@ -328,6 +328,77 @@ def _study_room_wallpaper_url(path: Path) -> str:
     return "/api/study-room/wallpaper?path=" + quote(str(path.resolve()), safe="")
 
 
+# ── 音乐空间壁纸：id 与磁盘路径解耦 ──────────────────────────────────
+# 旧版直接把绝对路径当 id 存进设置，项目一换目录/换机器壁纸就失效，也会把本机
+# 路径透给前端。现在统一用可移植 id：内置壁纸 asset:<文件名>，自定义 file:<绝对路径>，
+# 磁盘路径一律由后端按 id 解析（并校验不越界）。
+_MUSIC_WALLPAPER_ASSET_PREFIX = "asset:"
+_MUSIC_WALLPAPER_FILE_PREFIX = "file:"
+
+
+def _music_wallpaper_asset_dir():
+    try:
+        from utils.resource_path import get_asset_path
+        return get_asset_path("主界面背景图")
+    except Exception:
+        return None
+
+
+def _music_asset_wallpaper_id(name) -> str:
+    return _MUSIC_WALLPAPER_ASSET_PREFIX + str(name)
+
+
+def _music_file_wallpaper_id(path) -> str:
+    return _MUSIC_WALLPAPER_FILE_PREFIX + str(Path(path).resolve())
+
+
+def _music_wallpaper_url(wallpaper_id) -> str:
+    value = str(wallpaper_id or "")
+    if not value or value == "default":
+        return ""
+    return "/api/music/wallpaper?id=" + quote(value, safe="")
+
+
+def _music_wallpaper_path(wallpaper_id):
+    """把壁纸 id 解析成磁盘路径；无法解析或越界时返回 None。"""
+    value = str(wallpaper_id or "").strip()
+    if not value or value == "default":
+        return None
+    if value.startswith(_MUSIC_WALLPAPER_ASSET_PREFIX):
+        directory = _music_wallpaper_asset_dir()
+        if directory is None:
+            return None
+        try:
+            root = directory.resolve()
+            candidate = (root / value[len(_MUSIC_WALLPAPER_ASSET_PREFIX):]).resolve()
+        except Exception:
+            return None
+        return candidate if candidate.is_file() and candidate.parent == root else None
+    if value.startswith(_MUSIC_WALLPAPER_FILE_PREFIX):
+        value = value[len(_MUSIC_WALLPAPER_FILE_PREFIX):]
+    try:
+        candidate = Path(value).expanduser().resolve()
+    except Exception:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _music_portable_wallpaper_id(stored, wallpapers) -> str:
+    """旧版设置里存的是绝对路径：按文件名匹配回可移植的内置壁纸 id。"""
+    try:
+        target = Path(str(stored or "")).name.lower()
+    except Exception:
+        return ""
+    if not target:
+        return ""
+    for item in wallpapers or []:
+        item_id = str(item.get("id") or "")
+        if item_id.startswith(_MUSIC_WALLPAPER_ASSET_PREFIX) and \
+                item_id[len(_MUSIC_WALLPAPER_ASSET_PREFIX):].lower() == target:
+            return item_id
+    return ""
+
+
 
 
 
@@ -1451,8 +1522,9 @@ class LianxinBridge:
                 try:
                     if image.is_file() and image.suffix.lower() in allowed:
                         resolved = image.resolve()
-                        items.append({"id": str(resolved), "name": image.stem,
-                                      "url": "/api/music/wallpaper?path=" + quote(str(resolved), safe="")})
+                        portable_id = _music_asset_wallpaper_id(image.name)
+                        items.append({"id": portable_id, "name": image.stem,
+                                      "url": _music_wallpaper_url(portable_id)})
                 except Exception:
                     continue
         return items
@@ -1467,10 +1539,16 @@ class LianxinBridge:
         wallpapers = self._music_space_wallpapers()
         known = {item["id"] for item in wallpapers}
         if current != "default" and current not in known:
-            p = Path(current)
-            if p.is_file():
-                wallpapers.append({"id": str(p.resolve()), "name": f"\u81ea\u5b9a\u4e49\uff1a{p.stem}",
-                                   "url": "/api/music/wallpaper?path=" + quote(str(p.resolve()), safe="")})
+            portable = _music_portable_wallpaper_id(current, wallpapers)
+            if portable:
+                # 旧版存的是绝对路径：迁移成可移植 id，换目录/换机器后不再丢壁纸
+                current = portable
+            else:
+                custom = Path(current)
+                if custom.is_file():
+                    current = _music_file_wallpaper_id(custom)
+                    wallpapers.append({"id": current, "name": f"自定义：{custom.stem}",
+                                       "url": _music_wallpaper_url(current)})
         try:
             opacity = float(settings.value("space_wallpaper_opacity", 0.7)) if settings is not None else 0.7
         except (TypeError, ValueError):
@@ -1495,11 +1573,19 @@ class LianxinBridge:
             settings = QSettings("Lianxin", "MusicBox")
         except Exception:
             return self._music_space_settings()
-        path = str(wallpaper or "default")
-        if path != "default":
-            p = Path(path)
-            if not p.is_file():
-                path = "default"
+        raw_id = str(wallpaper or "default")
+        if raw_id == "default":
+            path = "default"
+        elif raw_id.startswith((_MUSIC_WALLPAPER_ASSET_PREFIX, _MUSIC_WALLPAPER_FILE_PREFIX)):
+            path = raw_id if _music_wallpaper_path(raw_id) else "default"
+        else:
+            # 旧版前端可能直接传绝对路径：优先映射回内置壁纸 id
+            portable = _music_portable_wallpaper_id(raw_id, self._music_space_wallpapers())
+            if portable:
+                path = portable
+            else:
+                candidate = _music_wallpaper_path(raw_id)
+                path = _music_file_wallpaper_id(candidate) if candidate else "default"
         settings.setValue("space_wallpaper", path)
         settings.setValue("space_wallpaper_opacity", max(0.0, min(1.0, float(wallpaper_opacity))))
         settings.setValue("space_content_mask_opacity", max(0.0, min(1.0, float(content_mask_opacity))))
@@ -3462,18 +3548,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge._music_space_settings())
             if path == "/api/music/wallpaper":
                 query = parse_qs(urlparse(self.path).query)
+                raw_id = (query.get("id") or [""])[0]
                 raw_path = (query.get("path") or [""])[0]
-                try:
-                    target = Path(raw_path).expanduser().resolve()
-                except Exception:
-                    target = None
+                if raw_id:
+                    target = _music_wallpaper_path(raw_id)
+                else:
+                    try:
+                        target = Path(raw_path).expanduser().resolve()
+                    except Exception:
+                        target = None
                 if target is not None and target.is_file():
                     try:
                         from utils.resource_path import get_asset_path
                         root = get_asset_path("主界面背景图").resolve()
                     except Exception:
                         root = None
-                    allowed = root is not None and (target == root or root in target.parents)
+                    allowed = raw_id.startswith(_MUSIC_WALLPAPER_FILE_PREFIX) if raw_id else False
+                    if not allowed and root is not None:
+                        allowed = target == root or root in target.parents
                     if allowed:
                         raw = target.read_bytes()
                         self.send_response(200)
