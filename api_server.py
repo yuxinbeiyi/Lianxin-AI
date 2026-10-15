@@ -768,6 +768,10 @@ class LianxinBridge:
         self._netease_spawn_lock = threading.Lock()
         self._music_control_lock = threading.Lock()
         self._netease_proc = None
+        self._netease_fail_streak = 0
+        self._netease_cooldown_until = 0.0
+        self._netease_last_spawn_error = ""
+        self._netease_cooldown_logged_at = 0.0
         self._watched_song = None
         from brain.music_service import MusicService
         self.music_service = MusicService(self)
@@ -1858,48 +1862,199 @@ class LianxinBridge:
         })
         return result
 
-    def _netease_online(self) -> bool:
-        import urllib.request
+    # ── 网易云 Web 播放器（8765）：判活与拉起 ─────────────────────────────
+    NETEASE_PORT = 8765
+    NETEASE_SPAWN_TIMEOUT = 8.0
+    NETEASE_FAIL_STREAK_LIMIT = 3
+    NETEASE_COOLDOWN_SECONDS = 300.0
+
+    def _netease_port_listening(self, timeout: float = 0.5) -> bool:
+        """端口级判活：只看 127.0.0.1:8765 上有没有监听者，不依赖对端是否及时应答。"""
+        import socket
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8765/api/status", timeout=0.8) as resp:
-                resp.read()
-            return True
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                return sock.connect_ex(("127.0.0.1", self.NETEASE_PORT)) == 0
         except Exception:
             return False
 
-    def ensure_netease_online(self, timeout: float = 8.0) -> bool:
-        """测探 8765 是否在线；不在线时自动拉起 netease-music-mcp 的 Web 播放器。"""
+    def _netease_probe(self, path: str, timeout: float) -> str:
+        """探测一次 8765 的接口。
+
+        返回三态，便于区分"路由不存在"和"对端压根不应答"：
+        - "ok"           对端给了成功响应
+        - "missing"      对端应答了但路由不可用（例如旧版 server.js 没有 /api/ping）
+        - "unreachable"  超时/连接失败（对端卡住或不是 HTTP 服务）
+        """
+        import urllib.error
+        import urllib.request
+        url = f"http://127.0.0.1:{self.NETEASE_PORT}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError:
+            return "missing"
+        except Exception:
+            return "unreachable"
+        if path == "/api/ping":
+            try:
+                return "ok" if bool(json.loads(body.decode("utf-8") or "{}").get("ok", True)) else "missing"
+            except Exception:
+                # 内容不是 JSON 但确实应答了，按旧版/异常实现处理
+                return "ok"
+        return "ok"
+
+    def _netease_online(self) -> bool:
+        """两层判活：先看端口，再打不碰 mpv 的 /api/ping。
+
+        /api/status 会去问 mpv IPC（最坏 ~3s），超时太短会把健康服务误判成离线，
+        所以只在"确认是旧版服务"时才退回它。
+        """
+        if not self._netease_port_listening():
+            return False
+        ping = self._netease_probe("/api/ping", 1.2)
+        if ping == "ok":
+            return True
+        if ping == "missing":
+            return self._netease_probe("/api/status", 2.0) == "ok"
+        # unreachable：对端占用端口却不应答，没有必要再去问 /api/status
+        return False
+
+    def _netease_web_player_log(self):
+        """把播放器子进程的 stdout/stderr 落盘，避免再出现“失败原因不可考”。"""
+        try:
+            log_dir = Path(__file__).resolve().parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            return open(log_dir / "netease_web_player.log", "ab", buffering=0)
+        except Exception:
+            return subprocess.DEVNULL
+
+    def _reap_netease_proc(self) -> None:
+        """回收上一次未就绪的播放器进程，避免每次失败都留下孤儿 node。"""
+        proc = self._netease_proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                bridge_log.log("网易云", f"回收上一次未就绪的播放器进程 (PID {proc.pid})")
+            except Exception:
+                pass
+        self._netease_proc = None
+
+    def _spawn_netease_web_player(self) -> bool:
+        """仅在端口无人监听时拉起独立 Web 播放器进程。"""
+        self._reap_netease_proc()
+        try:
+            server_js = (
+                Path(__file__).resolve().parent
+                / "参考项目" / "netease-music-mcp-main" / "src" / "server.js"
+            )
+            cwd = server_js.parent.parent
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            sink = self._netease_web_player_log()
+            proc = subprocess.Popen(
+                ["node", str(server_js), "--web-player", "--port", str(self.NETEASE_PORT)],
+                cwd=str(cwd),
+                stdout=sink,
+                stderr=sink,
+                creationflags=flags,
+            )
+            self._netease_proc = proc
+            try:
+                from utils.child_kill_job import assign_pid_to_kill_job
+                assign_pid_to_kill_job(proc.pid)
+            except Exception:
+                pass
+            self._netease_last_spawn_error = ""
+            bridge_log.log("网易云", f"8765 不在线，自动拉起 netease-music-mcp (PID {proc.pid})")
+            return True
+        except Exception as exc:
+            self._netease_last_spawn_error = str(exc)
+            bridge_log.log("网易云", f"拉起 8765 失败: {exc}")
+            return False
+
+    def _netease_spawn_diagnosis(self) -> str:
+        """给日志和报错提供可执行的定位信息。"""
+        parts = []
+        proc = self._netease_proc
+        if proc is None:
+            parts.append("未新增子进程")
+        else:
+            rc = proc.poll()
+            parts.append(
+                f"子进程仍在启动中 (PID {proc.pid})" if rc is None
+                else f"子进程已退出 rc={rc} (PID {proc.pid})"
+            )
+        parts.append("端口已被占用" if self._netease_port_listening() else "端口无人监听")
+        if self._netease_last_spawn_error:
+            parts.append(f"spawn 异常: {self._netease_last_spawn_error}")
+        return "；".join(parts)
+
+    def _netease_unavailable_message(self) -> str:
+        now = time.time()
+        if now < self._netease_cooldown_until:
+            remaining = int(self._netease_cooldown_until - now)
+            return f"网易云播放器暂时不可用：自动拉起连续失败，已进入冷却（约 {remaining}s 后可重试）"
+        return f"网易云播放器暂时不可用：{self._netease_spawn_diagnosis()}（详见 logs/netease_web_player.log）"
+
+    def ensure_netease_online(self, timeout: float = NETEASE_SPAWN_TIMEOUT) -> bool:
+        """确保 8765 在线；不在线时自动拉起（幂等 + 失败熔断）。
+
+        只有“端口确实没人监听”才会 spawn，避免反复拉起、每次超时、还留下孤儿 node。
+        timeout 是本次调用允许消耗的总预算（包含判活），调用方因此不会被拖住。
+        """
+        now = time.time()
+        # 冷却期内若端口仍是空的，直接快速失败：不再浪费 8s 去探测/拉起；
+        # 日志最多每 30s 一条，避免前端轮询把日志刷爆。
+        if now < self._netease_cooldown_until and not self._netease_port_listening():
+            if now - self._netease_cooldown_logged_at > 30:
+                self._netease_cooldown_logged_at = now
+                bridge_log.log(
+                    "网易云",
+                    f"拉起处于冷却中（剩余 {int(self._netease_cooldown_until - now)}s），跳过自动拉起",
+                )
+            return False
+        deadline = time.time() + timeout
         if self._netease_online():
             return True
         with self._netease_spawn_lock:
-            if self._netease_online():
+            if time.time() < deadline and self._netease_online():
                 return True
-            try:
-                server_js = (
-                    Path(__file__).resolve().parent
-                    / "参考项目" / "netease-music-mcp-main" / "src" / "server.js"
+            now = time.time()
+            if now < self._netease_cooldown_until:
+                bridge_log.log(
+                    "网易云",
+                    f"拉起处于冷却中（剩余 {int(self._netease_cooldown_until - now)}s），跳过自动拉起",
                 )
-                cwd = server_js.parent.parent
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                proc = subprocess.Popen(
-                    ["node", str(server_js), "--web-player", "--port", "8765"],
-                    cwd=str(cwd),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=flags,
-                )
-                self._netease_proc = proc
-                bridge_log.log("网易云", f"8765 不在线，自动拉起 netease-music-mcp (PID {proc.pid})")
-            except Exception as exc:
-                bridge_log.log("网易云", f"拉起 8765 失败: {exc}")
                 return False
-            deadline = time.time() + timeout
+            if self._netease_port_listening():
+                bridge_log.log(
+                    "网易云",
+                    "8765 端口已被监听但未就绪，等待其完成启动（不重复拉起）",
+                )
+            elif not self._spawn_netease_web_player():
+                return False
             while time.time() < deadline:
                 if self._netease_online():
-                    bridge_log.log("网易云", "8765 已就绪")
+                    self._netease_fail_streak = 0
+                    self._netease_cooldown_until = 0.0
+                    bridge_log.log("网易云", f"8765 已就绪（端口 {self.NETEASE_PORT}）")
                     return True
                 time.sleep(0.3)
-            bridge_log.log("网易云", "8765 拉起超时")
+            self._netease_fail_streak += 1
+            bridge_log.log(
+                "网易云",
+                f"8765 拉起超时（连续第 {self._netease_fail_streak} 次）｜{self._netease_spawn_diagnosis()}",
+            )
+            if self._netease_fail_streak >= self.NETEASE_FAIL_STREAK_LIMIT:
+                self._netease_cooldown_until = time.time() + self.NETEASE_COOLDOWN_SECONDS
+                bridge_log.log(
+                    "网易云",
+                    f"连续 {self._netease_fail_streak} 次拉起失败，进入 "
+                    f"{int(self.NETEASE_COOLDOWN_SECONDS)}s 冷却；音乐操作将直接返回可读提示"
+                    "（子进程日志见 logs/netease_web_player.log）",
+                )
             return False
 
     def music_ensure(self) -> dict:
@@ -2144,7 +2299,7 @@ class LianxinBridge:
         base = "http://127.0.0.1:8765"
         payload = payload or {}
         if action != "kill-mpv" and not self.ensure_netease_online():
-            raise ValueError("网易云播放服务未启动且自动拉起失败，请确认 node 环境")
+            raise ValueError(self._netease_unavailable_message())
         if action in {"next", "previous"}:
             return self._music_skip_unplayable(action, payload)
         if action in {"queue-append", "queue-insert-next"}:
