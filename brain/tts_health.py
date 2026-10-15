@@ -210,3 +210,52 @@ def current_stage() -> dict:
     '''返回当前阶段提示副本（无提示时 text 为空串）。'''
     with _STAGE_LOCK:
         return dict(_STAGE)
+# ── 引擎失败一行提示（桌面界面 / QQ 各取一次）────────────────
+# 取消跨引擎回退后，合成失败不再有任何兜底：界面必须如实显示一行原因，
+# 否则用户只会觉得莲心突然哑了。这里按引擎节流，避免逐分句刷屏。
+ENGINE_FAILURE_TEXTS = {
+    "edge_tts": "莲心的 edge-tts 合成暂时失败了",
+    "gpt_sovits": "莲心的 GPT-SoVITS 合成暂时失败了",
+}
+DEFAULT_ENGINE_FAILURE_TEXT = "莲心的语音合成暂时失败了"
+ENGINE_FAILURE_MIN_INTERVAL = 25.0
+# QQ 端需要一句自解释的提示，免得群里的人以为莲心坏了。
+ENGINE_FAILURE_QQ_SUFFIX = "，这条先用文字说"
+
+_FAILURE_LOCK = threading.Lock()
+_ENGINE_FAILURE = {"id": 0, "engine": "", "reason": "", "text": "", "at": 0.0}
+
+
+def engine_failure_text(engine: str) -> str:
+    """返回某引擎失败时给用户看的那一行文案。"""
+    key = str(engine or "").strip().lower()
+    return ENGINE_FAILURE_TEXTS.get(key, DEFAULT_ENGINE_FAILURE_TEXT)
+
+
+def note_engine_failure(engine: str, reason: str = "") -> None:
+    """记录一次合成失败；同一引擎在节流窗口内只保留一条待显示提示。"""
+    key = str(engine or "").strip().lower() or "unknown"
+    now = time.monotonic()
+    with _FAILURE_LOCK:
+        same_engine = _ENGINE_FAILURE.get("engine") == key and int(_ENGINE_FAILURE.get("id") or 0) > 0
+        if same_engine and now - float(_ENGINE_FAILURE.get("at") or 0.0) < ENGINE_FAILURE_MIN_INTERVAL:
+            return
+        _ENGINE_FAILURE.update({
+            "id": int(_ENGINE_FAILURE.get("id") or 0) + 1,
+            "engine": key,
+            "reason": str(reason or "")[:200],
+            "text": engine_failure_text(key),
+            "at": now,
+        })
+
+
+def engine_failure_state() -> dict:
+    """查看当前待显示的失败提示（非破坏性，按 id 去重由调用方负责）。"""
+    with _FAILURE_LOCK:
+        return dict(_ENGINE_FAILURE)
+
+
+def clear_engine_failure() -> None:
+    """清空待显示的失败提示（合成恢复正常后可调用）。"""
+    with _FAILURE_LOCK:
+        _ENGINE_FAILURE.update({"id": 0, "engine": "", "reason": "", "text": "", "at": 0.0})

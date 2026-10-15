@@ -764,6 +764,7 @@ function ChatWorkspace({
   voiceInputText,
   ttsSpeaking,
   ttsStage,
+  ttsNotice,
   silentMode,
   onToggleMute,
   onOpenNote = () => undefined,
@@ -788,6 +789,7 @@ function ChatWorkspace({
   voiceInputText: string;
   ttsSpeaking: boolean;
   ttsStage: string;
+  ttsNotice: string;
   silentMode: boolean;
   onToggleMute: () => void;
   onOpenNote?: () => void;
@@ -971,6 +973,12 @@ function ChatWorkspace({
             </div>
           )}
           <ToolRounds rounds={toolRounds} />
+          {ttsNotice && (
+            <div className="tts-failure-notice">
+              <span className="tts-failure-dot" />
+              {ttsNotice}
+            </div>
+          )}
           {(busy || interactionThinking || proactiveThinking || ttsStage) && (
             <div className="typing-indicator">
               <span />
@@ -2275,6 +2283,9 @@ export function App() {
   });
   const [ttsSpeaking, setTtsSpeaking] = useState(false);
   const [ttsStage, setTtsStage] = useState("");
+  // 语音合成失败提示行（单引擎语义：失败只提示一行，不自动换声线）
+  const [ttsNotice, setTtsNotice] = useState("");
+  const ttsNoticeIdRef = useRef(0);
   const [silentMode, setSilentMode] = useState(false);
   useEffect(() => {
     const sync = () =>
@@ -2283,6 +2294,11 @@ export function App() {
         .then((state) => {
           setTtsSpeaking(state.speaking);
           setTtsStage(state.stage?.text ?? "");
+          const notice = state.notice;
+          if (notice && notice.id && notice.id !== ttsNoticeIdRef.current) {
+            ttsNoticeIdRef.current = notice.id;
+            setTtsNotice(notice.text || "莲心的语音合成暂时失败了");
+          }
         })
         .catch(() => undefined);
     sync();
@@ -2307,6 +2323,8 @@ export function App() {
   }, []);
   useEffect(() => {
     document.documentElement.classList.toggle("tts-active", ttsSpeaking);
+    // 语音恢复正常后，撤掉上一轮留下的合成失败提示
+    if (ttsSpeaking) setTtsNotice("");
   }, [ttsSpeaking]);
   const workspaceLabel = useMemo(
     () =>
@@ -3072,6 +3090,7 @@ export function App() {
                 voiceInputText={voiceInputText}
                 ttsSpeaking={ttsSpeaking}
                 ttsStage={ttsStage}
+                ttsNotice={ttsNotice}
                 silentMode={silentMode}
                 onToggleMute={toggleMute}
                 onOpenNote={() => openLegacy("note")}

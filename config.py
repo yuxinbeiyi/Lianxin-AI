@@ -1453,7 +1453,7 @@ def save_proxy_config(config: dict):
 
 # ── TTS 语音合成配置 ────────────────────────────────────────────
 _TTS_DEFAULTS = {
-    "engine": "auto",                # "auto"=Edge优先失败切GPT | "edge_tts"=仅Edge | "gpt_sovits"=仅GPT
+    "engine": "edge_tts",            # "edge_tts"=仅Edge | "gpt_sovits"=仅GPT（历史值 auto 自动迁移为 edge_tts）
     "gpt_sovits_path": "",           # GPT-SoVITS 安装目录路径
     "gpt_sovits_version": "v2Pro",   # GPT-SoVITS 模型版本
     "gpt_sovits_gpt_path": "",        # 可选：自定义 GPT 权重
@@ -1480,6 +1480,11 @@ def get_tts_config() -> dict:
     tts = full.get("tts", {})
     result = _TTS_DEFAULTS.copy()
     result.update(tts)
+    # 历史值 "auto"（Edge 优先、失败切 GPT）已取消：莲心只用单一引擎说话，
+    # 两条声线差异过大，自动切换会让她突然"换人"，破坏代入感。
+    engine = str(result.get("engine", "") or "").strip().lower()
+    if engine not in ("edge_tts", "gpt_sovits"):
+        result["engine"] = "edge_tts"
     return result
 
 

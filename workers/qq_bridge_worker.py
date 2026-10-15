@@ -328,6 +328,7 @@ class QQBridgeWorker(QThread):
         self._owner_name = cfg.get("owner_name", "主人") or "主人"
         self._voice_reply_enabled = cfg.get("voice_reply_enabled", True)
         self._segmented_reply_enabled = cfg.get("segmented_reply_enabled", True)
+        self._last_tts_notice_id = 0   # 合成失败提示：同一轮故障只发一次
 
         # ── QQ 端表情包状态 ──
         self._pending_emotion_q = None      # 待发送的表情包情绪
@@ -3251,14 +3252,18 @@ class QQBridgeWorker(QThread):
         return f"{label}: {content}"
 
     def _announce_tts_unavailable_once(self, msg: dict) -> None:
-        """语音链路熔断后，每轮故障只提醒主人一次，之后静默降级为文字。"""
+        """语音合成失败后，只发一行文字说明；同一轮故障不重复刷屏。"""
         try:
             from brain import tts_health
-            notice = tts_health.take_notification()
+            state = tts_health.engine_failure_state()
         except Exception:
             return
-        if not notice:
+        text = str(state.get("text") or "").strip()
+        notice_id = int(state.get("id") or 0)
+        if not text or notice_id <= 0 or notice_id == self._last_tts_notice_id:
             return
+        self._last_tts_notice_id = notice_id
+        notice = f"{text}{tts_health.ENGINE_FAILURE_QQ_SUFFIX}"
         try:
             self._send_msg({
                 "message_type": msg.get("message_type"),
@@ -3266,9 +3271,9 @@ class QQBridgeWorker(QThread):
                 "group_id": msg.get("group_id"),
                 "message": [{"type": "text", "data": {"text": notice}}],
             })
-            self._log(f"[语音] 已发送一次性提示: {notice}")
+            self._log(f"[语音] 已发送失败提示: {notice}")
         except Exception as exc:
-            self._log(f"[语音] 一次性提示发送失败: {exc}")
+            self._log(f"[语音] 失败提示发送失败: {exc}")
 
     def _send_voice_reply(self, text: str, msg: dict):
         """生成语音回复并发送。

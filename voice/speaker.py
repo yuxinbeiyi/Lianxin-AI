@@ -389,18 +389,17 @@ class VoiceSpeaker:
 
         Edge-TTS 输出 MP3，GPT-SoVITS 输出 WAV（避免依赖 FFmpeg）。
 
-        prefer_edge=True（auto 默认）时：先试 Edge-TTS；失败/熔断后切换本地
-        GPT-SoVITS 兜底；GPT-SoVITS 再失败就放弃这一句，不再回头重试
-        Edge-TTS，避免两端来回抖动。
-        prefer_edge=False（仅 gpt_sovits）时：只用 GPT-SoVITS，失败即放弃。
+        prefer_edge=True（edge_tts，默认）时只用 Edge-TTS；prefer_edge=False
+        （gpt_sovits）时只用 GPT-SoVITS。两者都失败即放弃这一句并上报一行
+        失败提示，绝不切到另一个引擎 —— 两条声线差异过大，切换会让莲心
+        突然"换人"。
         """
         tag = f"_s{sequence}" if sequence is not None else ""
 
         if prefer_edge:
-            edge_path = self._synthesize_edge_mp3(text, tag)
-            if edge_path:
-                return edge_path
+            return self._synthesize_edge_mp3(text, tag)
 
+        from brain import tts_health
         if engine and engine.gpt_sovits_available:
             wav_path = self._new_temp_path(f"{tag}.wav")
             if engine.synthesize_gpt_wav(text, wav_path, mood=mood, speed=speed):
@@ -408,6 +407,10 @@ class VoiceSpeaker:
                 return wav_path
             self._remove_temp_file(wav_path)
             logger.warning("GPT-SoVITS 合成失败，这一句不再朗读")
+            tts_health.note_engine_failure("gpt_sovits", "GPT-SoVITS 合成失败")
+        else:
+            logger.warning("GPT-SoVITS 不可用，这一句不再朗读")
+            tts_health.note_engine_failure("gpt_sovits", "GPT-SoVITS 未配置或不可用")
 
         return None
 
@@ -421,6 +424,7 @@ class VoiceSpeaker:
                 "Edge-TTS 处于熔断中（剩余 %.0f 秒），跳过分句（text_len=%d）",
                 remaining, len(text),
             )
+            tts_health.note_engine_failure("edge_tts", breaker.reason())
             return None
 
         mp3_path = self._new_temp_path(f"{tag}.mp3")
@@ -445,6 +449,7 @@ class VoiceSpeaker:
             return mp3_path
         except Exception as e:
             logger.error(f"Edge-TTS 合成失败（已丢弃分句「{text[:30]}」）: {e}")
+            tts_health.note_engine_failure("edge_tts", tts_health.describe_error(e))
             self._remove_temp_file(mp3_path)
             return None
         finally:

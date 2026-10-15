@@ -386,9 +386,9 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
         wav_path: 输出 WAV 文件路径
         voice: Edge-TTS 音色名，为 None 时从配置读取
         mood: GPT-SoVITS 情绪（仅 "auto" 或 "gpt_sovits" 时生效）
-        engine: "auto"（默认）=Edge-TTS 优先，失败后切换 GPT-SoVITS
-                "edge_tts"=仅用 Edge-TTS（QQ 桥接用，避免后台线程 GPT-SoVITS 音色异常）
-                "gpt_sovits"=仅用 GPT-SoVITS
+        engine: 只有 "gpt_sovits" 会走本地 GPT-SoVITS；其余取值（含历史值
+                "auto"、"edge_tts"）一律等价于"仅用 Edge-TTS"，失败即抛错，
+                不再跨引擎自动切换。
     """
     # 先清洗文本，防止 TTS 读符号/emoji
     text = clean_tts_text(text)
@@ -429,14 +429,9 @@ def tts_to_wav(text: str, wav_path: str, voice: str = None,
         return
     except Exception as e:
         logger.warning(f"Edge-TTS 合成失败：{e}")
-        if mode != MODE_EDGE_FIRST:
-            raise
-        # auto：Edge 失败后切换本地 GPT-SoVITS 兜底；它再失败就放弃，
-        # 不再回头重试 Edge-TTS。
-        if TtsEngine().synthesize_gpt_wav(text, wav_path, mood=mood):
-            logger.info("TTS 使用 GPT-SoVITS 兜底")
-            return
-        raise RuntimeError("语音合成失败：Edge-TTS 与 GPT-SoVITS 均不可用") from e
+        from brain import tts_health
+        tts_health.note_engine_failure("edge_tts", tts_health.describe_error(e))
+        raise
     finally:
         for p in (mp3_path,):
             try:
@@ -570,27 +565,30 @@ def _synthesize_with_gpt_sovits(text: str, wav_path: str, debug_log=None) -> Non
 def convert_text_to_voice(text: str, silk_path: str, debug_log=None) -> bool:
     """完整链路：TTS → WAV → SILK。成功返回 True。
 
-    优先走 Edge-TTS 的自包含路线；当 Edge-TTS 已熔断、或本轮调用失败时，
-    回退到本地 GPT-SoVITS，避免云端 TTS 不可用时 QQ 语音彻底消失。
+    严格按配置的引擎合成：``gpt_sovits`` 走本地 GPT-SoVITS，其余（含历史值
+    ``auto``）走 Edge-TTS 自包含路线。失败不再跨引擎回退（两条声线差异过大），
+    由调用方退回文字回复，并给用户发一行失败提示。
     """
     wav_tmp = silk_path + ".wav"
     try:
         from brain import tts_health
+        from brain.tts_engine import resolve_tts_mode, MODE_GPT_ONLY
 
-        if tts_health.get_breaker().open_remaining() > 0:
+        try:
+            from config import get_tts_config
+            engine_mode = resolve_tts_mode(get_tts_config().get("engine"))
+        except Exception:
+            engine_mode = "edge_only"
+
+        if engine_mode == MODE_GPT_ONLY:
+            # 仅 GPT-SoVITS：失败即放弃，不回退 Edge-TTS。
             if debug_log:
-                debug_log("[音频] Edge-TTS 熔断中，改用本地 GPT-SoVITS")
+                debug_log("[音频] 使用本地 GPT-SoVITS 合成")
             _synthesize_with_gpt_sovits(text, wav_tmp, debug_log)
         else:
-            try:
-                # QQ replies must use the self-contained Edge-TTS route.  The desktop
-                # TtsEngine has its own GPT-SoVITS fallback path and previously bypassed
-                # the FFmpeg binding above when it was available.
-                tts_to_wav(text, wav_tmp, engine="edge_tts")
-            except Exception as edge_exc:
-                if debug_log:
-                    debug_log(f"[音频] Edge-TTS 失败，回退本地 GPT-SoVITS: {edge_exc}")
-                _synthesize_with_gpt_sovits(text, wav_tmp, debug_log)
+            # 仅 Edge-TTS：QQ 走自包含路线（自带 FFmpeg 绑定）。
+            # 失败不再切换声线，由调用方退回文字回复。
+            tts_to_wav(text, wav_tmp, engine="edge_tts")
         if debug_log:
             debug_log(f"[音频] TTS 完成: {text[:50]}... -> {wav_tmp}")
         wav_to_silk(wav_tmp, silk_path)

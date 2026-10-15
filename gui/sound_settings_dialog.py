@@ -157,14 +157,14 @@ class SoundSettingsDialog(QDialog):
         engine_vbox.addWidget(engine_title)
 
         self._tts_engine_combo = QComboBox()
-        self._tts_engine_combo.addItems([
-            "auto — 优先 Edge-TTS（失败后切换 GPT-SoVITS 兜底）",
-            "edge_tts — 仅使用 Edge-TTS（云端标准发音）",
-        ])
+        # 单引擎语义：莲心只用一种声线说话，失败也不会自动换引擎
+        # （两条声线差异过大，切换会让她突然"换人"）。
+        self._tts_engine_combo.addItem("edge_tts — 仅使用 Edge-TTS（云端标准发音）", "edge_tts")
+        self._tts_engine_combo.addItem("gpt_sovits — GPT-SoVITS 语音合成（仅本地声线）", "gpt_sovits")
         engine_vbox.addWidget(self._tts_engine_combo)
         engine_desc = QLabel(
-            "GPT-SoVits 需要安装并配置路径后方可使用。\n"
-            "Edge-TTS 无需安装，配置后即可使用。"
+            "选定后莲心只用该引擎说话；合成失败时会在聊天界面提示一行，不会自动切换声线。\n"
+            "GPT-SoVits 需要安装并配置路径后方可使用，Edge-TTS 无需安装。"
         )
         engine_desc.setWordWrap(True)
         engine_desc.setStyleSheet("color: #AEB3C2; font-size: 12px; padding: 4px 0;")
@@ -376,7 +376,7 @@ class SoundSettingsDialog(QDialog):
         tts_tip = QLabel(
             "💡 GPT-SoVITS 支持声音克隆和情绪表达。\n"
             "· 在 skills/语音合成/ref_wavs/ 下放置参考音频即可激活声音克隆\n"
-            "· 未配置时自动使用 Edge-TTS 标准发音，语音功能不受影响\n"
+            "· 该引擎合成失败时只提示一行，不会自动切换到另一种声线\n"
             "· 参考音频格式：WAV 文件，5-15 秒，24000Hz 采样率"
         )
         tts_tip.setWordWrap(True)
@@ -580,8 +580,8 @@ class SoundSettingsDialog(QDialog):
     # ── 原有方法（从旧代码迁移，无改动）────────────────────
 
     def _load_from_settings(self):
-        idx = 0 if self._tts_cfg.get("engine", "auto") != "edge_tts" else 1
-        self._tts_engine_combo.setCurrentIndex(idx)
+        engine_idx = self._tts_engine_combo.findData(self._tts_cfg.get("engine", "edge_tts"))
+        self._tts_engine_combo.setCurrentIndex(max(0, engine_idx))
         self._tts_gs_path_edit.setText(self._tts_cfg.get("gpt_sovits_path", ""))
 
         version = self._tts_cfg.get("gpt_sovits_version", "v2Pro") or "v2Pro"
@@ -755,8 +755,7 @@ class SoundSettingsDialog(QDialog):
         self._tts_test_btn.setEnabled(False)
         self._tts_test_btn.setText("合成中…")
 
-        engine_idx = self._tts_engine_combo.currentIndex()
-        engine = "auto" if engine_idx == 0 else "edge_tts"
+        engine = self._tts_engine_combo.currentData() or "edge_tts"
         gs_path = self._tts_gs_path_edit.text().strip()
         mood = self._tts_mood_combo.currentData()
         speed_val = self._tts_speed_slider.value() / 100.0
@@ -832,8 +831,7 @@ class SoundSettingsDialog(QDialog):
     def _on_save(self):
         self._settings.silent_mode = self._silent_cb.isChecked()
 
-        engine_idx = self._tts_engine_combo.currentIndex()
-        engine = "auto" if engine_idx == 0 else "edge_tts"
+        engine = self._tts_engine_combo.currentData() or "edge_tts"
         gs_path = self._tts_gs_path_edit.text().strip()
         mood = self._tts_mood_combo.currentData()
         speed = self._tts_speed_slider.value() / 100.0

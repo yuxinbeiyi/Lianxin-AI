@@ -1,8 +1,10 @@
 """
 TtsEngine — 莲心语音合成引擎。
 
-统一 TTS 入口：优先使用 GPT-SoVITS（声音克隆 + 情绪表达），
-不可用时自动回退到 Edge-TTS（云端标准发音）。
+统一 TTS 入口：按配置在 Edge-TTS（云端标准发音）与 GPT-SoVITS
+（声音克隆 + 情绪表达）之间择一，不做跨引擎自动回退 —— 两条声线差异过大，
+自动切换会让莲心突然"换人"，破坏代入感。合成失败时只上报失败原因
+（brain.tts_health.note_engine_failure），由界面显示一行提示。
 
 设计参考：openclaw_girlfriend 项目的 tts_call.py
   - 直接 Python 调用 GPT_SoVITS.inference_webui.get_tts_wav
@@ -570,6 +572,7 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
             "Edge-TTS 处于熔断中（剩余 %.0f 秒），跳过合成：%s",
             remaining, breaker.reason(),
         )
+        tts_health.note_engine_failure("edge_tts", breaker.reason())
         return False
 
     mp3_path = output_path + ".mp3"
@@ -614,6 +617,7 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
                     )
                     time.sleep(delay)
         logger.error(f"Edge-TTS 合成失败: {last_error}")
+        tts_health.note_engine_failure("edge_tts", tts_health.describe_error(last_error))
         return False
     finally:
         for p in (mp3_path,):
@@ -627,25 +631,24 @@ def _fallback_edge_tts(text: str, output_path: str, voice: str = "zh-CN-Xiaoxiao
 # 引擎模式解析
 # ══════════════════════════════════════════════════════════
 
-MODE_EDGE_FIRST = "edge_first"   # auto（默认）：Edge-TTS 优先，失败后切换 GPT-SoVITS
-MODE_EDGE_ONLY = "edge_only"     # edge_tts：仅使用 Edge-TTS
+MODE_EDGE_ONLY = "edge_only"     # edge_tts（默认）：仅使用 Edge-TTS
 MODE_GPT_ONLY = "gpt_only"       # gpt_sovits：仅使用 GPT-SoVITS
+# 兼容别名：历史值 "auto" 曾表示"Edge 优先 + 失败切 GPT"，现已取消跨引擎回退，
+# 等价于 edge_only。保留该常量以免其它模块 import 报错。
+MODE_EDGE_FIRST = MODE_EDGE_ONLY
 
 
 def resolve_tts_mode(engine: Optional[str]) -> str:
-    """把配置里的 engine 归一化为三种合成模式之一。
+    """把配置里的 engine 归一化为两种合成模式之一（单引擎，无回退）。
 
-    - ``auto``（默认）→ ``edge_first``：先用 Edge-TTS；失败或熔断后切换
-      GPT-SoVITS 兜底；GPT-SoVITS 再失败就放弃，不再回头重试 Edge-TTS。
-    - ``edge_tts`` → ``edge_only``：只用 Edge-TTS。
-    - ``gpt_sovits`` → ``gpt_only``：只用 GPT-SoVITS。
+    - ``gpt_sovits`` → ``gpt_only``：只用本地 GPT-SoVITS，失败也不回退 Edge-TTS。
+    - 其余取值（``edge_tts`` / 历史值 ``auto`` / 空值）→ ``edge_only``：只用
+      Edge-TTS，失败即上报失败，绝不切换声线。
     """
-    value = (engine or "auto").strip().lower()
+    value = (engine or "").strip().lower()
     if value == "gpt_sovits":
         return MODE_GPT_ONLY
-    if value == "edge_tts":
-        return MODE_EDGE_ONLY
-    return MODE_EDGE_FIRST
+    return MODE_EDGE_ONLY
 
 
 # ══════════════════════════════════════════════════════════
@@ -659,9 +662,9 @@ class TtsEngine:
         engine = TtsEngine()
         success = engine.synthesize("你好", "output.wav", mood="casual")
 
-    引擎选择逻辑：
-        1. GPT-SoVITS（如果已安装且 GPU 可用）→ 声音克隆 + 情绪表达
-        2. Edge-TTS（标准云端 TTS）→ 自动回退
+    引擎选择逻辑（由 tts.engine 决定，单引擎、无自动回退）：
+        1. edge_tts（默认）→ 只使用 Edge-TTS，失败即提示失败
+        2. gpt_sovits      → 只使用本地 GPT-SoVITS，失败即提示失败
     """
 
     def __init__(self):
@@ -732,15 +735,9 @@ class TtsEngine:
                 return False
             return self.synthesize_gpt_wav(text, output_path, mood, speed)
 
-        # Edge-TTS 优先（auto 默认 / edge_tts）
-        if _fallback_edge_tts(text, output_path, voice):
-            return True
-
-        # 仅 auto 才切换到本地 GPT-SoVITS 兜底；它再失败就放弃，
-        # 不再回头重试 Edge-TTS，避免两端来回抖动。
-        if mode == MODE_EDGE_FIRST and _is_gpt_sovits_available():
-            return self.synthesize_gpt_wav(text, output_path, mood, speed)
-        return False
+        # 仅 Edge-TTS：失败即如实返回失败，绝不切换其它声线
+        # （_fallback_edge_tts 内部已上报一行失败提示）。
+        return _fallback_edge_tts(text, output_path, voice)
 
     def synthesize_gpt_wav(self, text: str, output_path: str,
                            mood: Optional[str] = None,

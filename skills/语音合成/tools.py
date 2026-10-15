@@ -98,14 +98,20 @@ def _list_voice_styles() -> str:
 
     # 附加引擎状态
     try:
-        from brain.tts_engine import TtsEngine
+        from brain.tts_engine import TtsEngine, resolve_tts_mode, MODE_GPT_ONLY
+        from config import get_tts_config
         engine = TtsEngine()
+        configured = resolve_tts_mode(get_tts_config().get("engine"))
         lines.append("")
-        if engine.gpt_sovits_available:
-            lines.append(f"当前引擎：GPT-SoVITS（声音克隆已启用）")
+        if configured == MODE_GPT_ONLY:
+            if engine.gpt_sovits_available:
+                lines.append("当前引擎：GPT-SoVITS（声音克隆已启用，失败不会回退 Edge-TTS）")
+            else:
+                lines.append("当前引擎：GPT-SoVITS（未配置或不可用，语音会合成失败）")
+                lines.append("提示：在「声音设置」里配置 GPT-SoVITS 路径，或改选 Edge-TTS")
         else:
-            lines.append(f"当前引擎：Edge-TTS（标准云端发音）")
-            lines.append("提示：配置 GPT-SoVITS 后可启用声音克隆和情绪表达")
+            lines.append("当前引擎：Edge-TTS（标准云端发音，失败不会切换声线）")
+            lines.append("提示：如需声音克隆，请在「声音设置」里改选 GPT-SoVITS")
     except Exception:
         pass
 

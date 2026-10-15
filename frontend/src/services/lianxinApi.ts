@@ -112,7 +112,12 @@ export const lianxinApi = {
   capabilities: () => request<{ items: Array<{ name: string; display_name: string; description: string; category: string; enabled: boolean; available: boolean; favorite: boolean }> }>("/capabilities"),
   speak: (text: string) => request<{ speaking: boolean }>("/tts/speak", { method: "POST", body: JSON.stringify({ text }) }),
   stopSpeaking: () => request<{ speaking: boolean }>("/tts/stop", { method: "POST", body: "{}" }),
-  ttsStatus: () => request<{ speaking: boolean; stage?: { key: string; text: string } }>("/tts/status"),
+  ttsStatus: () =>
+    request<{
+      speaking: boolean;
+      stage?: { key: string; text: string };
+      notice?: { id: number; engine: string; reason: string; text: string } | null;
+    }>("/tts/status"),
   playSound: (name: string) => request<{ played: boolean; name: string }>("/sound/play", { method: "POST", body: JSON.stringify({ name }) }),
   startCallSound: () => request<{ playing: boolean }>("/sound/call-wait/start", { method: "POST", body: "{}" }),
   stopCallSound: () => request<{ playing: boolean }>("/sound/call-wait/stop", { method: "POST", body: "{}" }),

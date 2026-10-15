@@ -1157,29 +1157,26 @@ class LianxinBridge:
         from brain import tts_health
         breaker = tts_health.get_breaker()
         remaining = breaker.open_remaining()
-        if remaining > 0:
-            # Edge-TTS 熔断期间，只要还有本地 GPT-SoVITS 可以兜底就继续朗读
-            # （speaker.speak 会自动切到 GPT-SoVITS）；真正无引擎可用时才提示。
-            fallback_ok = False
-            try:
-                from config import get_tts_config
-                from brain.tts_engine import (
-                    TtsEngine, resolve_tts_mode, MODE_EDGE_FIRST,
-                )
-                if resolve_tts_mode(get_tts_config().get("engine")) == MODE_EDGE_FIRST:
-                    fallback_ok = TtsEngine().gpt_sovits_available
-            except Exception:
-                fallback_ok = False
-            if not fallback_ok:
-                reason = breaker.reason()
-                notice = tts_health.take_notification()
-                bridge_log.log("语音", f"TTS 熔断中（剩余 {remaining:.0f}s），跳过朗读：{reason}")
-                with self._voice_lock:
-                    self._voice_events.append({
-                        "id": time.time_ns(), "type": "voice.tts_unavailable",
-                        "reason": reason, "notice": notice,
-                    })
-                return {"speaking": False, "unavailable": True, "reason": reason, "notice": notice}
+        # 单引擎语义：没有兜底引擎可切换。Edge 熔断期内直接如实上报失败，
+        # 前端会显示一行提示；GPT-SoVITS 模式与 Edge 熔断器无关，不受影响。
+        edge_in_use = True
+        try:
+            from config import get_tts_config
+            from brain.tts_engine import resolve_tts_mode, MODE_GPT_ONLY
+            edge_in_use = resolve_tts_mode(get_tts_config().get("engine")) != MODE_GPT_ONLY
+        except Exception:
+            edge_in_use = True
+        if edge_in_use and remaining > 0:
+            reason = breaker.reason()
+            tts_health.note_engine_failure("edge_tts", reason)
+            notice = tts_health.engine_failure_text("edge_tts")
+            bridge_log.log("语音", f"TTS 熔断中（剩余 {remaining:.0f}s），跳过朗读：{reason}")
+            with self._voice_lock:
+                self._voice_events.append({
+                    "id": time.time_ns(), "type": "voice.tts_unavailable",
+                    "reason": reason, "notice": notice,
+                })
+            return {"speaking": False, "unavailable": True, "reason": reason, "notice": notice}
         speaker = VoiceSpeaker(voice=voice)
         def run():
             voice_manager = self._voice
@@ -1220,7 +1217,12 @@ class LianxinBridge:
         from brain import tts_health
         with self._tts_lock:
             speaking = self._tts_worker is not None
-        return {"speaking": speaking, "stage": tts_health.current_stage()}
+        return {
+            "speaking": speaking,
+            "stage": tts_health.current_stage(),
+            # 合成失败时给界面一行提示（非破坏性读取，前端按 id 去重）。
+            "notice": tts_health.engine_failure_state(),
+        }
 
     def play_sound(self, name: str) -> dict:
         allowed = {
@@ -1348,7 +1350,7 @@ class LianxinBridge:
                 "ttsVolume": float(settings.tts_volume),
                 "sfxVolume": float(settings.sfx_volume),
                 "silentMode": bool(settings.silent_mode),
-                "engine": tts.get("engine", "auto"),
+                "engine": tts.get("engine", "edge_tts"),
                 "speed": float(tts.get("speed", 1.0)),
                 "defaultMood": tts.get("default_mood", "auto"),
                 "gptSovitsVersion": tts.get("gpt_sovits_version", "v2Pro"),
@@ -3734,6 +3736,10 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
                 return self._send(bridge.avatar_state(include_data=include_data))
+            if path == "/api/tts/status":
+                # 只读接口：前端（GET 轮询）与 legacy_ui_launcher 都走这里；
+                # 缺了它界面会一直拿不到 stage/notice。
+                return self._send(bridge.tts_state())
             if path == "/api/avatar/action":
                 query = parse_qs(urlparse(self.path).query)
                 return self._send(bridge.avatar_action((query.get("action") or [""])[0]))
@@ -4017,9 +4023,35 @@ def _start_desktop_hotkey():
 
 
 
+def _existing_backend_running(timeout: float = 1.5) -> bool:
+    """探测 127.0.0.1:8766 上是否已有莲心后端在响应。
+
+    Windows 下 HTTPServer 默认带 SO_REUSEADDR，第二个实例不会报错，而是悄悄
+    抢占同一个端口，表现为"两个莲心同时在跑、回复时好时坏、有时又绑定失败
+    (WinError 10013)"。所以启动前先探测一次，从源头避免重复启动。
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8766/api/app/status", timeout=timeout
+        ) as response:
+            return 200 <= int(response.status) < 300
+    except Exception:
+        return False
+
+
 def main():
     bridge_log.install("debug.log")
     bridge_log.log("启动", "Lianxin AI2 后端启动 (api_server.py)")
+    if _existing_backend_running():
+        bridge_log.log("启动", "检测到 8766 已有莲心后端在运行，本次启动中止")
+        print("=" * 62)
+        print("[启动中止] 127.0.0.1:8766 上已经有一个莲心后端在运行。")
+        print("  请先关掉旧的后端窗口（或结束 python.exe api_server.py）再重新启动。")
+        print('  排查：netstat -ano | findstr ":8766"')
+        print("=" * 62)
+        return 1
     try:
         from config import get_api_config
         cfg = get_api_config()
@@ -4074,7 +4106,21 @@ def main():
     threading.Thread(target=_cover_cleanup_loop, name="cover-cache-cleanup", daemon=True).start()
     threading.Thread(target=_memory_heartbeat_loop, name="memory-heartbeat", daemon=True).start()
     threading.Thread(target=_watchdog_loop, name="bridge-watchdog", daemon=True).start()
-    server = ThreadingHTTPServer(("127.0.0.1", 8766), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 8766), Handler)
+    except OSError as exc:
+        # 端口被占用（WinError 10048/10013）多半是已经有一个莲心在运行，
+        # 或上一个实例刚退出、端口仍在 TIME_WAIT。给可读提示而不是裸 traceback。
+        bridge_log.log("启动", f"无法绑定 127.0.0.1:8766：{exc}")
+        print("=" * 62)
+        print(f"[启动失败] 无法监听 127.0.0.1:8766：{exc}")
+        print("常见原因：")
+        print("  1. 已经有一个莲心后端在运行 —— 先关掉旧的后端窗口再重试；")
+        print("  2. 上一个实例刚退出，端口还在 TIME_WAIT —— 等几秒再启动；")
+        print("  3. 安全软件 / 防火墙拦截了本次监听 —— 放行 python.exe 后重试。")
+        print('排查：netstat -ano | findstr ":8766"   （确认是否有 LISTENING）')
+        print("=" * 62)
+        return 1
     bridge_log.log("启动", "HTTP 服务已就绪: http://127.0.0.1:8766")
     try:
         server.serve_forever()
@@ -4106,4 +4152,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
