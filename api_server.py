@@ -2076,6 +2076,11 @@ class LianxinBridge:
         with self._music_watcher_lock:
             self._music_events.append(event)
 
+    def tool_events(self, after: int = 0) -> dict:
+        """莲心工具活动事件流（内存态，重启后清空）。"""
+        from brain import tool_activity
+        return tool_activity.events_after(after)
+
     def music_events(self, after: int = 0) -> dict:
         with self._music_watcher_lock:
             events = [event for event in self._music_events if int(event["id"]) > int(after)]
@@ -3710,6 +3715,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/voice/events":
                 query = parse_qs(urlparse(self.path).query)
                 return self._send(bridge.voice_events(int((query.get("after") or [0])[0])))
+            if path == "/api/tools/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.tool_events(int((query.get("after") or [0])[0])))
             if path == "/api/capabilities":
                 return self._send(bridge.capabilities())
             if path == "/api/tasks/events":

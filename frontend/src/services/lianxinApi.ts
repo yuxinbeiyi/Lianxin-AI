@@ -14,6 +14,20 @@ export type ChatStreamEvent = {
   description?: string;
   message?: { role: "assistant"; content: string };
 };
+export type ToolActivityEvent = {
+  id: number;
+  kind: "call" | "result";
+  seq: number;
+  ts?: number;
+  sessionId?: number;
+  turn?: number;
+  round?: number;
+  name?: string;
+  argsPreview?: string;
+  status?: "done" | "error";
+  preview?: string;
+  elapsedMs?: number;
+};
 export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?: number; fitMode: "cover" | "contain" | "stretch"; fingerprint: string; dataUrl?: string };
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
 export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: { text: string; estimated_tokens: number; layers: string[]; error?: string }; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> } };
@@ -81,6 +95,7 @@ export const lianxinApi = {
   startVoice: () => request<{ active: boolean; state: string }>("/voice/start", { method: "POST", body: "{}" }),
   stopVoice: () => request<{ active: boolean; state: string }>("/voice/stop", { method: "POST", body: "{}" }),
   setVoiceMic: (muted: boolean) => request<{ active: boolean; muted: boolean }>("/voice/mic", { method: "POST", body: JSON.stringify({ muted }) }),
+  toolEvents: (after: number) => request<{ items: ToolActivityEvent[]; latest: number }>(`/tools/events?after=${after}`),
   voiceEvents: (after: number) => request<{ items: Array<{ id: number; type: string; state?: string; content?: string; error?: string }>; latest: number }>(`/voice/events?after=${after}`),
   startVoiceInput: () => request<{ active: boolean }>("/voice/input/start", { method: "POST", body: "{}" }),
   stopVoiceInput: () => request<{ active: boolean }>("/voice/input/stop", { method: "POST", body: "{}" }),

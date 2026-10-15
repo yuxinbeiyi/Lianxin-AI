@@ -1,4 +1,6 @@
 import {
+  Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -58,6 +60,7 @@ import {
   type ChatStreamEvent,
   type LegacyFeature,
   type PersonaState,
+  type ToolActivityEvent,
 } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
@@ -116,14 +119,23 @@ type MusicState = {
 };
 type FiveAxisState = { axes: Record<string, number>; mood: string };
 type ToolCallState = {
-  id: string;
+  seq: number;
   name: string;
-  args: string;
+  argsPreview: string;
   status: "running" | "done" | "error";
   preview?: string;
   elapsedMs?: number;
 };
-type ToolRoundState = { round: number; calls: ToolCallState[] };
+// 工具信息栏：一轮对话里莲心先后调用的工具集合。
+// anchorIndex 记录它应该插在消息流中的位置（该轮回复之前），创建后不再变化，
+// 因此卡片位置固定，且只有重启莲心 / 新建会话时才会消失。
+type ToolRoundState = {
+  key: string;
+  turn: number;
+  round: number;
+  anchorIndex: number;
+  calls: ToolCallState[];
+};
 type Attachment = {
   kind: "image" | "file";
   fileName: string;
@@ -705,7 +717,7 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
   return (
     <div className="tool-rounds">
       {rounds.map((round) => (
-        <section className="tool-round" key={round.round}>
+        <section className="tool-round" key={round.key}>
           <div className="tool-round-heading">
             <span>
               <Wrench size={14} />
@@ -718,7 +730,10 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
             </span>
           </div>
           {round.calls.map((call) => (
-            <div className={`tool-call ${call.status}`} key={call.id}>
+            <div
+              className={`tool-call ${call.status}`}
+              key={`${round.key}:${call.seq}`}
+            >
               <span className="tool-call-icon">
                 {call.status === "running" ? (
                   <span className="tool-spinner" />
@@ -737,6 +752,9 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
                       ? "执行失败"
                       : `已完成${call.elapsedMs ? ` · ${(call.elapsedMs / 1000).toFixed(1)}s` : ""}`}
                 </span>
+                {call.status === "running" && call.argsPreview && (
+                  <p>{call.argsPreview}</p>
+                )}
                 {call.preview && <p>{call.preview}</p>}
               </div>
             </div>
@@ -833,6 +851,20 @@ function ChatWorkspace({
   }, []);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(
     new Set(),
+  );
+  // 每个锚点位置上要渲染的工具信息栏（同一锚点多轮时按时间顺序排列）
+  const toolBlocksByAnchor = useMemo(() => {
+    const map = new Map<number, ToolRoundState[]>();
+    for (const block of toolRounds) {
+      const list = map.get(block.anchorIndex);
+      if (list) list.push(block);
+      else map.set(block.anchorIndex, [block]);
+    }
+    return map;
+  }, [toolRounds]);
+  const trailingToolBlocks = useMemo(
+    () => toolRounds.filter((block) => block.anchorIndex >= messages.length),
+    [toolRounds, messages.length],
   );
   const fileInput = useRef<HTMLInputElement | null>(null);
   const allFileInput = useRef<HTMLInputElement | null>(null);
@@ -946,25 +978,27 @@ function ChatWorkspace({
       >
         <div className="message-list">
           {messages.length ? (
-            messages
-              .filter((message) => !hiddenMessageIds.has(message.id))
-              .map((message) => (
-                <MessageItem
-                  key={message.id}
-                  message={message}
-                  avatar={avatar}
-                  onInteraction={onInteraction}
-                  interacting={interactionThinking}
-                  userInteracting={userInteracting}
-                  onQuote={quote}
-                  onDelete={(item) =>
-                    setHiddenMessageIds((current) =>
-                      new Set(current).add(item.id),
-                    )
-                  }
-                  onContextMenu={openContextMenu}
-                />
-              ))
+            messages.map((message, index) => (
+              <Fragment key={message.id}>
+                <ToolRounds rounds={toolBlocksByAnchor.get(index) ?? []} />
+                {hiddenMessageIds.has(message.id) ? null : (
+                  <MessageItem
+                    message={message}
+                    avatar={avatar}
+                    onInteraction={onInteraction}
+                    interacting={interactionThinking}
+                    userInteracting={userInteracting}
+                    onQuote={quote}
+                    onDelete={(item) =>
+                      setHiddenMessageIds((current) =>
+                        new Set(current).add(item.id),
+                      )
+                    }
+                    onContextMenu={openContextMenu}
+                  />
+                )}
+              </Fragment>
+            ))
           ) : (
             <div className="empty-state">
               <Sparkles size={28} />
@@ -972,7 +1006,7 @@ function ChatWorkspace({
               <p>你的新会话会自动保存到历史记录。</p>
             </div>
           )}
-          <ToolRounds rounds={toolRounds} />
+          <ToolRounds rounds={trailingToolBlocks} />
           {ttsNotice && (
             <div className="tts-failure-notice">
               <span className="tts-failure-dot" />
@@ -2267,7 +2301,10 @@ export function App() {
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const [voiceInputText, setVoiceInputText] = useState("");
-  const [toolRounds, setToolRounds] = useState<ToolRoundState[]>([]);
+  const [toolBlocks, setToolBlocks] = useState<ToolRoundState[]>([]);
+  const toolCursorRef = useRef(0);
+  const sessionIdRef = useRef<number | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const [background, setBackground] = useState<BackgroundState>({
     enabled: true,
     opacity: 0.22,
@@ -2339,6 +2376,7 @@ export function App() {
         .status()
         .then((status) => {
           setBackendOnline(status.online);
+          sessionIdRef.current = status.sessionId ?? null;
           if (first && status.sessionId) {
             console.info("[IMAGE_FLOW] status", {
               sessionId: status.sessionId,
@@ -2430,6 +2468,102 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [busy]);
+  // 工具信息栏数据源：不论谁发起的对话（主界面 / 桌宠 / 主动消息），
+  // 工具调用都会写进后端共享事件流，这里轮询增量合并。
+  const applyToolEvents = useCallback((events: ToolActivityEvent[]) => {
+    setToolBlocks((current) => {
+      const blocks = current.map((block) => ({
+        ...block,
+        calls: [...block.calls],
+      }));
+      const indexByKey = new Map(
+        blocks.map((block, index) => [block.key, index]),
+      );
+      let changed = false;
+      for (const event of events) {
+        const session = sessionIdRef.current;
+        if (
+          event.sessionId &&
+          session &&
+          Number(event.sessionId) !== Number(session)
+        )
+          continue;
+        const key = `${event.sessionId ?? 0}:${event.turn ?? 0}:${event.round ?? 0}`;
+        let index = indexByKey.get(key);
+        if (index === undefined) {
+          const snapshot = messagesRef.current;
+          // 还没等到本轮回复时挂在队尾；回复已经先到时插到它上面。
+          let anchorIndex = snapshot.length;
+          if (
+            snapshot.length &&
+            snapshot[snapshot.length - 1].role === "assistant"
+          )
+            anchorIndex = snapshot.length - 1;
+          blocks.push({
+            key,
+            turn: Number(event.turn ?? 0),
+            round: Number(event.round ?? 0),
+            anchorIndex,
+            calls: [],
+          });
+          index = blocks.length - 1;
+          indexByKey.set(key, index);
+        }
+        const calls = blocks[index].calls;
+        if (event.kind === "result") {
+          const callIndex = calls.findIndex((call) => call.seq === event.seq);
+          const patch = {
+            status: (event.status === "error" ? "error" : "done") as
+              | "done"
+              | "error",
+            preview: event.preview,
+            elapsedMs: event.elapsedMs,
+          };
+          if (callIndex >= 0)
+            calls[callIndex] = { ...calls[callIndex], ...patch };
+          else
+            calls.push({
+              seq: Number(event.seq ?? 0),
+              name: event.name ?? "未知工具",
+              argsPreview: "",
+              ...patch,
+            });
+        } else {
+          calls.push({
+            seq: Number(event.seq ?? 0),
+            name: event.name ?? "未知工具",
+            argsPreview: event.argsPreview ?? "",
+            status: "running",
+          });
+        }
+        changed = true;
+      }
+      return changed ? blocks : current;
+    });
+  }, []);
+  useEffect(() => {
+    if (!backendOnline) return;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const result = await lianxinApi.toolEvents(toolCursorRef.current);
+        if (disposed || !result.items.length) return;
+        toolCursorRef.current = Math.max(
+          toolCursorRef.current,
+          ...result.items.map((item) => Number(item.id || 0)),
+        );
+        applyToolEvents(result.items);
+      } catch {
+        /* 后端尚未就绪时保持安静 */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 800);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [backendOnline, applyToolEvents]);
   useEffect(() => {
     document.documentElement.style.setProperty(
       "--lx-chat-mask",
@@ -2519,6 +2653,7 @@ export function App() {
       .then((result) => {
         setActiveWorkspace("chat");
         setInteractionMessages([]);
+        setToolBlocks([]);
         setMessages(result.items.map(restoreMessage));
       })
       .catch(() => undefined);
@@ -2567,7 +2702,6 @@ export function App() {
             },
       ),
     ]);
-    setToolRounds([]);
     if (!backendOnline) return;
     try {
       let reply = "";
@@ -2594,68 +2728,6 @@ export function App() {
                 : message,
             ),
           );
-        }
-        if (event.type === "tool_round_start") {
-          setToolRounds((current) =>
-            current.some((round) => round.round === event.round)
-              ? current
-              : [
-                  ...current,
-                  { round: event.round ?? current.length + 1, calls: [] },
-                ],
-          );
-        }
-        if (event.type === "tool_call") {
-          const args = event.args ? JSON.stringify(event.args, null, 2) : "";
-          setToolRounds((current) => {
-            const roundNumber = event.round ?? current.at(-1)?.round ?? 1;
-            const rounds = current.length
-              ? [...current]
-              : [{ round: roundNumber, calls: [] }];
-            let index = rounds.findIndex(
-              (round) => round.round === roundNumber,
-            );
-            if (index < 0) {
-              rounds.push({ round: roundNumber, calls: [] });
-              index = rounds.length - 1;
-            }
-            rounds[index] = {
-              ...rounds[index],
-              calls: [
-                ...rounds[index].calls,
-                {
-                  id: `${Date.now()}-${Math.random()}`,
-                  name: event.name ?? "未知工具",
-                  args,
-                  status: "running",
-                },
-              ],
-            };
-            return rounds;
-          });
-        }
-        if (event.type === "tool_result") {
-          setToolRounds((current) => {
-            const rounds = current.map((round) => ({
-              ...round,
-              calls: [...round.calls],
-            }));
-            for (let index = rounds.length - 1; index >= 0; index -= 1) {
-              const callIndex = rounds[index].calls.findIndex(
-                (call) => call.name === event.name && call.status === "running",
-              );
-              if (callIndex >= 0) {
-                rounds[index].calls[callIndex] = {
-                  ...rounds[index].calls[callIndex],
-                  status: event.isError ? "error" : "done",
-                  preview: event.preview,
-                  elapsedMs: event.elapsedMs,
-                };
-                break;
-              }
-            }
-            return rounds;
-          });
         }
         if (event.type === "completed") reply = event.message?.content ?? reply;
         if (event.type === "error")
@@ -2734,10 +2806,12 @@ export function App() {
     void lianxinApi.cancelChat();
     setBusy(false);
   };
+  // 工具信息栏永不随对话清空，只有重启莲心或新建/切换会话时才消失。
+  messagesRef.current = messages;
   const handleNewChat = () => {
     setMessages([]);
     setInteractionMessages([]);
-    setToolRounds([]);
+    setToolBlocks([]);
     if (backendOnline) void lianxinApi.newSession().catch(() => undefined);
   };
   const toggleVoice = () => {
@@ -3078,7 +3152,7 @@ export function App() {
             {activeWorkspace === "chat" ? (
               <ChatWorkspace
                 messages={messages}
-                toolRounds={toolRounds}
+                toolRounds={toolBlocks}
                 avatar={avatar}
                 onSend={handleSend}
                 onInteraction={handleAvatarInteraction}

@@ -1628,6 +1628,32 @@ class AgentCore:
         - 无锁工具 → ThreadPoolExecutor 并发执行
         - 同组工具 → 组内串行（持锁排队），不同组间并行
         """
+        # 工具活动记录：不论调用方是否传了回调，都把这次调用写进共享事件流，
+        # 这样主界面、桌宠、QQ、主动消息触发的工具调用都能被界面看到。
+        from brain import tool_activity
+
+        _origin_on_tool_call = on_tool_call
+        _origin_on_tool_result = on_tool_result
+
+        def _activity_ctx() -> dict:
+            return {
+                "session_id": getattr(self, "_session_id", None),
+                "round_num": getattr(self, "_activity_round", 0),
+                "turn": getattr(self, "_activity_turn", 0),
+            }
+
+        def on_tool_call(name, args):
+            tool_activity.begin_call(name, args, **_activity_ctx())
+            if _origin_on_tool_call:
+                _origin_on_tool_call(name, args)
+
+        def on_tool_result(name, result, is_error=False, elapsed_ms=0.0):
+            tool_activity.finish_call(
+                name, result, is_error=is_error, elapsed_ms=elapsed_ms, **_activity_ctx()
+            )
+            if _origin_on_tool_result:
+                _origin_on_tool_result(name, result, is_error, elapsed_ms)
+
         if getattr(self, "_task_run", None) is not None:
             for _ in tool_calls:
                 self._task_run.record_tool_call()
@@ -2676,6 +2702,8 @@ class AgentCore:
                                on_browser_confirmation=None) -> str:
 
        
+        # 每进入一次对话循环就换一个 turn 编号，用来区分不同轮的 ReAct 轮次。
+        self._activity_turn = int(getattr(self, "_activity_turn", 0) or 0) + 1
         _t0 = time.time()
         request_context = parse_request_context(user_message)
         self._request_context = request_context
@@ -3724,6 +3752,7 @@ class AgentCore:
                 self._cancel_event.clear()
                 return "（任务已被取消）"
 
+            self._activity_round = int(iteration or 0)
             if on_round_start:
                 on_round_start(iteration)
 
