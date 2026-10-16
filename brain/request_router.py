@@ -154,6 +154,15 @@ _GITHUB_SEARCH_RE = re.compile(
     re.I,
 )
 _GITHUB_README_RE = re.compile(r"(?:readme|README|项目说明|说明文档)", re.I)
+
+# 外部时效性问句：即使没有“搜索/查”这类动作动词，也是在问外部世界的最新信息。
+# 覆盖 deepseek最近有没有什么事件？ / 最近有什么新消息 这类被 18 字规则吞掉的请求。
+_EXTERNAL_RECENCY_QUESTION_RE = re.compile(
+    r"(?:(?:最近|最新|近期|这两天).{0,10}(?:有没有|有什么|发生了?什么|出了什么|有哪些)"
+    r".{0,10}(?:事件|新闻|消息|动态|进展|情况|变化)"
+    r"|(?:有没有|有什么|发生了?什么|出了什么).{0,8}(?:最新|最近|近期)"
+    r".{0,8}(?:事件|新闻|消息|动态|进展|情况))"
+)
 _WINDOWS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\n\r\t]+")
 _FILE_EXT_RE = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|md|txt|csv|json|py|js|ts|html|log|db|sqlite)\b", re.I)
 _CONTINUATION_RE = re.compile(r"^(?:那就|就按|继续|接着|再试|换一个|第二个|用它|开始吧|执行吧|试试)")
@@ -397,6 +406,62 @@ def required_execution_tools(route: RequestRoute, available_tool_names: Iterable
     return [primary]
 
 
+@dataclass(frozen=True)
+class CoverageReport:
+    """调用 LLM 前的“必需能力是否可执行”自检结果（不变式 I1）。"""
+
+    status: str                     # covered | route_miss | user_disabled | unavailable
+    capability: str = ""
+    recoverable_tools: tuple = ()   # route_miss：可在当前请求内补入的工具
+    disabled_tools: tuple = ()      # user_disabled：被用户停用的工具
+    reason: str = ""
+
+
+def audit_capability_coverage(route: "RequestRoute", available_tool_names: Iterable[str], *,
+                              runtime_disabled: Iterable[str] = (),
+                              all_known_names: Iterable[str] = ()) -> CoverageReport:
+    """检查本轮必需能力是否至少有一个可调用工具。
+
+    区分四种情况（见设计文档 G1.3）：
+    - covered        ：已满足
+    - route_miss     ：工具存在但没被注入本轮 → 允许在**当前请求内**补入
+    - user_disabled  ：工具被用户停用 → 只能请求授权，绝不能自动启用
+    - unavailable    ：工具根本不存在（服务未安装/未加载）→ 或说明限制
+    """
+    available = {str(name) for name in available_tool_names if name}
+    disabled = {str(name) for name in runtime_disabled if name}
+    known = {str(name) for name in all_known_names if name} or (available | disabled)
+
+    for capability in sorted(route.capabilities):
+        candidates = set(CAPABILITY_TO_TOOLS.get(capability) or ())
+        if not candidates:
+            continue
+        if (candidates & available) - disabled:
+            continue
+        disabled_hits = tuple(sorted(candidates & disabled))
+        recoverable = tuple(sorted((candidates & known) - disabled - available))
+        if recoverable:
+            return CoverageReport(
+                "route_miss", capability, recoverable, disabled_hits,
+                "能力对应的工具存在但未注入本轮（路由漏判）",
+            )
+        if disabled_hits:
+            return CoverageReport(
+                "user_disabled", capability, (), disabled_hits,
+                "能力对应的工具被用户在设置中停用",
+            )
+        return CoverageReport(
+            "unavailable", capability, (), (), "能力对应的工具当前不可用",
+        )
+    return CoverageReport("covered")
+
+
+def format_coverage_report(report: CoverageReport) -> str:
+    if report.status == "covered":
+        return "covered"
+    return f"{report.status}:{report.capability}"
+
+
 def _github_primary_tool(text: str) -> str:
     """Choose the deterministic first GitHub operation for an explicit task."""
     if _GITHUB_DIRECTORY_RE.search(text):
@@ -415,7 +480,9 @@ def _github_primary_tool(text: str) -> str:
 def _looks_like_action(text: str) -> bool:
     return bool(re.search(
         r"(?:帮我|请你|能不能|可以帮|替我|给我|需要你|想让你|麻烦你|怎么查|如何找|"
-        r"找一下|看看有没有|有没有人|外面怎么|处理一下|做一个|弄一下)", text
+        r"找一下|看看有没有|有没有人|外面怎么|处理一下|做一个|弄一下|"
+        # 检索动作：这些是明确的执行意图，短句也不应被当成闲聊。
+        r"搜一下|搜搜|搜索|查一下|查找|联网|上网|找找)", text
     ))
 
 
@@ -698,11 +765,14 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         capabilities.add("weather")
         reasons.append("明确天气问题")
     if not _NEGATED_SEARCH_RE.search(text) and (
-        re.search(r"(?:联网搜索|上网搜索|搜一下|帮我搜|搜索.{0,10}(?:新闻|资料|信息)|查最新|最新新闻|实时消息)", text)
+        # 窗口 {0,24}：“搜索一下Deepseek公司的最近新闻”里 搜索→新闻 相隔 15 字，
+        # 旧的 {0,10} 会漏判，把明确的搜索请求降级成闲聊。
+        re.search(r"(?:联网搜索|上网搜索|搜一下|帮我搜|搜索.{0,24}(?:新闻|资料|信息)|查最新|最新新闻|实时消息|(?:上网|联网|在线).{0,8}(?:新闻|资料|信息|消息))", text)
+        or _EXTERNAL_RECENCY_QUESTION_RE.search(text)
         or re.search(r"(?:给出|附上|提供).{0,5}(?:来源|链接)", text)
     ):
         capabilities.add("web_search")
-        reasons.append("明确联网搜索或来源要求")
+        reasons.append("明确联网搜索、来源要求或外部时效性提问")
 
     # 复合网页任务已经包含搜索与交接能力；保留具体能力标签便于旧逻辑
     # 和工具目录继续工作，但不让它们改变第一步的确定性顺序。

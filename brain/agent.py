@@ -380,6 +380,25 @@ def _track_main_request(method):
             mark_main_request_end()
     return wrapper
 
+def classify_round_progress(*, has_content: bool, new_evidence: bool,
+                            tool_call_count: int, dedup_blocked: int) -> str:
+    """判定一轮工具调用属于哪种进展状态（不变式 I3 的唯一判据入口）。
+
+    返回：
+    - ``content``       本轮有可见正文 → 正常回复
+    - ``progress``      没有正文，但工具执行确实取得了新证据 → 算进展，不熔断
+    - ``dedup_blocked`` 没有正文，且本轮所有工具调用都被判重拦下 → 算“被拦截”而非枯竭
+    - ``drought``       没有正文、没有新证据、也没有被全部拦下 → 才算内容枯竭
+    """
+    if has_content:
+        return "content"
+    if new_evidence:
+        return "progress"
+    if tool_call_count and dedup_blocked >= tool_call_count:
+        return "dedup_blocked"
+    return "drought"
+
+
 class AgentCore:
     def __init__(self, session_id: int = None, user_desc: str = None,
                  disable_tools: bool = False, track_emotion: bool = True,
@@ -1868,6 +1887,7 @@ class AgentCore:
             if call_key == last_key:
                 logger.warning(f"[ToolLoop] 重复工具调用: {name}，终止循环")
                 self._last_tool_was_duplicate = True
+                self._round_dedup_blocked += 1
                 if name in OBSERVATION_TOOLS:
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": "上一轮已经完成截图/观察，请直接根据已有结果回复用户，不要再次调用截图工具。"})
                     continue
@@ -1880,6 +1900,7 @@ class AgentCore:
             if call_key in self._loop_tool_call_history:
                 print(f"  [去重] 跳过重复调用: {name}（参数与之前完全相同）", flush=True)
                 self._last_tool_was_duplicate = True
+                self._round_dedup_blocked += 1
                 if name in OBSERVATION_TOOLS:
                     messages.append({
                         "role": "tool", "tool_call_id": tc.id,
@@ -3449,13 +3470,68 @@ class AgentCore:
                 })
 
             from brain.tool_enablement import TOOL_ENABLE_REQUEST_DEFINITION
-            if not route.is_light:
-                # request_tools 是模糊任务的语义兜底，不附带庞大的工具目录。
-                all_tools.extend([REQUEST_TOOLS_DEFINITION, TOOL_ENABLE_REQUEST_DEFINITION])
+            # request_tools 是模糊任务的语义兜底，不附带庞大的工具目录。
+            # 闲聊路由也必须注入：它只有 2 个固定定义（前缀稳定、成本可控），
+            # 却是“路由漏判”时唯一的请求内扩容通道。否则模型手里只剩 save_memory，
+            # 只能把“工具没给我”讲成台词（见 D2/D3/D20）。
+            all_tools.extend([REQUEST_TOOLS_DEFINITION, TOOL_ENABLE_REQUEST_DEFINITION])
+            if route.is_light:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "【能力自救】如果你发现当前没有完成任务所需的工具，"
+                        "调用 request_tools 按能力类别申请；系统会在本轮内为你开放。"
+                        "不要把“工具没给我”说成“用户关闭了工具”，也不要在回复里提及工具名、"
+                        "路由模式或错误码。只有用户主动停用的工具才需要 request_enable_tool。"
+                    ),
+                })
             # 同一函数名可能同时来自内置 TOOL_DEFINITIONS 与已激活技能
             # （例如 read_diary/write_diary），OpenAI 兼容 API 会拒绝重复声明。
             # 组装完成后按函数名去重，保留首次出现（内置优先）。
             all_tools = dedupe_tool_definitions(all_tools)
+            try:
+                from brain.request_router import audit_capability_coverage
+                _known_defs = TOOL_DEFINITIONS + get_all_mcp_tool_definitions()
+                _known_by_name = {
+                    item.get("function", {}).get("name", ""): item
+                    for item in _known_defs
+                    if item.get("function", {}).get("name", "")
+                }
+                _coverage = audit_capability_coverage(
+                    route,
+                    {item.get("function", {}).get("name", "") for item in all_tools},
+                    runtime_disabled=runtime_disabled_names,
+                    all_known_names=set(_known_by_name),
+                )
+                if _coverage.status == "route_miss":
+                    # 只扩当前请求：绝不写回用户配置（不变式 I2）。
+                    _recoverable = [
+                        name for name in _coverage.recoverable_tools[:5]
+                        if name in _known_by_name
+                    ]
+                    _present = {item.get("function", {}).get("name", "") for item in all_tools}
+                    _added = []
+                    for _name in _recoverable:
+                        if _name not in _present:
+                            all_tools.append(_known_by_name[_name])
+                            _present.add(_name)
+                            _added.append(_name)
+                    if _added:
+                        self._tool_session_state.capabilities.add(_coverage.capability)
+                        self._tool_session_state.opened_tool_names.update(_added)
+                        print(
+                            f"[契约自检] 路由遗漏能力 {_coverage.capability} → "
+                            f"请求内补入 {','.join(_added)}",
+                            flush=True,
+                        )
+                elif _coverage.status in ("user_disabled", "unavailable"):
+                    print(
+                        f"[契约自检] 能力 {_coverage.capability} 不可执行"
+                        f"（{_coverage.status}）：{_coverage.reason}",
+                        flush=True,
+                    )
+            except Exception as _coverage_exc:
+                logger.debug("契约自检失败: %s", _coverage_exc)
             try:
                 from brain.mcp.mcp_registry import get_disabled_mcp_names
                 disabled_mcp = set(get_disabled_mcp_names())
@@ -3724,7 +3800,9 @@ class AgentCore:
             })
 
         # ── 三层熔断器状态 ──
-        _content_drought_count = 0           # 连续无文本回复计数
+        _content_drought_count = 0           # 连续无实质进展且无文本的轮数
+        _dedup_block_count = 0               # 连续被去重拦下且无其它产出的轮数
+        self._round_dedup_blocked = 0        # 本轮被去重拦下的工具调用数
         _same_tool_streak_name = None        # 当前连续同工具名
         _same_tool_streak_count = 0          # 连续同工具计数
         _last_round_tool_sets: list[str] = []  # 最近N轮的工具名集合
@@ -3746,6 +3824,7 @@ class AgentCore:
         self._search_budget_exhausted = False
         _evidence_signatures: set[tuple[int, str]] = set()
         _no_new_evidence_count = 0
+        _new_evidence = False
         _has_real_tool_result = False  # 本轮任务中是否已有真实工具结果
         _SEARCH_READ_TOOLS = {
             "search_files_everything", "search_graph_memory", "search_conversation_history",
@@ -3773,6 +3852,7 @@ class AgentCore:
         while iteration < MAX_ITERATIONS:
             iteration += 1
             task_run.begin_round()
+            self._round_dedup_blocked = 0
             if task_run.should_force_final() and task_run.phase != TaskPhase.FORCE_FINAL:
                 task_run.mark_force_final()
                 _force_text_response = True
@@ -4104,8 +4184,26 @@ class AgentCore:
                     })
                     continue
                 if required_tool and not has_successful_tool_call(request_audit, {required_tool}):
+                    # 缺失的是记忆类工具、且问题指向自指/历史事实：先交给回忆守卫
+                    # 重跑一轮，不要把内部工具名讲给用户（N1 + D20）。
+                    if (_recall_deny_retry_count < 1
+                            and required_tool in _memory_read_tool_names
+                            and "search_graph_memory" in available_tool_names
+                            and request_needs_recall(_msg_for_match)):
+                        _recall_deny_retry_count += 1
+                        _force_text_response = False
+                        print("[回忆优先守卫] 契约缺失记忆工具，要求先检索记忆后重答", flush=True)
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "你还没有查证过任何记忆就准备作答。"
+                                "请先调用 search_graph_memory，从问题中提取实体名与关系词作为 keywords 查证，"
+                                "再决定如何回答；只有确实查不到记录时才可以说明没有。"
+                            ),
+                        })
+                        continue
                     print(f"[工具契约] {required_tool} 未能成功执行", flush=True)
-                    return f"本轮没有成功执行所需工具 {required_tool}，因此我不能假装已经完成任务。"
+                    return "这一步我还没查完，不能装作已经完成。再给我一轮，我重新处理一遍。"
 
                 # 用户要求核验正文时，搜索摘要不能被当作正文证据。
                 if (requires_verified_web_content(_msg_for_match)
@@ -4521,10 +4619,39 @@ class AgentCore:
                 # ── 三层熔断器检测 ──────────────────────
                 _has_content = bool(content and content.strip())
 
-                if not _has_content:
+                # 进展判据（不变式 I3）：工具调用阶段的“没有正文”是正常流程，
+                # 不能等同于枯竭。只有既没有正文、又没有取得新证据的轮次才计数。
+                _round_state = classify_round_progress(
+                    has_content=_has_content,
+                    new_evidence=bool(_new_evidence),
+                    tool_call_count=len(fake_tool_calls),
+                    dedup_blocked=self._round_dedup_blocked,
+                )
+                if _round_state == "progress":
+                    # 本轮确实拿到了新证据：成功的多步任务不该被熔断。
+                    _content_drought_count = 0
+                    _dedup_block_count = 0
+                elif _round_state == "dedup_blocked":
+                    # 全部调用都被去重拦下：这是“拦截”而不是“模型不开口”，
+                    # 计入内容枯竭会与去重互相放大，提前终止任务（D10）。
+                    _dedup_block_count += 1
+                elif _round_state == "drought":
                     _content_drought_count += 1
+                    _dedup_block_count = 0
                 else:
                     _content_drought_count = 0
+                    _dedup_block_count = 0
+
+                # 去重连续拦截：给模型“换个方法”的提示，而不是熔断。
+                if _dedup_block_count >= 2:
+                    _dedup_block_count = 0
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "连续多轮的工具调用都被判定为重复，已跳过执行。"
+                            "请改用其它工具/参数，或直接基于已有结果给出最终回答，不要重复同样的调用。"
+                        ),
+                    })
 
                 _this_tool_names = sorted(tc.function.name for tc in fake_tool_calls)
                 if _this_tool_names:
@@ -4567,12 +4694,14 @@ class AgentCore:
                     _breaker_reason = f"连续{NO_PROGRESS_MAX}轮工具集合无变化"
                     _last_round_tool_sets.clear()
                     _same_tool_streak_count = 0
+                elif _no_new_evidence_count >= 2:
+                    # 进展判据优先于“按工具名”的搜索疲劳：连续搜索但每轮都有
+                    # 新证据时不该熔断，只有真的拿不到新证据才收。
+                    _breaker_reason = "连续2轮工具调用没有获得新证据"
+                    _no_new_evidence_count = 0
                 elif _search_fatigue_count >= SEARCH_FATIGUE_MAX:
                     _breaker_reason = f"连续{SEARCH_FATIGUE_MAX}轮都在搜索/读取，无实质产出"
                     _search_fatigue_count = 0
-                elif _all_search_read and _no_new_evidence_count >= 2:
-                    _breaker_reason = "连续2轮搜索/读取没有获得新证据"
-                    _no_new_evidence_count = 0
 
                 if _breaker_reason:
                     print(f"  [熔断器] {_breaker_reason}，下一轮强制 tool_choice=none", flush=True)
