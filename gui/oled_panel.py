@@ -269,7 +269,7 @@ class OledPanel(QDialog):
             n = int(text)
         except ValueError:
             self.status_label.setText("请输入数字 1~18")
-            return
+            return                                                                                          
         if 1 <= n <= len(fe.EMOTIONS):
             self.status_label.setText(" ")
             self.goto(n, push=True)
@@ -277,7 +277,7 @@ class OledPanel(QDialog):
             self.status_label.setText("编号超出范围：应为 1 ~ 18")
 
     def goto(self, n, push=False):
-        self.face.goto(n, self._now())
+        self.face.goto(n, self._now())                                                                                                                          
         self.input.setText(str(n))
         self._show_current()
         if push:
