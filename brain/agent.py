@@ -3150,16 +3150,38 @@ class AgentCore:
         except Exception:
             pass
 
-        # ── 记忆 RAG 注入：向量检索相关长期记忆 ──
+        # ── 预回忆：默认走廉价关键词通道检索相关长期记忆（不加载向量模型）──
+        # 见 docs/回忆优先设计.md L2：自指/历史问题绝不跳过，只有纯外部查询才跳过。
+        self._memory_injected_count = 0
+        _pre_query = last_user_msg if last_user_msg else user_message
+        if not self._use_local and self._owner_scope and _pre_query:
+            try:
+                from brain.pre_recall import build_pre_recall_context
+                _pre_text, _pre_mem_count, _pre_self_count = build_pre_recall_context(_pre_query)
+                if _pre_text:
+                    messages.append({"role": "system", "content": _pre_text})
+                    self._memory_injected_count = int(_pre_mem_count) + int(_pre_self_count)
+                    print(
+                        f"[预回忆] 命中 记忆{_pre_mem_count}条 自我事实{_pre_self_count}条",
+                        flush=True,
+                    )
+                else:
+                    print("[预回忆] 无命中（廉价通道）", flush=True)
+            except Exception as exc:
+                logger.debug("预回忆失败: %s", exc)
+
+        # ── 记忆 RAG 注入：向量检索作为二级补充 ──
+        # 只在廉价通道没命中、且本轮确属记忆型请求时才加载向量模型，
+        # 避免普通请求被 embedding 模型冷启动拖到 40 秒以上。
         from brain.request_tool_policy import is_external_lookup_request
-        _skip_memory_rag = is_external_lookup_request(last_user_msg if last_user_msg else user_message)
+        _skip_memory_rag = is_external_lookup_request(_pre_query)
         if (not self._use_local and self._owner_scope
+                and not self._memory_injected_count
                 and (route.uses_memory_context or "memory_read" in route.capabilities)):
             try:
                 from brain.memory_rag import search_similar, format_rag_context
                 memories = [] if _skip_memory_rag else search_similar(
-                    last_user_msg if last_user_msg else user_message,
-                    top_k=3, threshold=0.5
+                    _pre_query, top_k=3, threshold=0.5
                 )
                 memories = [
                     item for item in memories
@@ -3170,15 +3192,15 @@ class AgentCore:
                 if memories:
                     rag_text = format_rag_context(memories)[:2400]
                     messages.append({"role": "system", "content": rag_text})
+                    self._memory_injected_count = len(memories)
                     if self._active_memory_trace_id:
                         from brain.memory_diagnostics import record_memory_event
-                        query = last_user_msg if last_user_msg else user_message
                         for final_score, memory in memories:
                             record_memory_event(
                                 self._active_memory_trace_id, "rag_memory_injected",
                                 memory_id=memory.get("memory_id"), score=float(final_score),
                                 reason="语义相似度、质量、时效与强度综合排序后进入 Top 3",
-                                payload={"query": query[:500], "content": memory.get("content", ""),
+                                payload={"query": _pre_query[:500], "content": memory.get("content", ""),
                                          "semantic_similarity": memory.get("semantic_similarity"),
                                          "quality_score": memory.get("quality_score"),
                                          "source": memory.get("source_channel") or memory.get("source"),
@@ -3188,7 +3210,7 @@ class AgentCore:
                     from brain.memory_diagnostics import record_memory_event
                     record_memory_event(self._active_memory_trace_id, "rag_no_match",
                                         reason="没有记忆达到 0.5 检索阈值",
-                                        payload={"query": (last_user_msg if last_user_msg else user_message)[:500], "threshold": 0.5})
+                                        payload={"query": _pre_query[:500], "threshold": 0.5})
             except Exception:
                 pass
 
@@ -3493,12 +3515,31 @@ class AgentCore:
                 if not _auto_save_memory
                 else "「对话过程中自动保存记忆」已开启：对话中出现值得长期保存的信息（个人档案/偏好/事件/知识）时，自主分类后直接调用 save_memory 保存，无需用户确认；信息已存在或没有长期价值时则不保存。"
             )
+            # ── 回忆优先：提示必须与事实一致，并禁止“未查证就否认” ──
+            _mem_injected = int(getattr(self, "_memory_injected_count", 0) or 0)
+            if route.is_light:
+                _memory_recall_guide = (
+                    "本轮是轻聊天路由，没有提供记忆检索工具。"
+                    "若问题涉及你自己、用户或你们的过往事实，而你没有把握，"
+                    "就直说“我不确定，得查一下记忆”，不要断言“没有 / 不存在 / 不是我的”。\n"
+                )
+            elif _mem_injected:
+                _memory_recall_guide = (
+                    f"上方已注入 {_mem_injected} 条可能相关的既有记忆，可直接引用。"
+                    "若这些记忆不足以回答，先调用 search_graph_memory 查证，再决定要不要说“没有”。\n"
+                )
+            else:
+                _memory_recall_guide = (
+                    "本轮没有预取到相关记忆。凡问题涉及你自己、用户或你们的过往"
+                    "（仓库、链接、地址、名字、项目、约定、时间等事实），"
+                    "必须先调用 search_graph_memory 查证；"
+                    "未检索不得断言“没有 / 不存在 / 不知道 / 不是我的”。\n"
+                )
             messages.append({
                 "role": "system",
                 "content": (
                     "【长期记忆】\n"
-                    "相关记忆已自动注入上方消息中，你无需主动搜索。\n"
-                    "仅在用户明确说\"你还记得XXX吗\"\"我之前说过XXX\"\"帮我查一下记忆\"时才调用 search_graph_memory。\n"
+                    + _memory_recall_guide +
                     "用户明确说\"记住XXX\"或要求保存到长期记忆时调用 save_memory 保存；工具成功后才能确认已经写入。"
                     + _memory_write_guide +
                     "用户描述生病、情绪、所在地、短期项目或计划等会变化的信息时，"
@@ -3635,16 +3676,24 @@ class AgentCore:
         _soft_limit_triggered = False          # 自评估提示只发一次
         _urgent_limit_triggered = False        # 收尾提示只发一次
         _empty_length_retry_count = 0          # 空正文 + length 只恢复一次，避免无限重试
+        _recall_deny_retry_count = 0           # 未查证就否认只纠正一次，避免与熔断器互相触发
 
-        from brain.request_tool_policy import extract_urls
+        from brain.request_tool_policy import extract_urls, has_successful_tool_call
+        from brain.pre_recall import looks_like_denial, request_needs_recall
         available_tool_names = {
             item.get("function", {}).get("name", "") for item in all_tools
         }
-        required_tool = required_execution_tool(
+        from brain.request_router import required_execution_tools, CAPABILITY_TO_TOOLS
+        _memory_read_tool_names = set(CAPABILITY_TO_TOOLS.get("memory_read", set()))
+        _contract_chain = required_execution_tools(
             route, available_tool_names, self._current_request_text
         )
+        required_tool = _contract_chain[0] if _contract_chain else None
+        if len(_contract_chain) > 1:
+            print(f"[工具契约] 依赖链 {' → '.join(_contract_chain)}", flush=True)
         if is_verifiable_recall_request(_msg_for_match):
-            if required_tool == "search_conversation_history":
+            if "search_conversation_history" in _contract_chain:
+                required_tool = "search_conversation_history"
                 messages.append({
                     "role": "system",
                     "content": (
@@ -3804,6 +3853,24 @@ class AgentCore:
                     ),
                 })
 
+
+            # 契约依赖链：每轮取“第一个尚未成功、且未超过尝试上限”的工具。
+            # 这样“先回忆、再执行”能自然分成两步，而不是永远强制同一个工具。
+            # 只处理多步依赖链：单元素链在上方已由 required_tool 设定，
+            # 且不能覆盖联网研究状态机的阶段性 forced_tool。
+            if len(_contract_chain) > 1 and not web_research_task:
+                forced_tool = None
+                for _contract_name in _contract_chain:
+                    if has_successful_tool_call(self._request_tool_audit, {_contract_name}):
+                        continue
+                    _attempts = sum(
+                        1 for _event in self._request_tool_audit
+                        if _event.get("name") == _contract_name
+                    )
+                    if _attempts >= 2:
+                        continue
+                    forced_tool = _contract_name
+                    break
 
             # 确定 tool_choice（熔断器可强制设为 "none"）
             forcing_text_response = bool(_force_text_response)
@@ -4212,6 +4279,26 @@ class AgentCore:
                     final_content = "嗯，你之前已经看过了，我就不重复推荐啦。"
                 else:
                     final_content = content or "刚才没有生成出可显示的内容，请再发送一次。"
+
+                # ── 回忆优先守卫：未查证就断言“没有”必须先查证再重答（见设计文档 L5）──
+                if (_recall_deny_retry_count < 1
+                        and "search_graph_memory" in available_tool_names
+                        and request_needs_recall(_msg_for_match)
+                        and looks_like_denial(final_content)
+                        and not has_successful_tool_call(
+                            self._request_tool_audit, _memory_read_tool_names)):
+                    _recall_deny_retry_count += 1
+                    _force_text_response = False
+                    print("[回忆优先守卫] 检出未查证的否认断言，要求先检索记忆后重答", flush=True)
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "你刚才准备断言“没有 / 不存在 / 不知道”，但本轮并未检索记忆。"
+                            "请先调用 search_graph_memory，从问题中提取实体名与关系词作为 keywords 查证，"
+                            "再决定如何回答；只有确实查不到记录时才可以说明没有。"
+                        ),
+                    })
+                    continue
                 if any(token in _msg_for_match for token in ("给来源", "附来源", "来源链接", "给出来源")):
                     source_urls = extract_urls(final_content)
                     if not source_urls:

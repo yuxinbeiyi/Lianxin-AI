@@ -353,6 +353,50 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
     return None
 
 
+# 指向“莲心自己 / 用户 / 过往”的具体事实：这类问题应先回忆，再执行外部动作，
+# 否则模型会凭当轮上下文断言“没有”（见 docs/回忆优先设计.md L4）。
+_RECALL_FACT_OBJECT_RE = re.compile(
+    r"(?:仓库|链接|地址|网址|项目|文件|账号|密码|电话|邮箱|名字|生日|公司|学校|住址|"
+    r"记录|记忆|资料|信息|这件事|这篇文章|编号|订单|计划|安排|日程)"
+)
+_RECALL_SELF_RE = re.compile(
+    r"(?:你自己|你的|我的|我们的|咱们|莲心(?:自己|的)|我是谁|你是谁)"
+)
+_RECALL_HISTORY_RE = re.compile(
+    r"(?:之前|上次|以前|还记得|记得过|那次|曾经|聊过|说过|提过)"
+)
+
+
+def needs_recall_before_action(text: str) -> bool:
+    """问题是否指向“莲心自己 / 用户 / 过往”的具体事实。"""
+    value = str(text or "")
+    if not value or not _RECALL_FACT_OBJECT_RE.search(value):
+        return False
+    return bool(_RECALL_SELF_RE.search(value) or _RECALL_HISTORY_RE.search(value))
+
+
+def required_execution_tools(route: RequestRoute, available_tool_names: Iterable[str],
+                             request_text: str = "") -> list[str]:
+    """按依赖顺序返回本轮必须执行的工具：先回忆，再执行。
+
+    与 ``required_execution_tool`` 的区别是保留完整依赖链（例如
+    ``["search_graph_memory", "browser_navigate"]``）；后者继续返回链首，
+    既有调用方行为不变。只有确实要执行外部动作、且问题指向未解析的
+    自指/历史事实时，才在动作前插入一次回忆。
+    """
+    available = set(available_tool_names)
+    primary = required_execution_tool(route, available, request_text)
+    if not primary:
+        return []
+    if primary in CAPABILITY_TO_TOOLS.get("memory_read", set()):
+        # 纯回忆请求本身就是“回忆”这一步。
+        return [primary]
+    routing_text = parse_request_context(request_text).routing_text
+    if needs_recall_before_action(routing_text) and "search_graph_memory" in available:
+        return ["search_graph_memory", primary]
+    return [primary]
+
+
 def _github_primary_tool(text: str) -> str:
     """Choose the deterministic first GitHub operation for an explicit task."""
     if _GITHUB_DIRECTORY_RE.search(text):
