@@ -4,6 +4,11 @@ The web evidence cache keeps source text available, but a model can still
 invent a number while summarising it.  This module intentionally performs a
 small, lexical check at the final-answer boundary.  It is not a fact checker
 and does not attempt open-ended arithmetic or semantic inference.
+
+The check must never edit or delete the answer: it may only append one short
+boundary sentence in the assistant's own voice.  Earlier versions replaced
+whole sentences with a system-toned disclaimer, which destroyed correct
+content and repeated itself once per matched number.
 """
 
 from __future__ import annotations
@@ -36,12 +41,27 @@ _NUMBER_PATTERN = re.compile(
 )
 _DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,4})\s*[年/-]\s*(\d{1,2})\s*[月/-]\s*(\d{1,2})\s*(?:日|号)?")
 _MONTH_DAY_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)")
+# 英文页面（GitHub、README、外媒）里大量使用 Oct 13, 2026 这类写法，不识别
+# 就会把答案里正确的中文日期判成“无依据”。
+_EN_MONTH_DATE_PATTERN = re.compile(
+    r"(?<![A-Za-z])(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+    r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})(?![0-9])",
+    re.IGNORECASE,
+)
+_EN_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
 _TIME_PATTERN = re.compile(
     r"(?:(上午|下午|凌晨|晚上|早上|中午)\s*)?"
     r"(\d{1,2})(?::|：|点|时)(\d{1,2})?\s*(?:分)?"
 )
+# 只有“真的会成为争议数据”的单位才纳入高风险判据：货币、百分比、时间、
+# 度量、倍数。中文量词（个/条/第/页…）是叙述骨架而不是事实数据，把它们
+# 当单位会把“第一个仓库”“两个都读了”误判成编造数字，进而在最终答案里
+# 生成大段免责话术。用户明确在问数字时仍由 high_risk 分支兜底。
 _UNIT_PATTERN = re.compile(
-    r"(?:条|个|次|人|件|家|篇|页|美元|元|人民币|小时|分钟|秒|天|周|月|年|倍|万|千|百|亿|%|％|度|℃|版本|位|名|名次|第)"
+    r"(?:美元|人民币|元|小时|分钟|秒钟|秒|天|周|月|年|倍|万|千|百|亿|%|％|度|℃)"
 )
 _CONFLICT_TOPIC_WORDS = (
     "峰值", "报告量", "数量", "比例", "百分比", "金额", "价格", "人数",
@@ -154,6 +174,11 @@ def extract_number_mentions(text: str) -> tuple[NumberMention, ...]:
     covered: list[tuple[int, int]] = []
 
     def add(raw: str, start: int, end: int, *, kind: str | None = None, normalized: str | None = None) -> None:
+        # 各模式之间会互相重叠（“2026 年 10 月 13 日”里还嵌着一个
+        # “10 月 13 日”）。先到先得，否则同一天会被抽出两个不同粒度的值，
+        # 与证据比对时互相判成“没有依据”，制造新的误伤。
+        if any(start < covered_end and covered_start < end for covered_start, covered_end in covered):
+            return
         parsed = (normalized, kind) if normalized and kind else _normalize_number(raw)
         if not parsed:
             return
@@ -166,6 +191,15 @@ def extract_number_mentions(text: str) -> tuple[NumberMention, ...]:
         add(match.group(0), match.start(), match.end(), kind="date", normalized=(f"date:{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"))
     for match in _MONTH_DAY_PATTERN.finditer(value):
         add(match.group(0), match.start(), match.end(), kind="date", normalized=(f"date:month-day:{int(match.group(1)):02d}-{int(match.group(2)):02d}"))
+    for match in _EN_MONTH_DATE_PATTERN.finditer(value):
+        _month = _EN_MONTHS.get(match.group(1)[:3].lower())
+        if _month is None:
+            continue
+        add(
+            match.group(0), match.start(), match.end(),
+            kind="date",
+            normalized=f"date:{int(match.group(3))}-{_month:02d}-{int(match.group(2)):02d}",
+        )
     for match in _TIME_PATTERN.finditer(value):
         hour = int(match.group(2))
         if match.group(1) in ("下午", "晚上") and hour < 12:
@@ -176,10 +210,22 @@ def extract_number_mentions(text: str) -> tuple[NumberMention, ...]:
         add(match.group(0), match.start(), match.end(), kind="time", normalized=f"time:{hour:02d}:{minute:02d}")
 
     for match in _NUMBER_PATTERN.finditer(value):
-        if any(start <= match.start() < end or start < match.end() <= end for start, end in covered):
-            continue
         add(match.group(0), match.start(), match.end())
     return tuple(mentions)
+
+
+def _comparison_keys(mention: NumberMention) -> tuple[str, ...]:
+    """返回比对用的规范化键。
+
+    页面写 “Oct 13, 2026”、答案写 “10 月 13 日” 是完全正常的转述，粒度不同
+    不代表编造。完整日期额外派生一个月日键，让两种写法能够互通。
+    """
+    keys = [mention.normalized]
+    if mention.kind == "date" and mention.normalized.startswith("date:"):
+        body = mention.normalized[len("date:"):]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", body):
+            keys.append(f"date:month-day:{body[5:]}")
+    return tuple(keys)
 
 
 def _is_web_fact_request(request_text: str, audit: Iterable[dict], capabilities: Iterable[str]) -> bool:
@@ -221,18 +267,21 @@ def _context_window(text: str, mention: NumberMention, radius: int = 90) -> str:
 
 
 def _find_unsupported(answer_mentions: tuple[NumberMention, ...], evidence_mentions: tuple[NumberMention, ...], request_text: str) -> tuple[str, ...]:
-    if not evidence_mentions:
-        return ()
+    # 证据里完全没有数字时不能直接放行：那恰恰意味着答案里的金额/日期/比例
+    # 找不到任何出处。旧实现在这里提前 return，等于让编造的数字正好绕开
+    # 这一层（实测：证据无数字 + 答案“9999 个 star、500 亿元”被判 grounded）。
     high_risk = _question_demands_numeric_fact(request_text, "")
     unsupported: list[str] = []
-    evidence_values = {mention.normalized for mention in evidence_mentions}
+    evidence_values: set[str] = set()
+    for mention in evidence_mentions:
+        evidence_values.update(_comparison_keys(mention))
     for mention in answer_mentions:
-        # Standalone list numbering and years in ordinary prose are too noisy
-        # to police. Units, dates/times, percentages and numeric questions are
-        # the useful high-risk subset.
+        # Ordinary list numbering and years in prose are too noisy to police.
+        # Real units, dates/times, percentages and explicit numeric questions
+        # are the useful high-risk subset.
         if not (mention.has_unit or mention.kind in {"date", "time", "percent"} or high_risk):
             continue
-        if mention.normalized not in evidence_values:
+        if not any(key in evidence_values for key in _comparison_keys(mention)):
             unsupported.append(mention.raw)
     return tuple(dict.fromkeys(unsupported))
 
@@ -259,21 +308,49 @@ def _find_conflicts(evidence_texts: list[str], request_text: str) -> tuple[str, 
     return ("multiple_numeric_values",)
 
 
-def _rewrite_sentences(content: str, unsupported: tuple[str, ...]) -> str:
-    if not unsupported:
-        return content
-    pattern = re.compile(r"[^。！？!?\n]*(?:" + "|".join(re.escape(item) for item in unsupported) + r")[^。！？!?\n]*[。！？!?]?", re.IGNORECASE)
-    replacement = (
-        "我在当前已读取的网页内容中没有找到这个数字的直接依据，"
-        "所以暂时不能可靠确认；网页可能存在截断、动态加载或来源口径差异。"
-    )
-    rewritten, count = pattern.subn(replacement, str(content or ""))
-    if count:
-        return rewritten.strip()
-    return (
-        "我在当前已读取的网页内容中没有找到回答所需数字的直接依据，"
-        "所以暂时不能可靠确认；如果需要，可以继续核对原始来源。"
-    )
+# 证据边界说明的固定开头，同时用于“同一轮不重复追加”的幂等判断。
+_BOUNDARY_NOTE_MARKER = "另说一句"
+_BOUNDARY_NOTE_UNSUPPORTED = (
+    "另说一句：上面那几个数字，我只在原文里核准了一部分，先别当定论用。"
+    "要我再回去把原文读一遍也行。"
+)
+_BOUNDARY_NOTE_CONFLICT = (
+    "另说一句：几份来源对同一个数字的说法不太一样，我先不给你定论。"
+    "要我把原文都摊开核对一遍也行。"
+)
+_BOUNDARY_NOTE_MIXED = (
+    "另说一句：上面那些数字我在原文里只核准了一部分，而且几份来源的口径"
+    "还不太一样，先别当定论用。要我再核一遍也行。"
+)
+
+
+def _append_boundary_note(
+    content: str,
+    *,
+    unsupported: tuple[str, ...] = (),
+    conflicts: tuple[str, ...] = (),
+) -> str:
+    """保留原答案，只在末尾追加一行莲心口吻的证据边界说明。
+
+    旧实现把含可疑数字的整句删除并替换成系统口吻免责模板，结果是正确信息
+    丢失、同一段话按命中数重复多遍、还会用“网页可能截断”这类内部口径向
+    用户解释。这里改为纯追加：不改动、不删除任何原句，最多追加一次。
+    注意不能使用全角括号，显示前 text_hygiene 会把括号旁白整行剥掉。
+    """
+    text = str(content or "").strip()
+    if not text:
+        return text
+    if _BOUNDARY_NOTE_MARKER in text:
+        return text
+    if unsupported and conflicts:
+        note = _BOUNDARY_NOTE_MIXED
+    elif conflicts:
+        note = _BOUNDARY_NOTE_CONFLICT
+    elif unsupported:
+        note = _BOUNDARY_NOTE_UNSUPPORTED
+    else:
+        return text
+    return f"{text}\n{note}"
 
 
 def validate_web_evidence_claims(
@@ -298,7 +375,7 @@ def validate_web_evidence_claims(
     if conflicts and not unsupported:
         logger.warning("[WebEvidence] final_guard conflict=%s evidence_count=%d", ",".join(conflicts), len(evidence_texts))
         return WebEvidenceValidation(
-            "当前已读取的网页证据存在相互冲突的具体数字，我不能在没有区分来源的情况下给出确定结论。请让我重新核对原始网页。",
+            _append_boundary_note(text, conflicts=conflicts),
             True,
             False,
             conflicts=conflicts,
@@ -310,7 +387,7 @@ def validate_web_evidence_claims(
             len(unsupported), len(evidence_texts),
         )
         return WebEvidenceValidation(
-            _rewrite_sentences(text, unsupported),
+            _append_boundary_note(text, unsupported=unsupported, conflicts=conflicts),
             True,
             False,
             unsupported=unsupported,
