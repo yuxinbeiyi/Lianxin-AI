@@ -380,6 +380,22 @@ def _track_main_request(method):
             mark_main_request_end()
     return wrapper
 
+def should_adopt_cleaned_content(cleaned: str, *, stripped: bool,
+                                still_has_protocol: bool) -> bool:
+    """剥离伪工具协议后，是否可以直接采用这段正文（缺陷 D8 的判据入口）。
+
+    旧实现还要求清理后的正文 ≥80 字，导致“简短但有效”的回答被整轮丢弃，
+    白扔一次模型调用。现在只要求：确实剥离过、正文非空、且没有残留协议。
+    注意：这里判断的是“能不能作为回复采用”，与“要不要执行伪调用”无关——
+    文本形式的伪工具调用在任何情况下都不会被执行。
+    """
+    if not stripped:
+        return False
+    if not str(cleaned or "").strip():
+        return False
+    return not still_has_protocol
+
+
 def classify_round_progress(*, has_content: bool, new_evidence: bool,
                             tool_call_count: int, dedup_blocked: int) -> str:
     """判定一轮工具调用属于哪种进展状态（不变式 I3 的唯一判据入口）。
@@ -1875,7 +1891,10 @@ class AgentCore:
                     if self._remaining_search_calls <= 0:
                         self._search_budget_exhausted = True
 
-            call_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+            from brain.tool_semantics import build_dedup_key
+            call_key = build_dedup_key(
+                name, args, nav_generation=getattr(self, "_nav_generation", 0)
+            )
             if resource_seen and resource_id:
                 print(f"  [资源去重] 跳过本请求内已读取资源: {name}", flush=True)
                 messages.append({
@@ -2099,6 +2118,11 @@ class AgentCore:
                     )
                     result = _exec(name, args, invocation_mode=invocation_mode)
 
+                from brain.tool_semantics import is_navigation_tool
+                if is_navigation_tool(name) and not is_error:
+                    # 页面已经变了：让“观察类”工具的重名调用重新有意义（D9）。
+                    self._nav_generation = getattr(self, "_nav_generation", 0) + 1
+
                 preview = result[:200].replace("\n", " ") + ("..." if len(result) > 200 else "")
                 if str(name or "").startswith("browser_"):
                     from brain.browser_security import redact_browser_text
@@ -2116,6 +2140,27 @@ class AgentCore:
                 result = f"工具执行错误: {e}"
                 is_error = True
                 print(f"  [工具错误] {name} → {e}\n", flush=True)
+
+            # 浏览器导航超时/失败时降级为正文抓取：同一域名下 fetch 往往能成功，
+            # 否则用户要白等 30 秒还拿不到任何内容（缺陷 D11）。
+            if (name == "browser_navigate" and is_error
+                    and str(args.get("url", "")).startswith(("http://", "https://"))
+                    and not getattr(self, "_browser_nav_fallback_done", False)):
+                self._browser_nav_fallback_done = True
+                _fallback_url = str(args.get("url", ""))
+                try:
+                    _fallback = _exec("fetch_webpage", {"url": _fallback_url})
+                    if is_successful_web_result(_fallback, is_error=False):
+                        result = (
+                            f"浏览器导航失败（{str(result)[:120]}）。"
+                            f"已改用正文抓取获取该页面内容：\n{_fallback}"
+                        )
+                        is_error = False
+                        print(f"  [浏览器降级] browser_navigate 失败 → fetch_webpage 成功", flush=True)
+                    else:
+                        print(f"  [浏览器降级] fetch_webpage 也未能取到正文", flush=True)
+                except Exception as _fallback_exc:
+                    logger.debug("浏览器降级失败: %s", _fallback_exc)
             elapsed_ms = (_perf_time.perf_counter() - t0) * 1000
             if getattr(self, "_task_run", None) is not None:
                 self._task_run.record_result(result, is_error=is_error)
@@ -3811,6 +3856,8 @@ class AgentCore:
         # 每轮请求开始时重置跨请求残留的去重状态，避免误把新请求首轮工具调用判为重复
         self._last_tool_call_key = None
         self._last_tool_was_duplicate = False
+        self._nav_generation = 0          # 浏览器导航代次（动态观察类去重键用）
+        self._browser_nav_fallback_done = False
         CONTENT_DROUGHT_MAX = 3              # 连续无文本N轮→熔断
         SAME_TOOL_STORM_MAX = 3              # 同工具连续N轮→强制干预
         NO_PROGRESS_MAX = 3                  # 工具名集合连续相同N轮→熔断
@@ -4244,12 +4291,15 @@ class AgentCore:
                     _cleaned_content, _stripped = strip_textual_tool_protocol(
                         content, tool_names=_protocol_scope
                     )
-                    if (
-                        _stripped
-                        and len(_cleaned_content.strip()) >= 80
-                        and not contains_textual_tool_protocol(
+                    # 只要求“剥离干净且非空”：旧的 80 字门槛会把“简短但有效”的
+                    # 回答也判成无可保留正文，白扔一整轮 + 多一次模型调用（D8）。
+                    # 前提不变：文本伪协议永远不会被当成工具调用执行。
+                    if should_adopt_cleaned_content(
+                        _cleaned_content,
+                        stripped=bool(_stripped),
+                        still_has_protocol=contains_textual_tool_protocol(
                             _cleaned_content, has_real_tool_result=True
-                        )
+                        ),
                     ):
                         print(
                             f"[协议防泄漏] 已剥离正文伪工具调用"
@@ -4313,6 +4363,7 @@ class AgentCore:
                         item.get("function", {}).get("name", "") for item in all_tools
                     }
                     _tool_count_before_activation = len(_seen_tool_names)
+                    _frozen_tool_names = set(_seen_tool_names)   # 本轮已开放的工具，不得被静默移除
                     for _tool in TOOL_DEFINITIONS + skill_tools + mcp_tools:
                         _tool_name = _tool.get("function", {}).get("name", "")
                         if (_tool_name in requested_names
@@ -4320,7 +4371,28 @@ class AgentCore:
                             _seen_tool_names.add(_tool_name)
                             all_tools.append(_tool)
                     from brain.request_tool_policy import filter_definitions_for_request
-                    all_tools = filter_definitions_for_request(all_tools, _msg_for_match)
+                    _filtered = filter_definitions_for_request(all_tools, _msg_for_match)
+                    _filtered_names = {
+                        item.get("function", {}).get("name", "") for item in _filtered
+                    }
+                    _dropped = {
+                        item.get("function", {}).get("name", "") for item in all_tools
+                    } - _filtered_names
+                    _restored = sorted(_dropped & _frozen_tool_names)
+                    if _restored:
+                        # 只增不减：本轮已经开放过的工具不再被后续过滤静默移除，
+                        # 否则模型对“我手上有什么”的认知每轮都在变，前缀缓存也每轮失效（D4/N2）。
+                        all_tools = [
+                            item for item in all_tools
+                            if item.get("function", {}).get("name", "") in (_filtered_names | _frozen_tool_names)
+                        ]
+                        print(
+                            f"[工具集] 保持扩展性，恢复本轮已开放工具 {len(_restored)} 个："
+                            f"{','.join(_restored[:5])}",
+                            flush=True,
+                        )
+                    else:
+                        all_tools = _filtered
                     if runtime_disabled_names:
                         all_tools = [t for t in all_tools
                                      if t.get("function", {}).get("name", "") not in runtime_disabled_names]
