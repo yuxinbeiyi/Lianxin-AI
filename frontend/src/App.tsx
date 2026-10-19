@@ -52,6 +52,11 @@ import {
   X,
 } from "lucide-react";
 import { managementGroups, primaryNavigation, demoMessages } from "./data/demo";
+import {
+  shouldSendAsConversation,
+  splitConversationText,
+  splitSemanticText,
+} from "./utils/textSegmentation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   lianxinApi,
@@ -767,6 +772,7 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
 
 function ChatWorkspace({
   messages,
+  segmentBubblesFor,
   toolRounds,
   avatar,
   onSend,
@@ -789,6 +795,7 @@ function ChatWorkspace({
   onTools = () => window.dispatchEvent(new Event("open-tools")),
 }: {
   messages: Message[];
+  segmentBubblesFor: (message: Message) => string[];
   toolRounds: ToolRoundState[];
   avatar?: AvatarState;
   onSend: (
@@ -981,22 +988,33 @@ function ChatWorkspace({
             messages.map((message, index) => (
               <Fragment key={message.id}>
                 <ToolRounds rounds={toolBlocksByAnchor.get(index) ?? []} />
-                {hiddenMessageIds.has(message.id) ? null : (
-                  <MessageItem
-                    message={message}
-                    avatar={avatar}
-                    onInteraction={onInteraction}
-                    interacting={interactionThinking}
-                    userInteracting={userInteracting}
-                    onQuote={quote}
-                    onDelete={(item) =>
-                      setHiddenMessageIds((current) =>
-                        new Set(current).add(item.id),
-                      )
-                    }
-                    onContextMenu={openContextMenu}
-                  />
-                )}
+                {hiddenMessageIds.has(message.id)
+                  ? null
+                  : segmentBubblesFor(message).map((segment, segmentIndex) => (
+                      <MessageItem
+                        key={`${message.id}#${segmentIndex}`}
+                        message={
+                          segmentIndex === 0
+                            ? { ...message, content: segment }
+                            : {
+                                ...message,
+                                id: `${message.id}#${segmentIndex}`,
+                                content: segment,
+                              }
+                        }
+                        avatar={avatar}
+                        onInteraction={onInteraction}
+                        interacting={interactionThinking}
+                        userInteracting={userInteracting}
+                        onQuote={quote}
+                        onDelete={(item) =>
+                          setHiddenMessageIds((current) =>
+                            new Set(current).add(item.id),
+                          )
+                        }
+                        onContextMenu={openContextMenu}
+                      />
+                    ))}
               </Fragment>
             ))
           ) : (
@@ -2324,6 +2342,16 @@ export function App() {
   const [ttsNotice, setTtsNotice] = useState("");
   const ttsNoticeIdRef = useRef(0);
   const [silentMode, setSilentMode] = useState(false);
+  // 分段发送：节奏参数由后端设置项提供，分段计划按「回复正文」缓存。
+  const [segmentPause, setSegmentPause] = useState({
+    chatMin: 0.45,
+    chatMax: 1.1,
+    semanticMin: 3,
+    semanticMax: 7,
+  });
+  const [segmentPlans, setSegmentPlans] = useState<Record<string, string[]>>({});
+  const [segmentShown, setSegmentShown] = useState<Record<string, number>>({});
+  const segmentTokenRef = useRef(0);
   useEffect(() => {
     const sync = () =>
       void lianxinApi
@@ -2343,7 +2371,23 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    const sync = () => void lianxinApi.settingsPanels().then((state) => setSilentMode(Boolean(state.global.silentMode || state.sound.silentMode))).catch(() => undefined);
+    const sync = () =>
+      void lianxinApi
+        .settingsPanels()
+        .then((state) => {
+          setSilentMode(Boolean(state.global.silentMode || state.sound.silentMode));
+          const positive = (value: unknown, fallback: number) => {
+            const parsed = typeof value === "number" ? value : Number(value);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+          };
+          setSegmentPause({
+            chatMin: positive(state.global.segmentPauseChatMin, 0.45),
+            chatMax: positive(state.global.segmentPauseChatMax, 1.1),
+            semanticMin: positive(state.global.segmentPauseSemanticMin, 3),
+            semanticMax: positive(state.global.segmentPauseSemanticMax, 7),
+          });
+        })
+        .catch(() => undefined);
     sync();
     const timer = window.setInterval(sync, 1000);
     return () => window.clearInterval(timer);
@@ -2646,8 +2690,9 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [avatar.fingerprint]);
-  const openSession = (id: number) =>
-    void lianxinApi
+  const openSession = (id: number) => {
+    fastForwardSegments();
+    return void lianxinApi
       .selectSession(id)
       .then(() => lianxinApi.messages(id))
       .then((result) => {
@@ -2657,6 +2702,111 @@ export function App() {
         setMessages(result.items.map(restoreMessage));
       })
       .catch(() => undefined);
+  };
+  // 分段计划的键：折叠空白后比较，避免落库副本与本地乐观消息因空白差异失配。
+  const segmentKeyOf = (content: string) =>
+    (content || "").replace(/\s+/g, " ").trim();
+
+  const segmentSleep = (ms: number) =>
+    new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+  // 一条回复该不该分段、按哪种节奏分。不足两段时返回 null，走原来的整条发送。
+  const buildSegmentPlan = (value: string) => {
+    const text = (value || "").trim();
+    if (!text) return null;
+    const conversational = shouldSendAsConversation(text);
+    const parts = conversational
+      ? splitConversationText(text)
+      : splitSemanticText(text);
+    if (parts.length < 2) return null;
+    return { key: segmentKeyOf(text), parts, conversational };
+  };
+
+  const waitForSpeechIdle = async (token: number, budgetMs: number) => {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      if (token !== segmentTokenRef.current) return;
+      await segmentSleep(200);
+      try {
+        const state = await lianxinApi.ttsStatus();
+        if (!state.speaking) return;
+      } catch {
+        return;
+      }
+    }
+  };
+
+  // 逐段上屏 + 逐段朗读，段间停顿读设置项。token 变化即中断。
+  const revealSegments = async (plan: {
+    key: string;
+    parts: string[];
+    conversational: boolean;
+  }) => {
+    const token = segmentTokenRef.current + 1;
+    segmentTokenRef.current = token;
+    setSegmentPlans((current) => ({ ...current, [plan.key]: plan.parts }));
+    setSegmentShown((current) => ({ ...current, [plan.key]: 1 }));
+    const bounds = plan.conversational
+      ? [segmentPause.chatMin, segmentPause.chatMax]
+      : [segmentPause.semanticMin, segmentPause.semanticMax];
+    const lowMs = Math.max(
+      100,
+      Math.round(Math.min(bounds[0], bounds[1]) * 1000),
+    );
+    const highMs = Math.max(
+      lowMs,
+      Math.round(Math.max(bounds[0], bounds[1]) * 1000),
+    );
+    for (let index = 0; index < plan.parts.length; index += 1) {
+      if (token !== segmentTokenRef.current) return;
+      const segment = plan.parts[index];
+      let speaking = false;
+      try {
+        const result = await lianxinApi.speak(segment);
+        speaking = Boolean(result?.speaking);
+      } catch {
+        speaking = false;
+      }
+      if (index === plan.parts.length - 1) return;
+      if (speaking) {
+        await waitForSpeechIdle(
+          token,
+          Math.min(60000, 1500 + segment.length * 220),
+        );
+      }
+      if (token !== segmentTokenRef.current) return;
+      await segmentSleep(
+        lowMs + Math.round(Math.random() * Math.max(0, highMs - lowMs)),
+      );
+      if (token !== segmentTokenRef.current) return;
+      setSegmentShown((current) => ({ ...current, [plan.key]: index + 2 }));
+    }
+  };
+
+  // 用户催到了（新消息 / 取消）：剩余段落立刻全部上屏，不丢内容。
+  const fastForwardSegments = () => {
+    segmentTokenRef.current += 1;
+    setSegmentShown(() => {
+      const next: Record<string, number> = {};
+      for (const [key, parts] of Object.entries(segmentPlans))
+        next[key] = parts.length;
+      return next;
+    });
+  };
+
+  // 渲染用：把一条 assistant 消息摊成若干条气泡。带附件/图片的整条保留。
+  const segmentBubblesFor = (message: Message): string[] => {
+    const content = message.content ?? "";
+    if (message.role !== "assistant") return [content];
+    if (message.kind && message.kind !== "text") return [content];
+    if (message.imageUrl || message.attachments?.length) return [content];
+    const key = segmentKeyOf(content);
+    const parts = segmentPlans[key];
+    if (!parts) return [content];
+    const shown = segmentShown[key] ?? parts.length;
+    return parts.slice(0, Math.max(1, Math.min(shown, parts.length)));
+  };
+
   const sendQueueRef = useRef(Promise.resolve());
   const pendingSendsRef = useRef(0);
 
@@ -2744,7 +2894,9 @@ export function App() {
       ]);
       if (reply.trim()) {
         void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
-        void lianxinApi.speak(reply).catch(() => undefined);
+        const plan = buildSegmentPlan(reply);
+        if (plan) await revealSegments(plan);
+        else void lianxinApi.speak(reply).catch(() => undefined);
       }
     } catch (error) {
       setMessages((current) => [
@@ -2764,6 +2916,8 @@ export function App() {
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
   ) => {
+    // 新一轮用户消息：把上一轮还没播完的分段立刻补全，避免内容被跳过。
+    fastForwardSegments();
     pendingSendsRef.current += 1;
     setBusy(true);
     sendQueueRef.current = sendQueueRef.current
@@ -2803,12 +2957,14 @@ export function App() {
     return () => window.removeEventListener("open-tools", open);
   }, []);
   const handleCancel = () => {
+    fastForwardSegments();
     void lianxinApi.cancelChat();
     setBusy(false);
   };
   // 工具信息栏永不随对话清空，只有重启莲心或新建/切换会话时才消失。
   messagesRef.current = messages;
   const handleNewChat = () => {
+    fastForwardSegments();
     setMessages([]);
     setInteractionMessages([]);
     setToolBlocks([]);
@@ -3152,6 +3308,7 @@ export function App() {
             {activeWorkspace === "chat" ? (
               <ChatWorkspace
                 messages={messages}
+                segmentBubblesFor={segmentBubblesFor}
                 toolRounds={toolBlocks}
                 avatar={avatar}
                 onSend={handleSend}
