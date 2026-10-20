@@ -36,6 +36,7 @@ _CATEGORY_TOOLS = {
     },
     "任务与效率": {
         "add_todo", "list_todos", "complete_todo", "plan_tasks", "delegate_task", "track_tasks",
+        "run_execution_task", "resume_execution_task",
     },
     "视觉与媒体": {
         "ocr_image", "ocr_batch", "describe_image", "capture_from_camera", "capture_desktop",

@@ -60,6 +60,9 @@ CAPABILITY_TO_TOOLS: dict[str, set[str]] = {
     "system": {"open_app", "get_clipboard", "send_file_to_qq", "plan_tasks", "delegate_task",
                "track_tasks", "toggle_proactive_chat", "get_balance", "list_skills",
                "activate_skill", "deactivate_skill", "query_capabilities"},
+    # 长任务执行引擎：莲心自有的任务骨架 + 可替换的外部执行后端。
+    # 它不替代现有工具，只承接"多步骤 + 要产出文件/代码"的长活。
+    "execution": {"run_execution_task", "resume_execution_task"},
     "todo": {"add_todo", "list_todos", "complete_todo", "set_reminder"},
     "weather": {"get_weather", "set_user_city"},
     "bilibili": {"bilibili_search", "bilibili_add_tag", "bilibili_list_tags"},
@@ -115,6 +118,7 @@ CAPABILITY_DESCRIPTIONS = {
     "office": "处理 Word、Excel 等办公文档",
     "image": "识别、理解或生成图像媒体",
     "system": "操作应用、剪贴板或执行复杂任务",
+    "execution": "把多步骤长任务交给执行引擎在独立沙箱里完成（写文件前需主人确认）",
     "todo": "管理待办清单",
     "weather": "查询实时天气",
     "bilibili": "搜索或管理 B 站内容",
@@ -317,7 +321,18 @@ def required_execution_tool(route: RequestRoute, available_tool_names: Iterable[
     available = set(available_tool_names)
     request_text = parse_request_context(request_text).routing_text
 
-    if "self_knowledge" in route.capabilities and is_self_knowledge_request(request_text):
+    # 点名执行引擎优先于一切：用户明确要的是“交给引擎做”，不能被记忆、
+    # 自我认知等其它能力抢走第一步（缺陷 P0-2）。
+    if "execution" in route.capabilities and is_explicit_execution_request(request_text):
+        if is_execution_resume_request(request_text) and "resume_execution_task" in available:
+            return "resume_execution_task"
+        if "run_execution_task" in available:
+            return "run_execution_task"
+
+    # 自我认知只在它独占路由时才强制第一步；混合任务里它只是附带能力，
+    # 不能顶替用户点名要执行的动作（缺陷 P0-1）。
+    if (route.capabilities <= {"self_knowledge"}
+            and is_self_knowledge_request(request_text)):
         if "inspect_self_capability" in available:
             return "inspect_self_capability"
 
@@ -531,8 +546,9 @@ _SELF_KNOWLEDGE_RE = re.compile(
     r"你能做什么|莲心(?:的)?(?:功能|能力|系统|架构|状态)|"
     r"(?:涟漪情感|棱镜记忆|音乐空间|主动聊天|能力中枢|人格枢控|星图|"
     r"时间胶囊|日记|树洞|纸条|备忘本|自习室|视觉理解|语音转录|语音合成|"
-    r"视频语音通话|上网冲浪|QQ聊天|肩载设备|人脸追踪|具身智能).{0,24}"
-    r"(?:做什么|是什么|怎么工作|如何工作|怎么用|如何用|架构|状态|启用|激活|正常|最近|最后一次|能不能|是否))",
+    r"视频语音通话|上网冲浪|QQ聊天|肩载设备|人脸追踪).{0,24}"
+    r"(?:做什么|是什么|怎么工作|如何工作|怎么用|如何用|架构|状态|启用|激活|"
+    r"正常|最近一次|最近怎么样|最近如何|最后一次|能不能|是否))",
     re.IGNORECASE,
 )
 
@@ -610,6 +626,68 @@ def is_explicit_web_reread_request(text: str) -> bool:
     return bool(_WEB_REREAD_RE.search(value))
 
 
+# ── 长任务（执行引擎）判定 ────────────────────────────────
+# 只有"明确的多步骤/长任务/点名执行引擎/多步交付物"才走执行引擎；普通单步
+# 请求如果被丢进沙箱跑几分钟，反而比现有工具更慢。
+_EXECUTION_TASK_RE = re.compile(
+    r"(?:执行引擎|执行后端|沙箱任务|沙箱里(?:做|跑|执行)|"
+    r"长任务|长期任务|多步骤?(?:任务|工作)|"
+    r"(?:一步步|从头到尾|完整地).{0,12}(?:做|完成|搞定|实现)|"
+    r"(?:帮我|替我).{0,8}(?:规划|拆解|分步)|"
+    r"(?:整理|汇总|生成|写|做|产出).{0,16}"
+    r"(?:报告|摘要|文档|方案|脚本|代码|项目|清单)"
+    r".{0,20}(?:保存|存|写|放|落地)(?:到|进|在).{0,10}"
+    r"(?:路径|目录|文件夹|桌面|盘))",
+    re.IGNORECASE,
+)
+
+
+# 显式点名“执行引擎 / 沙箱”：这类请求必须真的把活交给执行引擎，不能只用
+# 普通工具自己一步步硬做（否则用户点名的能力等于被静默绕过）。与
+# _EXECUTION_TASK_RE 的区别是：这里只认“点名”，用于强触发与事后如实告知。
+_EXECUTION_EXPLICIT_RE = re.compile(
+    r"(?:执行引擎|执行后端|沙箱任务|沙箱里|沙箱中|在沙箱|用沙箱)",
+    re.IGNORECASE,
+)
+
+# 接着上次没做完的任务：只认明确指向旧任务的措辞，避免把普通“继续”误判。
+_EXECUTION_RESUME_RE = re.compile(
+    r"(?:接着做(?:刚才|上次|之前|那个|这个)|"
+    r"接着(?:刚才|上次|之前|那个|这个)(?:的)?(?:任务|活|工作)?|"
+    r"继续(?:刚才|上次|之前|那个|这个)(?:的)?(?:任务|活|工作)?|"
+    r"(?:上次|刚才|之前)(?:那个|这个)?(?:没做完的?)?任务|"
+    r"没做完的?任务)",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_execution_request(text: str) -> bool:
+    """判断用户是否点名要求使用执行引擎或沙箱。"""
+    value = parse_request_context(text).routing_text
+    return bool(_EXECUTION_EXPLICIT_RE.search(value))
+
+
+def is_execution_resume_request(text: str) -> bool:
+    """判断用户是否要接着上次没做完的执行任务。"""
+    value = parse_request_context(text).routing_text
+    return bool(_EXECUTION_RESUME_RE.search(value))
+
+
+def has_hard_task_signal(text: str) -> bool:
+    """消息里是否存在必须交给外部工具完成的强任务信号。
+
+    给“自我认知”这类高优先级早返回加一道置信度门：同一句话里只要还带着
+    长任务或“搜索 + 读取”这类强任务，就不能被能力问询劫持整条路由
+    （缺陷 P0-1：`…具身智能最近的行业情报…` 曾被判成自我认知）。
+    """
+    value = parse_request_context(text).routing_text
+    return bool(
+        _EXECUTION_TASK_RE.search(value)
+        or _WEB_RESEARCH_RE.search(value)
+        or _EXECUTION_EXPLICIT_RE.search(value)
+    )
+
+
 def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                      forced_tool: str | None = None,
                      session_state: ToolSessionState | None = None) -> RequestRoute:
@@ -653,7 +731,10 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             "用户明确要求重新读取或核对网页原文",
         )
 
-    if is_self_knowledge_request(text):
+    # 自我认知问询的置信度门（缺陷 P0-1）：只有“纯问询”才独占整条路由；
+    # 一旦同一句话里还有长任务/搜索+读取这类强任务信号，就落回下方能力扫描，
+    # 把 self_knowledge 与真实任务能力一起注入，而不是丢掉用户真正要的活。
+    if is_self_knowledge_request(text) and not has_hard_task_signal(text):
         return RequestRoute(
             RequestMode.TASK_DIRECT,
             frozenset({"self_knowledge"}),
@@ -896,10 +977,18 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
         capabilities.add("hardware")
         reasons.append("肩载设备或 ESP32-CAM 操作")
 
+    # 长任务执行引擎（多步骤 + 产出文件/代码）：信号明确时才开放，
+    # 让莲心把长活交给独立沙箱，自己留在对话里陪主人。
+    if is_execution_resume_request(text):
+        capabilities.add("execution")
+        reasons.append("用户要求接着上次没做完的执行任务")
+    elif _EXECUTION_TASK_RE.search(text):
+        capabilities.add("execution")
+        reasons.append("用户要求多步骤长任务或点名执行引擎")
     # 音乐/听歌请求：进入任务路由，确保 netease_music MCP 工具可被注入
     if re.search(
         r"(?:一起听歌|听歌|放歌|放首|放个|放一首|放音乐|播放音乐|播放|来一首|点播|听一首|"
-        r"点歌|切歌|换歌|换一首|网易云|歌单|歌词|下一首|上一首|音量|音乐|歌曲)",
+        r"点歌|切歌|换歌|换一首|网易云|歌单|歌词|下一首|上一首|音量|音乐(?!空间)|歌曲)",
         text,
         re.IGNORECASE,
     ) and not re.search(r"(?:打开|启动|关闭|退出).{0,12}(?:应用|软件|程序)$", text):
@@ -908,6 +997,11 @@ def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
             frozenset({"music"}),
             "音乐播放/听歌请求",
         )
+
+    # 混合任务里顺带问到的能力问询：保留为附带能力，不抢走主任务。
+    if is_self_knowledge_request(text):
+        capabilities.add("self_knowledge")
+        reasons.append("主人问到了莲心自身能力（附带注入自我认知工具）")
 
     if capabilities:
         return RequestRoute(RequestMode.TASK_DIRECT, frozenset(capabilities), "；".join(reasons))

@@ -1,4 +1,21 @@
-export type ApiMessage = { role: "user" | "assistant"; content: string; id?: number; timestamp?: string; attachments?: Array<{ kind: "image" | "file"; fileName: string; path?: string }> };
+export type ApiMessage = {
+  role: "user" | "assistant";
+  content: string;
+  id?: number;
+  timestamp?: string;
+  attachments?: Array<{ kind: "image" | "file"; fileName: string; path?: string }>;
+  // 执行任务卡片（会话消息 metadata 会被后端平铺成消息字段）
+  kind?: string;
+  executionTaskId?: string;
+  executionThreadId?: string;
+  executionStatus?: string;
+  executionGoal?: string;
+  executionRounds?: number;
+  executionElapsed?: number;
+  executionReason?: string;
+  executionSummary?: string;
+  executionNarrated?: boolean;
+};
 export type ChatStreamEvent = {
   type: "started" | "image_analysis_started" | "image_analysis_result" | "file_attachment_saved" | "tool_round_start" | "tool_call" | "tool_result" | "delta" | "completed" | "error";
   round?: number;
@@ -27,6 +44,82 @@ export type ToolActivityEvent = {
   status?: "done" | "error";
   preview?: string;
   elapsedMs?: number;
+};
+export type ExecutionApprovalFile = {
+  path: string;
+  movePath?: string;
+  kind: string;
+  diff: string;
+  truncated?: boolean;
+  diffBytes?: number;
+  additions: number;
+  deletions: number;
+};
+export type ExecutionApproval = {
+  requestId: string;
+  method?: string;
+  approvalKind?: "fileChange" | "command" | "command+patch" | "permissions" | "other";
+  title: string;
+  itemId?: string;
+  command?: string;
+  cwd?: string;
+  reason?: string;
+  files?: ExecutionApprovalFile[];
+  additions?: number;
+  deletions?: number;
+  askedAt?: number;
+  auto?: boolean;
+};
+export type ExecutionTaskState = {
+  enabled: boolean;
+  closed?: boolean;
+  running: boolean;
+  backend: string;
+  sandbox: string;
+  approvalMode: string;
+  networkAccess: boolean;
+  workspace?: string;
+  limits: {
+    max_rounds: number;
+    max_stale_rounds: number;
+    timeout_seconds: number;
+    max_declines: number;
+    approval_timeout_seconds: number;
+  };
+  task: null | {
+    goal: string;
+    cwd?: string;
+    sandbox?: string;
+    approvalMode?: string;
+    turn?: number;
+    startedAt?: number;
+    elapsedSeconds?: number;
+    rounds?: number;
+    staleRounds?: number;
+    declines?: number;
+    threadId?: string;
+    state?: string;
+  };
+  lastResult: null | {
+    status: string;
+    reason?: string;
+    goal?: string;
+    rounds?: number;
+    declines?: number;
+    elapsedSeconds?: number;
+    summary?: string;
+    finishedAt?: number;
+    threadId?: string;
+  };
+  pendingApprovals: ExecutionApproval[];
+  backendStatus?: null | {
+    available: boolean;
+    backend?: string;
+    version?: string;
+    model?: string;
+    provider?: string;
+    reason?: string;
+  };
 };
 export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?: number; fitMode: "cover" | "contain" | "stretch"; fingerprint: string; dataUrl?: string };
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
@@ -96,6 +189,13 @@ export const lianxinApi = {
   stopVoice: () => request<{ active: boolean; state: string }>("/voice/stop", { method: "POST", body: "{}" }),
   setVoiceMic: (muted: boolean) => request<{ active: boolean; muted: boolean }>("/voice/mic", { method: "POST", body: JSON.stringify({ muted }) }),
   toolEvents: (after: number) => request<{ items: ToolActivityEvent[]; latest: number }>(`/tools/events?after=${after}`),
+  runtimeState: () => request<ExecutionTaskState>("/runtime/state"),
+  runtimeEvents: (after: number) => request<{ items: Array<{ id: number; kind: string; ts: number; threadId?: string; turnId?: string; payload: Record<string, unknown> }>; latest: number; running?: boolean }>(`/runtime/events?after=${after}`),
+  runtimeStart: (goal: string, options: { sessionId?: number; turn?: number; cwd?: string; sandbox?: string; networkAccess?: boolean; wait?: boolean; resumeThreadId?: string } = {}) =>
+    request<{ ok: boolean; error?: string; state: ExecutionTaskState }>("/runtime/start", { method: "POST", body: JSON.stringify({ goal, ...options }) }),
+  runtimeStop: (reason = "user") => request<{ ok: boolean; stopped: boolean; state: ExecutionTaskState }>("/runtime/stop", { method: "POST", body: JSON.stringify({ reason }) }),
+  runtimeApprove: (requestId: string, decision: "accept" | "acceptForSession" | "decline" | "cancel" = "accept", remember = false) =>
+    request<{ ok: boolean; decision?: string; error?: string }>("/runtime/approve", { method: "POST", body: JSON.stringify({ requestId, decision, remember }) }),
   voiceEvents: (after: number) => request<{ items: Array<{ id: number; type: string; state?: string; content?: string; error?: string }>; latest: number }>(`/voice/events?after=${after}`),
   startVoiceInput: () => request<{ active: boolean }>("/voice/input/start", { method: "POST", body: "{}" }),
   stopVoiceInput: () => request<{ active: boolean }>("/voice/input/stop", { method: "POST", body: "{}" }),

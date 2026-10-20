@@ -35,7 +35,8 @@ from brain.request_router import (
     CAPABILITY_TO_TOOLS, REQUEST_TOOLS_DEFINITION, RequestMode, RequestRoute, ToolSessionState,
     classify_request, format_capability_result, is_contacts_inquiry, is_verifiable_recall_request,
     is_self_knowledge_request, is_explicit_web_reread_request,
-    normalize_capabilities, required_execution_tool,
+    normalize_capabilities, required_execution_tool, is_explicit_execution_request,
+    is_execution_resume_request,
 )
 from brain.request_context import (
     format_quote_for_prompt,
@@ -156,6 +157,68 @@ def _system_first_messages(messages: list[dict]) -> list[dict]:
     system = [item for item in clean if item.get("role") == "system"]
     conversation = [item for item in clean if item.get("role") != "system"]
     return system + conversation
+
+
+def _ensure_tool_pairing(messages: list[dict]) -> list[dict]:
+    """确保每条带 tool_calls 的 assistant 消息后面都有对应的 tool 回复。
+
+    OpenAI 兼容网关会硬校验 tool_call_id 配对：只要有一条落单的调用，整轮
+    请求都会 400（缺陷 P2-1，实测把原始异常吐进了气泡）。落单可能来自工具
+    线程超时、执行异常被吞、历史裁剪等路径，所以在发送前统一补齐占位回复，
+    代价只是一条无副作用的 tool 消息。孤儿 tool 消息则直接丢弃。
+    """
+    placeholder = (
+        "该工具本次没有返回结果（执行超时或被中断）。"
+        "不要假定它成功，请改用其它方式重试或基于已有信息作答。"
+    )
+    repaired: list[dict] = []
+    pending: dict[str, dict] = {}
+    for item in messages:
+        role = item.get("role")
+        if role == "assistant" and item.get("tool_calls"):
+            if pending:
+                repaired.extend(pending.values())
+            pending = {}
+            for call in item.get("tool_calls") or []:
+                call_id = str((call or {}).get("id") or "")
+                if call_id:
+                    pending[call_id] = {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": placeholder,
+                    }
+            repaired.append(item)
+            continue
+        if role == "tool":
+            call_id = str(item.get("tool_call_id") or "")
+            if call_id in pending:
+                pending.pop(call_id, None)
+                if not pending:
+                    pending = {}
+                repaired.append(item)
+            # 没有对应调用的孤儿 tool 消息：一律丢弃，避免网关因未知
+            # tool_call_id 直接 400。
+            continue
+        if pending:
+            repaired.extend(pending.values())
+            pending = {}
+        repaired.append(item)
+    if pending:
+        repaired.extend(pending.values())
+    return repaired
+
+
+def _append_execution_bypass_note(content: str) -> str:
+    """点名执行引擎却没走引擎时，补一句如实说明（缺陷 P0-2）。"""
+    text = str(content or "").strip()
+    if not text or "执行引擎" in text:
+        return text
+    if "另说一句" in text:
+        return text
+    return (
+        f"{text}\n"
+        "另说一句：这次我没用上执行引擎，是直接用手头工具把事做完的。"
+    )
 
 
 def _recent_assistant_repetition(history: list[dict], user_message: str) -> bool:
@@ -2355,15 +2418,31 @@ class AgentCore:
                 getattr(self, "_active_workflow_run_id", 0), i,
                 item.get("name"), result is not None,
             )
-            if result is not None:
-                cfg = get_memory_config()
+            cfg = get_memory_config()
+            if result is None:
+                # 工具线程超时/被中断时结果会是 None：也必须补一条 tool 回复，
+                # 否则下一轮请求就是"assistant.tool_calls 后面缺少 tool 消息"
+                # 的协议错误（缺陷 P2-1）。
+                print(
+                    f"  [工具结果] {item.get('name', '')} 未返回结果，已补占位回复",
+                    flush=True,
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": item["tc"].id,
-                    "content": compact_tool_result(
-                        result, cfg.get("tool_result_max_chars", 12_000)
+                    "content": (
+                        "该工具本次没有返回结果（执行超时或被中断）。"
+                        "不要假定它成功，请改用其它方式重试或基于已有信息作答。"
                     ),
                 })
+                continue
+            messages.append({
+                "role": "tool",
+                "tool_call_id": item["tc"].id,
+                "content": compact_tool_result(
+                    result, cfg.get("tool_result_max_chars", 12_000)
+                ),
+            })
         if _activity_started:
             try:
                 from brain.emotional import get_manager as _get_emotion_mgr
@@ -2831,7 +2910,15 @@ class AgentCore:
                 frozenset(),
                 "Ollama 本地模型仅使用纯聊天链路",
             )
-        if is_self_knowledge_request(self._current_request_text):
+        # 只有"纯自我认知问询"才允许这条确定性回复；混合任务（例如顺带
+        # 提到了音乐空间/具身智能的搜索请求）不能被它顶掉用户真正要的活
+        # （缺陷 P0-1）。
+        _pure_self_knowledge = (
+            "self_knowledge" in route.capabilities
+            and route.capabilities <= {"self_knowledge"}
+            and is_self_knowledge_request(self._current_request_text)
+        )
+        if _pure_self_knowledge:
             try:
                 from brain.skill_manager import is_skill_active
                 if not is_skill_active("自我认知功能"):
@@ -3282,7 +3369,7 @@ class AgentCore:
 
         # 自我认知 Skill 的详细正文和工具只在用户启用后提供；核心 Agent
         # 仍然保留未激活提示，避免把“已登记”误说成“已加载”。
-        if is_self_knowledge_request(self._current_request_text):
+        if _pure_self_knowledge:
             try:
                 from brain.skill_manager import is_skill_active
                 if not is_skill_active("自我认知功能"):
@@ -3433,6 +3520,19 @@ class AgentCore:
             from config import get_builtin_tool_config
             builtin_cfg = get_builtin_tool_config()
             disabled_tool_names = {name for name, enabled in builtin_cfg.items() if not enabled}
+            # 执行引擎总开关关闭、或本机找不到 codex 可执行文件时，本轮不注入
+            # run_execution_task（HTTP 显式调用不受它影响，见
+            # docs/莲心Codex执行引擎集成方案）。不能把工具交给模型再去失败一次。
+            try:
+                from config import get_runtime_config
+                if not get_runtime_config().get("enabled", False):
+                    disabled_tool_names.update({"run_execution_task", "resume_execution_task"})
+                else:
+                    from brain.runtime.codex_backend import default_codex_bin
+                    if not default_codex_bin():
+                        disabled_tool_names.update({"run_execution_task", "resume_execution_task"})
+            except Exception:
+                pass
             runtime_disabled_names = set(disabled_tool_names)
             # fetch_webpage 是统一路由入口；具体 HTTP/Firecrawl 提供方是否启用
             # 由 NetworkToolRouter 判断，不能因为内置 HTTP 被关闭就移除入口。
@@ -3577,6 +3677,33 @@ class AgentCore:
                     )
             except Exception as _coverage_exc:
                 logger.debug("契约自检失败: %s", _coverage_exc)
+            # 长任务执行引擎已开放时，明确要求把活交给它，而不是用普通工具
+            # 一步步硬做（后者会拖很久，还占着对话线程）。
+            _execution_tool_names = {"run_execution_task", "resume_execution_task"}
+            if "execution" in route.capabilities and any(
+                item.get("function", {}).get("name", "") in _execution_tool_names
+                for item in all_tools
+            ):
+                if is_execution_resume_request(_msg_for_match):
+                    _execution_hint = (
+                        "【长任务执行引擎】主人要接着上次没做完的任务继续。"
+                        "请调用 resume_execution_task（不传 thread_id 就选最近一个被中断的任务），"
+                        "不要重新起一个 run_execution_task；原来的上下文由执行引擎自己带回。"
+                        "调用之后告诉主人已经接着做了，结果会稍后自动回到聊天里。"
+                    )
+                else:
+                    _execution_hint = (
+                        "【长任务执行引擎】本轮已开放 run_execution_task。"
+                        "主人要的是一段需要多步完成、可能耗时几分钟的长活，"
+                        "请直接调用它把目标交出去（目标里写清交付物、落点路径和验收标准），"
+                        "不要用普通工具自己一步步硬做，也不要在没有调用它的情况下承诺已经开工。"
+                        "它默认受理即返回（不在这一轮里等它跑完），跑完的结论会自动回到聊天里，"
+                        "所以调用之后就告诉主人已经交给它了，不要说自己正在原地等结果，"
+                        "也不要为了等结果反复调用它。"
+                        "只有当你判断用现有工具几步就能更快做完时才可以自己动手，"
+                        "但那样就必须在回复里明确说明这次没有使用执行引擎。"
+                    )
+                messages.append({"role": "system", "content": _execution_hint})
             try:
                 from brain.mcp.mcp_registry import get_disabled_mcp_names
                 disabled_mcp = set(get_disabled_mcp_names())
@@ -4060,7 +4187,7 @@ class AgentCore:
                     "model": self._model,
                     "max_tokens": self._max_tokens,
                     "tools": all_tools if all_tools else None,
-                    "messages": _system_first_messages(messages),
+                    "messages": _ensure_tool_pairing(_system_first_messages(messages)),
                     "api_key": self._api_key,
                     "api_base": self._api_base,
                     "stream": True,
@@ -4484,6 +4611,13 @@ class AgentCore:
                     final_content, _msg_for_match, request_audit,
                     capabilities=route.capabilities, mode=route.mode.value,
                 )
+                # 主人点名了执行引擎，但本轮确实没有走引擎（模型改用普通工具
+                # 自己硬做）：如实补一句，避免点名的能力被静默绕过（P0-2）。
+                if (is_explicit_execution_request(_msg_for_match)
+                        and not has_successful_tool_call(
+                            request_audit, {"run_execution_task", "resume_execution_task"})):
+                    print("[执行引擎] 点名请求未使用执行引擎，已如实补注", flush=True)
+                    final_content = _append_execution_bypass_note(final_content)
                 try:
                     from brain.fact_consistency import record_facts
                     record_facts(getattr(self, "_session_id", 0), final_content)

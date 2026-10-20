@@ -65,10 +65,13 @@ import {
   type ChatStreamEvent,
   type LegacyFeature,
   type PersonaState,
+  type ExecutionTaskState,
   type ToolActivityEvent,
 } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
+import { ExecutionPanel } from "./components/ExecutionPanel";
+import { ExecutionCard } from "./components/ExecutionCard";
 import { TimeCapsuleWorkspace } from "./components/TimeCapsuleWorkspace";
 import { MusicWorkspace } from "./components/MusicWorkspace";
 import { VideoCallPanel } from "./components/VideoCallPanel";
@@ -161,6 +164,16 @@ function restoreMessage(
       path?: string;
       description?: string;
     }>;
+    kind?: string;
+    executionTaskId?: string;
+    executionThreadId?: string;
+    executionStatus?: string;
+    executionGoal?: string;
+    executionRounds?: number;
+    executionElapsed?: number;
+    executionReason?: string;
+    executionSummary?: string;
+    executionNarrated?: boolean;
   },
   index: number,
 ): Message {
@@ -170,6 +183,22 @@ function restoreMessage(
     role: item.role,
     content: item.content,
     time: item.timestamp?.slice(11, 16) || "",
+    ...(item.kind === "execution_task"
+      ? {
+          kind: "execution_task" as const,
+          execution: {
+            taskId: item.executionTaskId,
+            threadId: item.executionThreadId,
+            status: item.executionStatus,
+            goal: item.executionGoal,
+            rounds: item.executionRounds,
+            elapsed: item.executionElapsed,
+            reason: item.executionReason,
+            summary: item.executionSummary,
+            narrated: item.executionNarrated,
+          },
+        }
+      : {}),
     attachments: item.attachments,
     ...(attachment?.kind === "image"
       ? {
@@ -575,6 +604,7 @@ function ImageMessageContent({ message }: { message: Message }) {
 function MessageItem({
   message,
   avatar,
+  sessionId,
   onInteraction,
   interacting,
   userInteracting = false,
@@ -585,6 +615,7 @@ function MessageItem({
 }: {
   message: Message;
   avatar?: AvatarState;
+  sessionId?: number;
   onInteraction?: (action: "tap" | "headpat") => void;
   interacting?: boolean;
   userInteracting?: boolean;
@@ -609,6 +640,28 @@ function MessageItem({
             <span>{message.time}</span>
           </div>
           <TaskCard />
+        </div>
+      </div>
+    );
+  if (message.kind === "execution_task")
+    return (
+      <div className="message-row assistant-row">
+        <MessageAvatar
+          role="assistant"
+          avatar={avatar}
+          onInteraction={onInteraction}
+          interacting={interacting}
+        />
+        <div className="message-column">
+          <div className="message-meta">
+            <strong>莲心</strong>
+            <span>{message.time}</span>
+          </div>
+          <ExecutionCard
+            data={message.execution}
+            content={message.content}
+            sessionId={sessionId}
+          />
         </div>
       </div>
     );
@@ -775,6 +828,7 @@ function ChatWorkspace({
   segmentBubblesFor,
   toolRounds,
   avatar,
+  sessionId,
   onSend,
   onCancel = () => {
     void lianxinApi.cancelChat();
@@ -793,11 +847,16 @@ function ChatWorkspace({
   onToggleMute,
   onOpenNote = () => undefined,
   onTools = () => window.dispatchEvent(new Event("open-tools")),
+  runtimeTask,
+  onRuntimeApprove,
+  onRuntimeStop,
+  runtimeDeciding,
 }: {
   messages: Message[];
   segmentBubblesFor: (message: Message) => string[];
   toolRounds: ToolRoundState[];
   avatar?: AvatarState;
+  sessionId?: number;
   onSend: (
     text: string,
     attachments: Attachment[],
@@ -819,6 +878,13 @@ function ChatWorkspace({
   onToggleMute: () => void;
   onOpenNote?: () => void;
   onTools?: () => void;
+  runtimeTask?: ExecutionTaskState | null;
+  onRuntimeApprove?: (
+    requestId: string,
+    decision: "accept" | "acceptForSession" | "decline",
+  ) => void;
+  onRuntimeStop?: () => void;
+  runtimeDeciding?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1003,6 +1069,7 @@ function ChatWorkspace({
                               }
                         }
                         avatar={avatar}
+                        sessionId={sessionId}
                         onInteraction={onInteraction}
                         interacting={interactionThinking}
                         userInteracting={userInteracting}
@@ -1051,6 +1118,14 @@ function ChatWorkspace({
           </button>
         )}
       </div>
+      {runtimeTask ? (
+        <ExecutionPanel
+          state={runtimeTask}
+          onApprove={onRuntimeApprove ?? (() => undefined)}
+          onStop={onRuntimeStop ?? (() => undefined)}
+          deciding={runtimeDeciding}
+        />
+      ) : null}
       <div className="composer-wrap">
         <div
           className="composer"
@@ -2320,6 +2395,10 @@ export function App() {
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const [voiceInputText, setVoiceInputText] = useState("");
   const [toolBlocks, setToolBlocks] = useState<ToolRoundState[]>([]);
+  // 执行运行时（阶段 2）：任务进度 + 审批卡片
+  const [runtimeTask, setRuntimeTask] = useState<ExecutionTaskState | null>(null);
+  const [runtimeDeciding, setRuntimeDeciding] = useState(false);
+  const runtimeSigRef = useRef("");
   const toolCursorRef = useRef(0);
   const sessionIdRef = useRef<number | null>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -2608,6 +2687,67 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [backendOnline, applyToolEvents]);
+  // 执行运行时：只在"状态真的变了"时更新，避免每秒无意义重渲染。
+  useEffect(() => {
+    if (!backendOnline) return;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const state = await lianxinApi.runtimeState();
+        if (disposed) return;
+        const signature = JSON.stringify([
+          state.running,
+          state.task?.rounds ?? 0,
+          state.pendingApprovals.map((item) => item.requestId).join(","),
+          state.lastResult?.finishedAt ?? 0,
+          state.lastResult?.status ?? "",
+        ]);
+        if (signature === runtimeSigRef.current) return;
+        runtimeSigRef.current = signature;
+        setRuntimeTask(state);
+      } catch {
+        /* 后端尚未就绪时保持安静 */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [backendOnline]);
+  const approveRuntime = useCallback(
+    async (
+      requestId: string,
+      decision: "accept" | "acceptForSession" | "decline",
+    ) => {
+      if (!requestId) return;
+      setRuntimeDeciding(true);
+      try {
+        await lianxinApi.runtimeApprove(
+          requestId,
+          decision,
+          decision === "acceptForSession",
+        );
+        runtimeSigRef.current = "";
+        setRuntimeTask(await lianxinApi.runtimeState());
+      } catch {
+        /* 审批失败保持安静，下一轮轮询会重新拉状态 */
+      } finally {
+        setRuntimeDeciding(false);
+      }
+    },
+    [],
+  );
+  const stopRuntime = useCallback(async () => {
+    try {
+      await lianxinApi.runtimeStop("user");
+      runtimeSigRef.current = "";
+      setRuntimeTask(await lianxinApi.runtimeState());
+    } catch {
+      /* 忽略 */
+    }
+  }, []);
   useEffect(() => {
     document.documentElement.style.setProperty(
       "--lx-chat-mask",
@@ -3311,6 +3451,7 @@ export function App() {
                 segmentBubblesFor={segmentBubblesFor}
                 toolRounds={toolBlocks}
                 avatar={avatar}
+                sessionId={sessionIdRef.current ?? undefined}
                 onSend={handleSend}
                 onInteraction={handleAvatarInteraction}
                 interactionThinking={interactionThinking}
@@ -3325,6 +3466,12 @@ export function App() {
                 silentMode={silentMode}
                 onToggleMute={toggleMute}
                 onOpenNote={() => openLegacy("note")}
+                runtimeTask={runtimeTask}
+                onRuntimeApprove={(requestId, decision) =>
+                  void approveRuntime(requestId, decision)
+                }
+                onRuntimeStop={() => void stopRuntime()}
+                runtimeDeciding={runtimeDeciding}
               />
             ) : (
               <Workspace

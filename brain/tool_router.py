@@ -185,6 +185,8 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "complete_todo": "完成待办",
     "get_weather": "查询天气",
     "set_user_city": "设置用户城市",
+    "run_execution_task": "交给执行引擎做多步骤长任务",
+    "resume_execution_task": "接着上次被中断的执行任务继续",
     "query_recent_contacts": "回顾近期找过你的其他用户及其聊天内容",
     "query_qq_friend_list": "查询QQ好友列表（仅主人可见）",
 }

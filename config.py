@@ -1202,6 +1202,8 @@ _BUILTIN_TOOL_DEFAULTS = {
     "fetch_webpage_via_api": False,     # API 中转抓取（慢但穿透力强，默认关闭）
     "fetch_webpage_browser": True,      # 浏览器模式（Playwright，最慢但最强）
     "fetch_webpage_stealth": True,      # 反反爬模式（额外反检测头）
+    "run_execution_task": True,         # 长任务执行引擎（多步骤任务交给独立沙箱）
+    "resume_execution_task": True,      # 接着上次被中断的执行任务继续
 }
 
 
@@ -1757,3 +1759,45 @@ def migrate_legacy_stt_config():
         migrated_items.append("火山引擎STT")
     
     return True, f"已迁移: {', '.join(migrated_items)}"
+
+# ── 执行运行时（外部执行引擎接入）配置 ──────────────────────────
+# 阶段 1 只读接入：莲心自己拥有任务骨架，Codex 只作为可替换的执行后端。
+_RUNTIME_DEFAULTS = {
+    "enabled": True,               # 总开关：是否允许莲心在对话里发起执行任务；关闭后该工具不再注入（HTTP 显式调用不受限）
+    "backend": "codex",            # 执行后端标识（阶段 1 只有 codex）
+    "codex_bin": "",               # 留空则按 vendor/codex/<版本> -> PATH 顺序自动寻找
+    "codex_version": "",           # 留空不校验版本；填写后版本不符直接判定不可用
+    "workspace": "",               # 执行沙箱目录；留空用 ~/.lianxin/runtime/workspace
+    "model_channel_endpoint": "127.0.0.1:15721",  # custom provider 的本地模型通道
+    "model_context_window": 128000,               # 补模型元数据缺失时的窗口
+    "model_auto_compact_token_limit": 96000,      # 自动压缩阈值
+    "sandbox": "read-only",        # read-only=每次写入都要确认（阶段 2 默认）；workspace-write=沙箱内放手写
+    "approval_policy": "on-request",
+    "approval_mode": "ask",        # ask=挂起等确认；auto_decline=一律拒绝（纯观察）；auto_accept=全部放行
+    "approval_timeout_seconds": 180,  # 审批无人响应多久后自动拒绝
+    "network_access": False,       # 网络默认关闭，仅按任务显式授权（D-3）
+    "goal_prefix": "",             # 留空使用内置的只读目标前缀
+    "max_rounds": 40,              # 熔断：单任务动作轮数上限
+    "max_stale_rounds": 3,         # 熔断：连续无进展轮数上限
+    "timeout_seconds": 900,        # 熔断：单任务墙钟上限（秒）
+    "max_declines": 3,             # 熔断：同一 turn 连续审批被拒上限
+}
+
+
+def get_runtime_config() -> dict:
+    """读取执行运行时配置，缺失字段用默认值补全。"""
+    full = _load_full_config()
+    runtime = full.get("runtime") or {}
+    return {**_RUNTIME_DEFAULTS, **runtime}
+
+
+def save_runtime_config(config: dict) -> dict:
+    """保存执行运行时配置（仅更新 runtime 部分，未知键忽略）。"""
+    full = _load_full_config()
+    merged = {**_RUNTIME_DEFAULTS, **(full.get("runtime") or {})}
+    for key, value in (config or {}).items():
+        if key in merged:
+            merged[key] = value
+    full["runtime"] = merged
+    _save_full_config(full)
+    return merged

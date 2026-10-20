@@ -6513,6 +6513,404 @@ TOOL_EXECUTORS["query_capabilities"] = lambda inp: __import__(
     "brain.capability_knowledge", fromlist=["format_capability_query"]
 ).format_capability_query(inp.get("query", ""), inp.get("category", ""), inp.get("limit", 20))
 
+# ── 执行引擎（长任务）──────────────────────────────────────────
+# 设计见 docs/莲心Codex执行引擎集成方案_20261019.md：
+# 莲心决定"要不要做、要不要让主人确认、怎么转述"，执行后端只负责"怎么做"。
+EXECUTION_TASK_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "run_execution_task",
+        "description": (
+            "把需要连续多步、可能要跑几分钟、或必须产出文件/代码的长任务交给执行引擎"
+            "（独立进程，在自己的沙箱目录里自己规划步骤并执行；默认 read-only，"
+            "每次写操作都会先给主人预览、确认之后才落盘）。"
+            "只在主人明确要求长任务/多步骤/一步步做/交给执行引擎，"
+            "或任务本身必须多步操作并产出文件时才用；一步就能办完的普通请求不要用它。"
+            "默认调用后立刻返回「已受理」，任务在后台自己跑，跑完的结论会自动回到聊天里。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "要完成的目标：说清最终交付物、落点路径和验收标准。",
+                },
+                "sandbox": {
+                    "type": "string",
+                    "enum": ["read-only", "workspace-write"],
+                    "description": "read-only=只读调查，每次写操作都要主人确认（默认）；workspace-write=沙箱目录内直接写文件，不再逐次确认。",
+                },
+                "network_access": {
+                    "type": "boolean",
+                    "description": "任务是否需要联网。默认 false，只有任务确实要联网时才打开。",
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "是否在这一次调用里等任务跑完再拿结论。默认 false：把任务交出去就立刻回来，"
+                                   "结论稍后会自动回到聊天里；只有你确实需要马上给出结论时才传 true。",
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "description": "本次调用最多占用多少秒（单次上限 110）："
+                                   "wait=false 时默认 15 秒，只用来探测任务有没有真的跑起来；"
+                                   "wait=true 时默认 100 秒，等不到就转后台、结论稍后自动回到聊天里。",
+                },
+            },
+            "required": ["goal"],
+        },
+    },
+}
+
+RESUME_EXECUTION_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "resume_execution_task",
+        "description": (
+            "接着上次没做完的执行任务继续跑（用户说「接着做」「继续刚才那个任务」时用）。"
+            "不传 thread_id 就自动取最近一个被中断的任务；原来的上下文由执行引擎自己带回。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thread_id": {
+                    "type": "string",
+                    "description": "要接着做的任务编号；留空则选最近一个被中断的任务。",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "补充的继续指令；留空就沿用原任务目标。",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+# 执行引擎原始输出里的环境噪音：conda 激活脚本、PowerShell 登录提示、
+# 模型元数据告警等。这些不是任务内容，直接端给模型会被当成"报错"写进结论。
+_EXECUTION_NOISE_PATTERNS = (
+    "Invoke-Expression",
+    "conda shell",
+    "Model metadata for",
+    "Defaulting to fallback metadata",
+    "Command line warning",
+    "You are using an unsupported",
+)
+_EXECUTION_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+_EXECUTION_STATUS_TEXT = {
+    "completed": "已完成",
+    "interrupted": "被中断",
+    "stopped": "已停止",
+    "failed": "失败了",
+}
+
+
+def _clean_execution_summary(text: str, limit: int = 4000) -> str:
+    """去掉执行引擎原文里的环境噪音与 ANSI 转义，避免污染莲心的转述。"""
+    value = _EXECUTION_ANSI_RE.sub("", str(text or ""))
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        if any(pattern in stripped for pattern in _EXECUTION_NOISE_PATTERNS):
+            continue
+        lines.append(line.rstrip())
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return cleaned[:limit] if len(cleaned) > limit else cleaned
+
+
+def clean_execution_summary(text: str, limit: int = 1200) -> str:
+    """对外暴露的摘要清洗：回灌文案与执行卡片共用同一套去噪规则。"""
+    return _clean_execution_summary(text, limit=limit)
+
+
+def format_execution_terminal(result: dict) -> str:
+    """把执行引擎的终态结果整理成一段「可以转述」的素材。
+
+    只描述事实，不带工具口径要求；既给莲心本轮转述用，也给终态回灌通道用。
+    """
+    status = str(result.get("status") or "unknown")
+    goal = str(result.get("goal") or "")
+    summary = _clean_execution_summary(result.get("summary") or "")
+    lines = [
+        "【执行引擎：%s】轮次 %s，耗时 %s 秒。"
+        % (
+            _EXECUTION_STATUS_TEXT.get(status, status),
+            int(result.get("rounds") or 0),
+            result.get("elapsedSeconds") or 0,
+        ),
+        "任务目标：%s" % (goal or "（没有记录）"),
+    ]
+    reason = str(result.get("reason") or "").strip()
+    if reason:
+        lines.append("收尾原因：%s" % reason)
+    if summary:
+        lines.append("执行引擎的原始结论（未改写）：")
+        lines.append(summary)
+    else:
+        lines.append("执行引擎没有留下结论正文。")
+    if status != "completed":
+        lines.append("注意：这次没有正常完成，不要声称目标已经达成。")
+    return "\n".join(lines)
+
+
+def _format_execution_result(state: dict) -> str:
+    """把运行时状态翻译成"莲心能转述给主人"的一段结果。"""
+    task = dict(state.get("task") or {})
+    result = dict(state.get("lastResult") or {})
+    goal = str(task.get("goal") or result.get("goal") or "")
+    if state.get("running"):
+        elapsed = int(float(task.get("elapsedSeconds") or 0))
+        pending = state.get("pendingApprovals") or []
+        lines = [
+            "【执行引擎：进行中】已运行约 %d 秒，目前完成 %s 轮动作。"
+            % (elapsed, int(task.get("rounds") or 0)),
+            "任务目标：%s" % goal,
+        ]
+        if pending:
+            card = dict(pending[0])
+            paths = "、".join(
+                str(item.get("path") or "") for item in (card.get("files") or [])
+            )
+            lines.append(
+                "它正在等主人确认：%s（%s）。确认入口在执行面板里，%s 秒内没有回应会自动按拒绝处理。"
+                % (
+                    card.get("title") or "一项操作",
+                    paths or card.get("command") or "命令",
+                    int((state.get("limits") or {}).get("approval_timeout_seconds") or 180),
+                )
+            )
+        else:
+            lines.append("现在没有待确认的操作，让它继续跑就好。")
+        lines.append(
+            "【转述要求】用你自己的口吻告诉主人任务还在进行、需要他做什么；"
+            "不要提工具名、轮次、事件或日志。"
+        )
+        return "\n".join(lines)
+
+    result.setdefault("goal", goal)
+    result.setdefault("status", str(task.get("state") or "unknown"))
+    lines = [format_execution_terminal(result)]
+    lines.append(
+        "【转述要求】用你平时跟主人说话的口吻转述：做了什么、结果放在哪、还需要主人做什么。"
+        "控制在三句话以内（细节主人可以在执行面板里看）；不要出现英文工具名、命令行、日志、"
+        "报错原文，也不要整段照抄上面的文字。"
+    )
+    return "\n".join(lines)
+
+
+def _probe_execution_start(runtime, probe_seconds: float) -> dict:
+    """受理后短暂观察：等到「已经有动作」或「已经收尾」。
+
+    只占十几秒，用来把「启动就失败」和「正常在跑」分开，
+    避免引擎其实没起来、莲心却说已经交给它了。
+    """
+    deadline = time.monotonic() + max(0.0, float(probe_seconds))
+    state = runtime.state()
+    while time.monotonic() < deadline:
+        if not state.get("running"):
+            break
+        if int((state.get("task") or {}).get("rounds") or 0) > 0:
+            break
+        time.sleep(0.4)
+        state = runtime.state()
+    return state
+
+
+def _format_execution_accepted(state: dict) -> str:
+    """受理即返回时的文案：让模型知道任务真的在跑，不必在原地等。"""
+    task = dict(state.get("task") or {})
+    task_id = str(task.get("taskId") or "")
+    elapsed = int(float(task.get("elapsedSeconds") or 0))
+    lines = [
+        "【执行引擎：已受理】任务号 %s，已经在后台跑起来了（已运行约 %d 秒，完成 %s 轮动作）。"
+        % (task_id or "未编号", elapsed, int(task.get("rounds") or 0)),
+        "任务目标：%s" % (str(task.get("goal") or "") or "（没有记录）"),
+    ]
+    pending = state.get("pendingApprovals") or []
+    if pending:
+        card = dict(pending[0])
+        paths = "、".join(str(item.get("path") or "") for item in (card.get("files") or []))
+        lines.append(
+            "它已经停下来等主人确认：%s（%s）。确认入口在执行面板里，%s 秒内没有回应会自动按拒绝处理。"
+            % (
+                card.get("title") or "一项操作",
+                paths or card.get("command") or "命令",
+                int((state.get("limits") or {}).get("approval_timeout_seconds") or 180),
+            )
+        )
+    lines.append(
+        "【转述要求】用你自己的口吻告诉主人：这件事已经交给执行引擎在后台跑了，"
+        "跑完会自动回来告诉他结果。不要说你正在等他做完，不要承诺现在就给结论；"
+        "不要提工具名、任务号、轮次、事件或日志；两三句话以内。"
+    )
+    return "\n".join(lines)
+
+
+def _mark_execution_delivered(runtime, state: dict) -> None:
+    """声明终态已由本轮对话带走，回灌通道不要重复播报。"""
+    try:
+        task_id = str((dict(state.get("task") or {})).get("taskId") or "")
+        if task_id:
+            runtime.mark_delivered(task_id)
+    except Exception:
+        pass
+
+
+def run_execution_task(goal: str, sandbox: str = "", network_access: bool = False,
+                       wait: bool = False, wait_seconds: int = 0) -> str:
+    """把长任务交给执行引擎：莲心给目标，执行后端自己规划步骤。
+
+    默认不等任务跑完（``wait=False``）：受理即返回，绕开「单工具 120 秒」的上限，
+    终态由执行运行时的回灌通道送回会话，莲心不用在对话线程里干等。
+    """
+    goal = str(goal or "").strip()
+    if not goal:
+        return "执行引擎需要一个明确的目标，请先说明要完成什么。"
+    try:
+        from config import get_runtime_config
+        runtime_cfg = dict(get_runtime_config() or {})
+    except Exception:
+        runtime_cfg = {}
+    if not runtime_cfg.get("enabled", False):
+        return (
+            "（执行引擎当前被关闭了，我没有把这件事交出去。"
+            "可以用现有工具一步步做，或者让主人到设置里打开执行引擎。）"
+        )
+    try:
+        from brain.runtime import get_task_runtime
+    except Exception as exc:
+        return "执行引擎不可用：%s" % exc
+    try:
+        from brain.runtime.codex_backend import default_codex_bin, codex_missing_hint
+        if not default_codex_bin():
+            return "（执行引擎暂时用不了：%s）" % codex_missing_hint()
+    except Exception:
+        pass
+
+    try:
+        wait_seconds = int(wait_seconds or 0)
+    except (TypeError, ValueError):
+        wait_seconds = 0
+
+    runtime = get_task_runtime()
+    if wait:
+        # 显式要求等结果。单次调用必须留在「单工具 120 秒」预算内，否则上层
+        # 会在 120 秒处丢掉结果，而任务还在后台跑（结论两头落空）。
+        # 所以最长只等 110 秒：等到了就直接给结论，等不到就交给回灌通道收尾。
+        wait_seconds = max(5, min(110, wait_seconds or 100))
+        try:
+            started = runtime.start(
+                goal,
+                sandbox=sandbox or "",
+                network_access=bool(network_access),
+                wait=True,
+                wait_timeout=wait_seconds,
+            )
+        except Exception as exc:
+            return "执行引擎受理任务失败：%s" % exc
+        if not started.get("ok"):
+            error = str(started.get("error") or "未知原因")
+            return (
+                "执行引擎没有受理这个任务：%s"
+                "（如果它正在跑别的任务，就先等那个结束，或者让主人停掉它。）" % error
+            )
+        state = dict(started.get("state") or {})
+        if not state.get("running"):
+            # 结论已经在本轮带走了，让回灌通道不要再说一遍。
+            _mark_execution_delivered(runtime, state)
+        return _format_execution_result(state)
+
+    # 默认路径：受理即返回。wait_seconds 在这里只是「启动探测窗口」，够短就好。
+    probe_seconds = max(5, min(110, wait_seconds or 15))
+    try:
+        started = runtime.start(
+            goal,
+            sandbox=sandbox or "",
+            network_access=bool(network_access),
+            wait=False,
+        )
+    except Exception as exc:
+        return "执行引擎受理任务失败：%s" % exc
+    if not started.get("ok"):
+        error = str(started.get("error") or "未知原因")
+        return (
+            "执行引擎没有受理这个任务：%s"
+            "（如果它正在跑别的任务，就先等那个结束，或者让主人停掉它。）" % error
+        )
+    state = _probe_execution_start(runtime, probe_seconds)
+    if not state.get("running"):
+        # 秒级任务（或者启动就失败）在探测窗口里已经收尾，直接给结论。
+        _mark_execution_delivered(runtime, state)
+        return _format_execution_result(state)
+    return _format_execution_accepted(state)
+
+
+def resume_execution_task(thread_id: str = "", goal: str = "") -> str:
+    """接着上次被中断的执行任务继续：优先复用 codex 的原 thread 上下文。"""
+    try:
+        from config import get_runtime_config
+
+        if not get_runtime_config().get("enabled", False):
+            return "（执行引擎当前被关闭了，没法接着做；可以让主人到设置里打开它。）"
+    except Exception:
+        pass
+    try:
+        from brain.runtime import get_task_runtime, session_store
+    except Exception as exc:
+        return "执行引擎不可用：%s" % exc
+
+    meta = session_store.read_meta(thread_id) if str(thread_id or "").strip() else session_store.latest_resumable()
+    if not meta:
+        return "我没有找到可以接着做的任务：要么它已经做完，要么当时没留下执行记录。"
+    resumed_id = str(meta.get("threadId") or "")
+    status = str(meta.get("status") or "")
+    if status not in ("interrupted", "stopped"):
+        return "这个任务现在的状态是「%s」，不需要接着做。" % (status or "未知")
+    if not resumed_id:
+        return "这条任务记录里没有可恢复的会话编号，只能重新交代一遍目标。"
+
+    runtime = get_task_runtime()
+    state = runtime.state()
+    if state.get("running"):
+        return "执行引擎正在跑别的任务，先等它结束或者让主人停掉它，再接着做这一件。"
+    try:
+        started = runtime.start(
+            str(goal or "").strip() or str(meta.get("goal") or ""),
+            session_id=int(meta.get("lianxinSessionId") or 0) or None,
+            turn=int(meta.get("lianxinTurn") or 0),
+            resume_thread_id=resumed_id,
+            wait=False,
+        )
+    except Exception as exc:
+        return "执行引擎没能接着做：%s" % exc
+    if not started.get("ok"):
+        return "执行引擎没有受理续跑：%s" % str(started.get("error") or "未知原因")
+    state = _probe_execution_start(runtime, 15)
+    if not state.get("running"):
+        _mark_execution_delivered(runtime, state)
+        return _format_execution_result(state)
+    return _format_execution_accepted(state)
+
+
+TOOL_DEFINITIONS.append(EXECUTION_TASK_DEFINITION)
+TOOL_EXECUTORS["run_execution_task"] = lambda inp: run_execution_task(
+    goal=inp.get("goal", ""),
+    sandbox=inp.get("sandbox", ""),
+    network_access=bool(inp.get("network_access", False)),
+    wait=bool(inp.get("wait", False)),
+    wait_seconds=inp.get("wait_seconds", 0),
+)
+
+TOOL_DEFINITIONS.append(RESUME_EXECUTION_DEFINITION)
+TOOL_EXECUTORS["resume_execution_task"] = lambda inp: resume_execution_task(
+    thread_id=str(inp.get("thread_id") or ""),
+    goal=str(inp.get("goal") or ""),
+)
+
 # ── 初始化工具注册中心（模块导入时自动注册所有工具）─────────
 try:
     from brain.tool_registry import init_tool_registry

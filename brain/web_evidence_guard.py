@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -309,19 +311,75 @@ def _find_conflicts(evidence_texts: list[str], request_text: str) -> tuple[str, 
 
 
 # 证据边界说明的固定开头，同时用于“同一轮不重复追加”的幂等判断。
+# 同一类说明准备多套措辞轮换：实测连续四轮追加逐字相同的句子，读起来
+# 像系统水印而不像莲心在说话（缺陷 P1-1）。
 _BOUNDARY_NOTE_MARKER = "另说一句"
 _BOUNDARY_NOTE_UNSUPPORTED = (
     "另说一句：上面那几个数字，我只在原文里核准了一部分，先别当定论用。"
-    "要我再回去把原文读一遍也行。"
+    "要我再回去把原文读一遍也行。",
+    "另说一句：这几个数字在原网页里我没能逐一对上，先按待核实看待。"
+    "你要的话我可以再翻一遍原文。",
+    "另说一句：上面的数字我只对上了一部分，剩下的还没找到出处，别急着当定论。",
 )
 _BOUNDARY_NOTE_CONFLICT = (
     "另说一句：几份来源对同一个数字的说法不太一样，我先不给你定论。"
-    "要我把原文都摊开核对一遍也行。"
+    "要我把原文都摊开核对一遍也行。",
+    "另说一句：这几个数字在几份来源里对不上，我先不下结论。"
+    "想让我摊开原文逐个核对也可以。",
+    "另说一句：同一组数字在不同来源口径不一致，我先不拍板。",
 )
 _BOUNDARY_NOTE_MIXED = (
     "另说一句：上面那些数字我在原文里只核准了一部分，而且几份来源的口径"
-    "还不太一样，先别当定论用。要我再核一遍也行。"
+    "还不太一样，先别当定论用。要我再核一遍也行。",
+    "另说一句：这些数字我一部分能在原文里对上，另一部分几份来源说法还不一致，"
+    "先别当定论。要我再核一遍也行。",
+    "另说一句：上面的数字有的只在原文里对上一部分，有的几份来源口径不同，先当待核实。",
 )
+# 说明过于频繁时改用最短的一套，避免每轮回复都挂一段免责说明。
+_BOUNDARY_NOTE_SHORT = (
+    "另说一句：这些数字我只核准了一部分，先当待核实。",
+    "另说一句：这几个数字还没核准完，先当待核实。",
+)
+
+
+class BoundaryNoteLimiter:
+    """控制证据边界说明的重复度（轮换措辞 + 时间窗内降频）。
+
+    纯追加式的边界说明本身是对的，但同一句话连说四遍会破坏沉浸感。这里
+    只做两件事：同因说明按序轮换措辞；时间窗内超过上限后改用最短模板。
+    """
+
+    def __init__(self, *, window_seconds: float = 900.0, max_long_notes: int = 3) -> None:
+        self._lock = threading.Lock()
+        self._recent: list[float] = []
+        self._index = 0
+        self._window_seconds = float(window_seconds)
+        self._max_long_notes = int(max_long_notes)
+
+    def note(self, *, unsupported: tuple[str, ...] = (), conflicts: tuple[str, ...] = ()) -> str:
+        if unsupported and conflicts:
+            pool = _BOUNDARY_NOTE_MIXED
+        elif conflicts:
+            pool = _BOUNDARY_NOTE_CONFLICT
+        elif unsupported:
+            pool = _BOUNDARY_NOTE_UNSUPPORTED
+        else:
+            return ""
+        with self._lock:
+            now = time.monotonic()
+            self._recent = [
+                stamp for stamp in self._recent if now - stamp < self._window_seconds
+            ]
+            crowded = len(self._recent) >= self._max_long_notes
+            self._recent.append(now)
+            if crowded:
+                pool = _BOUNDARY_NOTE_SHORT
+            note = pool[self._index % len(pool)]
+            self._index += 1
+            return note
+
+
+_DEFAULT_LIMITER = BoundaryNoteLimiter()
 
 
 def _append_boundary_note(
@@ -329,6 +387,7 @@ def _append_boundary_note(
     *,
     unsupported: tuple[str, ...] = (),
     conflicts: tuple[str, ...] = (),
+    limiter: "BoundaryNoteLimiter | None" = None,
 ) -> str:
     """保留原答案，只在末尾追加一行莲心口吻的证据边界说明。
 
@@ -342,13 +401,10 @@ def _append_boundary_note(
         return text
     if _BOUNDARY_NOTE_MARKER in text:
         return text
-    if unsupported and conflicts:
-        note = _BOUNDARY_NOTE_MIXED
-    elif conflicts:
-        note = _BOUNDARY_NOTE_CONFLICT
-    elif unsupported:
-        note = _BOUNDARY_NOTE_UNSUPPORTED
-    else:
+    note = (limiter or _DEFAULT_LIMITER).note(
+        unsupported=unsupported, conflicts=conflicts
+    )
+    if not note:
         return text
     return f"{text}\n{note}"
 
@@ -360,6 +416,7 @@ def validate_web_evidence_claims(
     *,
     capabilities: Iterable[str] = (),
     evidence_text: str = "",
+    limiter: "BoundaryNoteLimiter | None" = None,
 ) -> WebEvidenceValidation:
     """Validate high-risk numeric claims against successful web evidence."""
     text = str(content or "")
@@ -375,7 +432,7 @@ def validate_web_evidence_claims(
     if conflicts and not unsupported:
         logger.warning("[WebEvidence] final_guard conflict=%s evidence_count=%d", ",".join(conflicts), len(evidence_texts))
         return WebEvidenceValidation(
-            _append_boundary_note(text, conflicts=conflicts),
+            _append_boundary_note(text, conflicts=conflicts, limiter=limiter),
             True,
             False,
             conflicts=conflicts,
@@ -387,7 +444,9 @@ def validate_web_evidence_claims(
             len(unsupported), len(evidence_texts),
         )
         return WebEvidenceValidation(
-            _append_boundary_note(text, unsupported=unsupported, conflicts=conflicts),
+            _append_boundary_note(
+                text, unsupported=unsupported, conflicts=conflicts, limiter=limiter
+            ),
             True,
             False,
             unsupported=unsupported,
@@ -402,6 +461,7 @@ def validate_web_evidence_claims(
 
 
 __all__ = [
+    "BoundaryNoteLimiter",
     "NumberMention",
     "WebEvidenceValidation",
     "extract_number_mentions",

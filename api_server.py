@@ -2207,7 +2207,7 @@ class LianxinBridge:
                     agent._session_id, "assistant", content,
                 )
             except Exception as exc:
-                bridge_log.log("闊充箰", f"听歌反馈写入会话失败: {exc}")
+                bridge_log.log("音乐", f"听歌反馈写入会话失败: {exc}")
         if bool(settings.get("music_feedback_auto_speak", False)):
             threading.Thread(target=self._speak_feedback, args=(content,), daemon=True).start()
         event = {
@@ -2235,6 +2235,206 @@ class LianxinBridge:
         """莲心工具活动事件流（内存态，重启后清空）。"""
         from brain import tool_activity
         return tool_activity.events_after(after)
+
+    # ── 执行运行时（阶段 1：只读执行引擎）──────────────────────
+    def task_runtime(self):
+        from brain.runtime import get_task_runtime
+        return get_task_runtime()
+
+    def runtime_state(self, probe: bool = False) -> dict:
+        """运行时快照；probe=True 时顺带探测执行引擎可用性。"""
+        runtime = self.task_runtime()
+        return runtime.probe(force=True) if probe else runtime.state()
+
+    def runtime_events(self, after: int = 0) -> dict:
+        """运行时事件流（任务开始/结束/审批/熔断/工具调用）。"""
+        return self.task_runtime().server_events(after)
+
+    def runtime_start(self, goal: str, session_id=None, turn: int = 0,
+                      sandbox: str = "", cwd: str = "", wait: bool = False,
+                      resume_thread_id: str = "") -> dict:
+        return self.task_runtime().start(
+            goal, session_id=session_id, turn=turn, sandbox=sandbox, cwd=cwd, wait=wait,
+            resume_thread_id=resume_thread_id,
+        )
+
+    def runtime_stop(self, reason: str = "user") -> dict:
+        return self.task_runtime().stop(reason)
+
+    def runtime_approve(self, request_id, decision: str = "accept",
+                        remember: bool = False) -> dict:
+        """回执一次挂起的审批；remember=True 表示"本轮同类都允许"。"""
+        return self.task_runtime().approve(request_id, decision, remember=remember)
+
+    # ── 执行引擎终态回灌（阶段 3 · 步骤 2）────────────────────
+    # 设计见 docs/莲心执行引擎体验对齐方案.md §3.3：
+    # 引擎任务受理即返回，终态（完成/失败/被停）由这里补一条莲心的文字消息回会话。
+    # 只落库、不开 TTS、不碰正在进行的对话轮，避免在后台卡住用户下一条消息。
+    def install_execution_terminal_sink(self) -> bool:
+        try:
+            from brain.runtime import get_task_runtime
+
+            return get_task_runtime().on_terminal(self._execution_terminal_sink)
+        except Exception as exc:
+            bridge_log.log("执行引擎", f"终态回灌注册失败: {exc}")
+            return False
+
+    def _execution_terminal_session(self, result: dict) -> int:
+        """回灌目标会话：优先任务自己的 sessionId，其次当前桌面会话。"""
+        try:
+            session_id = int(result.get("sessionId") or 0)
+        except (TypeError, ValueError):
+            session_id = 0
+        if session_id:
+            return session_id
+        try:
+            return int(getattr(self.agent(), "_session_id", 0) or 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _execution_terminal_fallback(result: dict) -> str:
+        """转述失败时的兜底文案：不漂亮，但结果不会丢。"""
+        goal = str(result.get("goal") or "刚才那件长活")
+        status = str(result.get("status") or "")
+        if result.get("recovered"):
+            return (
+                "上次我关掉之前，这件事（%s）还没跑完。"
+                "要接着做的话，点一下下面的「接着做」，我会从原来的进度继续。"
+                % goal[:60]
+            )
+        label = {
+            "completed": "已经做完了",
+            "failed": "没能做成功",
+            "interrupted": "被停下来了",
+            "stopped": "停下来了",
+        }.get(status, "收尾了")
+        text = "刚才那件事（%s）%s。" % (goal[:60], label)
+        reason = str(result.get("reason") or "").strip()
+        if status != "completed" and reason:
+            text += "原因：%s。" % reason
+        return text
+
+    def _execution_terminal_reply(self, material: str) -> str:
+        """用莲心自己的口吻把终态素材改成一句话（单次纯文本调用，不带工具）。"""
+        import re as _re
+
+        agent = self.agent()
+        persona = str(getattr(agent, "_system_prompt", "") or "")
+        scene = (
+            "\n\n【本轮场景：执行引擎回执】\n"
+            "你之前交给后台执行引擎的那件长活刚刚收尾了，现在要把结果告诉主人。\n"
+            "要求：用你平时的口吻，一到三句话；说清做了什么、结果放在哪里、还需不需要他动手；\n"
+            "素材里写着没有正常完成时，就如实说没做成，不要假装目标已经达成；\n"
+            "不要出现工具名、命令行、任务号、日志、报错原文或字段名，不要照抄素材；\n"
+            "本轮只输出这段要对主人说的话本身，不要输出任何标签。"
+        )
+        messages = [{"role": "system", "content": (persona + scene) if persona else scene.strip()}]
+        messages.append({"role": "user", "content": material})
+        response = agent._call_api_with_retry(messages=messages, max_retries=2)
+        try:
+            content = response.choices[0].message.content
+        except Exception:
+            content = ""
+        text = str(content or "").strip()
+        # 人格 prompt 要求结尾带【表情：…】，这条回灌消息只要正文。
+        text = _re.sub(r"[\s]*【(?:表情|情绪)：[^】]*】[\s]*$", "", text).strip()
+        # 回灌只是一句告知，别让模型写成长报告。
+        return text[:600]
+
+    # 回灌通道的宽限期：工具可能刚好把同一个终态同步带回本轮对话
+    # （探测窗口内就收尾的秒级任务），等它一句"我拿走了"再决定要不要播报。
+    EXECUTION_SINK_GRACE_SECONDS = 2.0
+
+    @staticmethod
+    def _execution_card_status_text(result: dict) -> str:
+        """同步路径的卡片正文：只陈述事实，不重复莲心刚在对话里说过的话。"""
+        label = {
+            "completed": "做完了",
+            "failed": "没做成",
+            "interrupted": "被停下来了",
+            "stopped": "停下来了",
+        }.get(str(result.get("status") or ""), "收尾了")
+        return "执行引擎这边%s：%s 轮动作，共 %s 秒。" % (
+            label,
+            int(result.get("rounds") or 0),
+            result.get("elapsedSeconds") or 0,
+        )
+
+    def _save_execution_card(self, session_id: int, result: dict, text: str,
+                             narrated: bool) -> int:
+        """把一次执行任务落成会话里的一条卡片消息（复用 messages + kind 元数据）。
+
+        metadata 会被 ``HistoryManager._decode_message`` 平铺成消息字段，
+        所以统一加 execution 前缀，避免与既有字段撞名（如 source / goal）。
+        """
+        from brain.tools import clean_execution_summary
+
+        metadata = {
+            "kind": "execution_task",
+            "executionTaskId": str(result.get("taskId") or ""),
+            "executionThreadId": str(result.get("threadId") or ""),
+            "executionStatus": str(result.get("status") or ""),
+            "executionGoal": str(result.get("goal") or ""),
+            "executionRounds": int(result.get("rounds") or 0),
+            "executionElapsed": result.get("elapsedSeconds") or 0,
+            "executionReason": str(result.get("reason") or ""),
+            "executionSummary": clean_execution_summary(result.get("summary") or "", limit=1200),
+            "executionNarrated": bool(narrated),
+        }
+        history = self.agent().get_history_manager()
+        message_id = history.save_message(
+            session_id, "assistant", str(text or "").strip(), metadata=metadata,
+        )
+        bridge_log.log(
+            "执行引擎",
+            "执行卡片已落库 会话 %s 消息 #%s（%s）" % (
+                session_id, message_id, str(result.get("status") or ""),
+            ),
+        )
+        thread_id = str(result.get("threadId") or "")
+        if thread_id:
+            try:
+                from brain.runtime import session_store
+
+                session_store.update_meta(thread_id, {
+                    "cardSaved": True, "cardMessageId": int(message_id or 0),
+                })
+            except Exception:
+                pass
+        return message_id
+
+    def _execution_terminal_sink(self, result: dict) -> None:
+        """在后台线程里执行：先落执行卡片；本轮没有同步播报过时再补一句。"""
+        try:
+            time.sleep(self.EXECUTION_SINK_GRACE_SECONDS)
+            from brain.runtime import get_task_runtime
+
+            delivered = get_task_runtime().was_delivered(str(result.get("taskId") or ""))
+            session_id = self._execution_terminal_session(result)
+            if not session_id:
+                bridge_log.log("执行引擎", "终态落库跳过：没有可用会话")
+                return
+            text = ""
+            if not delivered:
+                if result.get("skipNarration"):
+                    # 启动恢复出来的「非预期中断」只陈述事实：不在启动时额外调用模型。
+                    text = self._execution_terminal_fallback(result)
+                else:
+                    # 这张卡就是这次任务的"在场证明"，所以正文用莲心的口吻说。
+                    from brain.tools import format_execution_terminal
+
+                    try:
+                        text = self._execution_terminal_reply(format_execution_terminal(result))
+                    except Exception as exc:
+                        bridge_log.log("执行引擎", f"终态转述失败，改用兜底文案: {exc}")
+                    text = text or self._execution_terminal_fallback(result)
+            if not text:
+                text = self._execution_card_status_text(result)
+            narrated = (not delivered) and not bool(result.get("skipNarration"))
+            self._save_execution_card(session_id, result, text, narrated=narrated)
+        except Exception as exc:
+            bridge_log.log("执行引擎", f"执行卡片落库失败: {exc}")
 
     def music_events(self, after: int = 0) -> dict:
         with self._music_watcher_lock:
@@ -3029,6 +3229,11 @@ class LianxinBridge:
         return json.dumps(payload, ensure_ascii=False) if isinstance(raw, str) else payload
 
     def shutdown_web_bridges(self) -> None:
+        try:
+            from brain.runtime import get_task_runtime
+            get_task_runtime().shutdown()
+        except Exception:
+            pass
         with self._study_room_lock:
             if self._study_room_bridge is not None:
                 self._study_room_bridge.shutdown()
@@ -3878,6 +4083,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/tasks/events":
                 query = parse_qs(urlparse(self.path).query)
                 return self._send(bridge.task_events(int((query.get("after") or [0])[0])))
+            if path == "/api/runtime/state":
+                query = parse_qs(urlparse(self.path).query)
+                probe = str((query.get("probe") or ["0"])[0]).lower() in ("1", "true", "yes")
+                return self._send(bridge.runtime_state(probe=probe))
+            if path == "/api/runtime/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.runtime_events(int((query.get("after") or [0])[0])))
             if path == "/api/time-capsule/state":
                 query = parse_qs(urlparse(self.path).query)
                 return self._send(bridge.time_capsule_state((query.get("day") or [""])[0]))
@@ -3975,6 +4187,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.chat(str(body.get("message", ""))))
             if path == "/api/chat/cancel":
                 return self._send(bridge.cancel_chat())
+            if path == "/api/runtime/start":
+                try:
+                    runtime_turn = int(body.get("turn") or 0)
+                except (TypeError, ValueError):
+                    runtime_turn = 0
+                return self._send(bridge.runtime_start(
+                    str(body.get("goal", "")),
+                    session_id=body.get("sessionId"),
+                    turn=runtime_turn,
+                    sandbox=str(body.get("sandbox") or ""),
+                    cwd=str(body.get("cwd") or ""),
+                    wait=bool(body.get("wait")),
+                    resume_thread_id=str(body.get("resumeThreadId") or ""),
+                ), 201)
+            if path == "/api/runtime/stop":
+                return self._send(bridge.runtime_stop(str(body.get("reason") or "user")))
+            if path == "/api/runtime/approve":
+                return self._send(bridge.runtime_approve(
+                    str(body.get("requestId") or ""),
+                    str(body.get("decision") or "accept"),
+                    remember=bool(body.get("remember")),
+                ))
             if path == "/api/chat/stream":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -4252,12 +4486,39 @@ def main():
     except Exception as exc:
         bridge_log.log("音乐", f"启动基线失败: {exc}")
     try:
+        from config import get_runtime_config
+        if get_runtime_config().get("enabled", False):
+            from brain.runtime.codex_backend import codex_missing_hint, default_codex_bin
+            _codex_bin = default_codex_bin()
+            if _codex_bin:
+                bridge_log.log("执行引擎", f"后端已就绪: {_codex_bin}")
+            else:
+                bridge_log.log("执行引擎", f"后端不可用: {codex_missing_hint()}")
+        else:
+            bridge_log.log("执行引擎", "已在配置中关闭（runtime.enabled=false）")
+    except Exception as exc:
+        bridge_log.log("执行引擎", f"后端检测失败: {exc}")
+    try:
+        if bridge.install_execution_terminal_sink():
+            bridge_log.log("执行引擎", "终态回灌通道已挂接（任务结束会自动回到会话）")
+    except Exception as exc:
+        bridge_log.log("执行引擎", f"终态回灌挂接失败: {exc}")
+    try:
         bridge.start_proactive_runtime()
         bridge.start_music_watcher()
         bridge.start_music_state()
         bridge_log.log("主动", "主动聊天运行时已启动")
     except Exception as exc:
         bridge_log.log("主动", f"主动聊天运行时启动失败: {exc}")
+    try:
+        # 上次退出时还在跑的任务：补一张「非预期中断」卡片；顺手清理过期线程。
+        _runtime = bridge.task_runtime()
+        _recovered = _runtime.recover_interrupted()
+        if _recovered.get("recovered"):
+            bridge_log.log("执行引擎", f"已补记 {_recovered['recovered']} 个上次未完成的任务")
+        _runtime.cleanup_sessions()
+    except Exception as exc:
+        bridge_log.log("执行引擎", f"启动恢复失败: {exc}")
     try:
         from config import get_qq_bridge_config
         qq_config = get_qq_bridge_config()

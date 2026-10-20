@@ -442,3 +442,82 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .music-pager-gap { padding: 0 2px; font-size: 12px; color: var(--lx-text-muted); }
 .tts-failure-notice { display: flex; align-items: center; gap: 7px; width: fit-content; margin: 2px auto 16px; padding: 5px 13px; border-radius: 999px; background: rgba(214, 122, 122, 0.12); border: 1px solid rgba(214, 122, 122, 0.35); color: #d98a8a; font-size: 12.5px; }
 .tts-failure-dot { width: 6px; height: 6px; border-radius: 50%; background: #d67a7a; flex: none; }
+
+/* ── 执行运行时面板（阶段 2：受控写入 + 审批）─────────────── */
+.exec-panel { display: grid; gap: 10px; margin: 0 auto 10px; width: min(940px, 96%); max-height: 44vh; overflow: auto; padding: 12px 14px; border: 1px solid rgba(131,186,255,.24); border-radius: 14px; background: rgba(10, 24, 35, .92); box-shadow: 0 12px 30px rgba(0,0,0,.22); }
+.exec-panel.awaiting { border-color: rgba(255, 196, 120, .55); box-shadow: 0 0 0 1px rgba(255,196,120,.18), 0 12px 30px rgba(0,0,0,.26); }
+.exec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.exec-title { display: inline-flex; align-items: center; gap: 7px; color: var(--lx-info); font-size: 11px; }
+.exec-head-right { display: inline-flex; align-items: center; gap: 8px; }
+.exec-chip { padding: 2px 9px; border-radius: 999px; font-size: 10px; }
+.exec-chip.live { background: rgba(255,196,120,.16); color: #ffd39a; }
+.exec-chip.idle { background: rgba(131,186,255,.12); color: var(--lx-text-muted); }
+.exec-stop, .exec-dismiss, .exec-command button, .exec-summary button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid rgba(157,214,205,.2); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--lx-text-muted); font-size: 10px; cursor: pointer; }
+.exec-stop:hover, .exec-dismiss:hover, .exec-command button:hover, .exec-summary button:hover { color: #d9e7e7; border-color: rgba(157,214,205,.4); }
+.exec-body { display: grid; gap: 6px; }
+.exec-goal { margin: 0; color: #d9e7e7; font-size: 12px; line-height: 1.5; }
+.exec-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--lx-text-muted); font-size: 10px; }
+.exec-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.exec-tag { padding: 1px 7px; border-radius: 999px; background: rgba(157,214,205,.12); color: var(--lx-info); }
+.exec-tag.warn { background: rgba(255,196,120,.18); color: #ffd39a; }
+.exec-path { margin: 0; color: #6f878c; font-family: Consolas, monospace; font-size: 10px; word-break: break-all; }
+.exec-approval { padding: 11px 12px; border: 1px solid rgba(255,196,120,.34); border-radius: 12px; background: rgba(255,196,120,.05); }
+.exec-approval-head { display: flex; align-items: flex-start; gap: 9px; }
+.exec-approval-icon { display: grid; place-items: center; flex: 0 0 auto; width: 22px; height: 22px; color: #ffd39a; }
+.exec-approval-copy { min-width: 0; }
+.exec-approval-copy strong { display: block; color: #ffe6c2; font-size: 12px; }
+.exec-approval-copy span { display: block; margin-top: 3px; color: var(--lx-text-muted); font-size: 10px; }
+.exec-approval-copy p { margin: 5px 0 0; color: #b8c7c9; font-size: 11px; line-height: 1.5; }
+.exec-files { display: grid; gap: 8px; margin-top: 9px; }
+.exec-file { border: 1px solid rgba(157,214,205,.14); border-radius: 10px; background: rgba(4, 14, 20, .6); overflow: hidden; }
+.exec-file-head { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border-bottom: 1px solid rgba(157,214,205,.12); color: var(--lx-info); font-size: 11px; }
+.exec-file-path { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #d9e7e7; font-family: Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.exec-file-kind { color: var(--lx-text-muted); font-size: 10px; }
+.exec-file-stat { display: inline-flex; gap: 6px; font-family: Consolas, monospace; font-size: 10px; }
+.exec-add { color: #7fd39a; }
+.exec-del { color: #ff9c9c; }
+.exec-diff { max-height: 260px; margin: 0; padding: 8px 10px; overflow: auto; font-family: Consolas, monospace; font-size: 11px; line-height: 1.55; }
+.exec-diff-line { display: block; white-space: pre-wrap; word-break: break-all; }
+.exec-diff-line.add { color: #8ee0a6; background: rgba(80,200,120,.09); }
+.exec-diff-line.del { color: #ffb1b1; background: rgba(220,90,90,.09); }
+.exec-diff-line.hunk { color: #9db6ff; }
+.exec-diff-line.context { color: #93a7ab; }
+.exec-file-note { margin: 0; padding: 8px 10px; color: var(--lx-text-muted); font-size: 10px; }
+.exec-command { margin-top: 8px; }
+.exec-command pre { max-height: 150px; margin: 6px 0 0; padding: 8px 10px; overflow: auto; border-radius: 8px; background: rgba(4, 14, 20, .6); color: #9db6ff; white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace; font-size: 10px; line-height: 1.5; }
+.exec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.exec-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; border: 1px solid rgba(157,214,205,.24); border-radius: 9px; background: rgba(255,255,255,.03); color: #d9e7e7; font-size: 11px; cursor: pointer; }
+.exec-btn:hover { border-color: rgba(157,214,205,.5); }
+.exec-btn.primary { border-color: rgba(127,211,154,.45); background: rgba(80,200,120,.14); color: #b7f0c8; }
+.exec-btn.danger { border-color: rgba(255,156,156,.4); color: #ffc0c0; }
+.exec-btn:disabled { opacity: .5; cursor: default; }
+.exec-note { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 9px; font-size: 11px; }
+.exec-note.warn { background: rgba(255,196,120,.12); color: #ffd39a; }
+.exec-summary { display: grid; gap: 6px; }
+.exec-summary pre { max-height: 220px; margin: 0; padding: 9px 11px; overflow: auto; border: 1px solid rgba(157,214,205,.14); border-radius: 9px; background: rgba(4, 14, 20, .6); color: #b8c7c9; white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; font-size: 11px; line-height: 1.55; }
+
+/* 会话流内的执行任务卡片（重启后仍可回翻） */
+.exec-card { display: grid; gap: 8px; width: min(560px, 100%); padding: 11px 13px; border: 1px solid rgba(131,186,255,.22); border-left: 3px solid rgba(131,186,255,.5); border-radius: 12px; background: rgba(10,24,35,.72); }
+.exec-card.ok { border-left-color: rgba(127,211,154,.65); }
+.exec-card.bad { border-left-color: rgba(255,156,156,.65); }
+.exec-card.warn { border-left-color: rgba(255,196,120,.65); }
+.exec-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.exec-card-title { display: inline-flex; align-items: center; gap: 6px; color: var(--lx-info); font-size: 11px; }
+.exec-card-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: rgba(131,186,255,.12); color: var(--lx-text-muted); font-size: 10px; }
+.exec-card-chip.ok { background: rgba(127,211,154,.16); color: #b7f0c8; }
+.exec-card-chip.bad { background: rgba(255,156,156,.16); color: #ffc0c0; }
+.exec-card-chip.warn { background: rgba(255,196,120,.16); color: #ffd39a; }
+.exec-card-goal { margin: 0; color: #d9e7e7; font-size: 12px; line-height: 1.55; }
+.exec-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--lx-text-muted); font-size: 10px; }
+.exec-card-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.exec-card-reason { color: #ffd39a; }
+.exec-card-speech { margin: 0; color: #d9e7e7; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.exec-card-resume { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.exec-card-resume button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border: 1px solid rgba(127,211,154,.4); border-radius: 8px; background: rgba(80,200,120,.14); color: #b7f0c8; font-size: 11px; cursor: pointer; }
+.exec-card-resume button:hover { border-color: rgba(127,211,154,.7); }
+.exec-card-resume button:disabled { opacity: .55; cursor: default; }
+.exec-card-resume span { color: var(--lx-text-muted); font-size: 10px; }
+.exec-card-detail button { padding: 3px 9px; border: 1px solid rgba(157,214,205,.2); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--lx-text-muted); font-size: 10px; cursor: pointer; }
+.exec-card-detail button:hover { color: #d9e7e7; border-color: rgba(157,214,205,.4); }
+.exec-card-detail pre { max-height: 220px; margin: 7px 0 0; padding: 9px 11px; overflow: auto; border: 1px solid rgba(157,214,205,.14); border-radius: 9px; background: rgba(4,14,20,.6); color: #b8c7c9; white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; font-size: 11px; line-height: 1.55; }
+
