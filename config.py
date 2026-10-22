@@ -1524,6 +1524,43 @@ def save_bilibili_config(config: dict):
     _save_full_config(full)
 
 
+_BILIBILI_INTERACTION_DEFAULTS = {
+    "mode": "read_only",
+    "user_uid": "",
+    "user_name": "",
+    "user_uid_confirmed": False,
+    "test_video": "",
+    "allow_other_replies": False,
+    "auto_comment_enabled": False,
+    "paused": False,
+}
+
+
+def get_bilibili_interaction_config() -> dict:
+    """读取 B 站互动设置；凭证与此配置分离。"""
+    full = _load_full_config()
+    stored = full.get("bilibili_interaction", {})
+    if not isinstance(stored, dict):
+        stored = {}
+    return {
+        key: stored.get(key, default)
+        for key, default in _BILIBILI_INTERACTION_DEFAULTS.items()
+    }
+
+
+def save_bilibili_interaction_config(config: dict):
+    """只保存允许的非敏感 B 站互动偏好。"""
+    full = _load_full_config()
+    stored = full.get("bilibili_interaction", {})
+    if not isinstance(stored, dict):
+        stored = {}
+    for key in _BILIBILI_INTERACTION_DEFAULTS:
+        if key in config:
+            stored[key] = config[key]
+    full["bilibili_interaction"] = stored
+    _save_full_config(full)
+
+
 # ── 待办确认配置 ──────────────────────────────────────────────
 # true: 莲心提取待办后弹窗询问用户确认
 # false: 自动添加，不再询问

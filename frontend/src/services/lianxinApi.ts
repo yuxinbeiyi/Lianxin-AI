@@ -125,6 +125,35 @@ export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?:
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
 export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: { text: string; estimated_tokens: number; layers: string[]; error?: string }; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> } };
 export type SettingsPanelState = { global: { silentMode: boolean; userName: string; emotionProbability: number; backgroundEnabled: boolean; backgroundSource: string; backgroundSourceType: string; backgroundOpacity: number; chatBackgroundOpacity: number; backgroundFitMode: string; segmentPauseChatMin: number; segmentPauseChatMax: number; segmentPauseSemanticMin: number; segmentPauseSemanticMax: number }; sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string } };
+export type BilibiliInteractionState = {
+  settings: {
+    mode: "read_only" | "test";
+    modeLabel: string;
+    userUid: string;
+    userName: string;
+    userUidConfirmed: boolean;
+    testVideo: string;
+    testBvid: string;
+    allowOtherReplies: boolean;
+    autoCommentEnabled: boolean;
+    paused: boolean;
+  };
+  account: { connected: boolean; uid: string; name: string; credentialStoreAvailable: boolean };
+  login: { pending: boolean };
+  draft: null | {
+    id: string;
+    status: string;
+    bvid: string;
+    text: string;
+    mentionUid: string;
+    mentionName: string;
+    video: { bvid: string; title: string; author: string; commentOpen: boolean };
+    createdAt: number;
+  };
+  writeCapability: { ready: boolean; structuredMentionSupported: boolean; blockers: string[] };
+  replyCapability: { ready: boolean; allowOtherReplies: boolean; blockers: string[] };
+  records?: Array<{ bvid: string; rpid: string; status: string; diagnostic: string }>;
+};
 export type LegacyFeature =
   | "ripple" | "persona" | "memory-constellation" | "prism-memory"
   | "history" | "note" | "workflow" | "duty" | "proactive" | "alarm" | "reminder"
@@ -203,6 +232,18 @@ export const lianxinApi = {
   toggleProactive: (enabled: boolean) => request<{ desktopEnabled: boolean }>("/proactive/toggle", { method: "POST", body: JSON.stringify({ enabled }) }),
   proactiveStatus: () => request<{ ready: boolean; running: boolean }>("/proactive/status"),
   proactiveTrigger: (mode: string) => request<{ ok: boolean }>("/proactive/trigger", { method: "POST", body: JSON.stringify({ mode }) }),
+  bilibiliInteractionState: () => request<BilibiliInteractionState>("/bilibili-interaction/state"),
+  recheckBilibiliComment: (rpid = "") => request<{ ok: boolean; message?: string; error?: string; diagnostic?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/comment/recheck", { method: "POST", body: JSON.stringify({ rpid }) }),
+  saveBilibiliInteractionSettings: (payload: { mode?: "read_only" | "test"; userUid?: string; testVideo?: string; allowOtherReplies?: boolean; autoCommentEnabled?: boolean; paused?: boolean }) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/settings", { method: "POST", body: JSON.stringify(payload) }),
+  verifyBilibiliUserUid: (uid: string) => request<{ ok: boolean; uid?: string; name?: string; error?: string }>("/bilibili-interaction/verify-user", { method: "POST", body: JSON.stringify({ uid }) }),
+  confirmBilibiliUserUid: (uid: string) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/confirm-user", { method: "POST", body: JSON.stringify({ uid }) }),
+  inspectBilibiliTestVideo: (target: string) => request<{ ok: boolean; error?: string; video?: { bvid: string; title: string; author: string; commentOpen: boolean } }>("/bilibili-interaction/inspect-video", { method: "POST", body: JSON.stringify({ target }) }),
+  requestBilibiliTestComment: (target = "", draftId = "", confirmed = false) => request<{ ok: boolean; sent: boolean; status: string; message?: string; error?: string; blockers?: string[]; state?: BilibiliInteractionState }>("/bilibili-interaction/test-comment", { method: "POST", body: JSON.stringify({ target, draftId, confirmed }) }),
+  startBilibiliLogin: () => request<{ ok: boolean; error?: string; key?: string; url?: string; qrDataUrl?: string; expiresIn?: number }>("/bilibili-interaction/login/start", { method: "POST", body: "{}" }),
+  pollBilibiliLogin: (key: string) => request<{ ok: boolean; state: string; error?: string; account?: { uid: string; name: string } }>("/bilibili-interaction/login/poll", { method: "POST", body: JSON.stringify({ key }) }),
+  logoutBilibili: () => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/logout", { method: "POST", body: "{}" }),
+  createBilibiliCommentDraft: (target: string, text = "") => request<{ ok: boolean; status?: string; error?: string; blockers?: string[]; draft?: BilibiliInteractionState["draft"]; state: BilibiliInteractionState }>("/bilibili-interaction/draft", { method: "POST", body: JSON.stringify({ target, text }) }),
+  clearBilibiliCommentDraft: () => request<{ ok: boolean; state: BilibiliInteractionState }>("/bilibili-interaction/draft/clear", { method: "POST", body: "{}" }),
   managementState: () => request<{ modules: Array<{ id: string; label: string; available: boolean; state?: unknown }> }>("/management/state"),
   personaState: () => request<PersonaState>("/persona/state"),
   personaSave: (profile: Record<string, unknown>) => request<PersonaState>("/persona/save", { method: "POST", body: JSON.stringify(profile) }),

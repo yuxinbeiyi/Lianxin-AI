@@ -61,6 +61,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   lianxinApi,
   type AvatarState,
+  type BilibiliInteractionState,
   type BackgroundState,
   type ChatStreamEvent,
   type LegacyFeature,
@@ -1809,6 +1810,23 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
+  const [bilibili, setBilibili] = useState<BilibiliInteractionState | null>(null);
+  const [bilibiliDraft, setBilibiliDraft] = useState({
+    mode: "read_only" as "read_only" | "test",
+    userUid: "",
+    testVideo: "",
+    allowOtherReplies: false,
+    autoCommentEnabled: false,
+    paused: false,
+  });
+  const [bilibiliSaving, setBilibiliSaving] = useState(false);
+  const [bilibiliNotice, setBilibiliNotice] = useState("");
+  const [uidLookup, setUidLookup] = useState<{ uid: string; name: string } | null>(null);
+  const [videoLookup, setVideoLookup] = useState<{ bvid: string; title: string; author: string; commentOpen: boolean } | null>(null);
+  const [bilibiliLoginKey, setBilibiliLoginKey] = useState("");
+  const [bilibiliLoginQr, setBilibiliLoginQr] = useState("");
+  const [bilibiliDraftText, setBilibiliDraftText] = useState("");
+  const [bilibiliDraftBusy, setBilibiliDraftBusy] = useState(false);
   useEffect(() => {
     const sync = () => {
       void lianxinApi
@@ -1827,6 +1845,23 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
     const timer = window.setInterval(sync, 3000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    void lianxinApi
+      .bilibiliInteractionState()
+      .then((state) => {
+        setBilibili(state);
+        setBilibiliDraft({
+          mode: state.settings.mode,
+          userUid: state.settings.userUid,
+          testVideo: state.settings.testVideo,
+          allowOtherReplies: state.settings.allowOtherReplies,
+          autoCommentEnabled: state.settings.autoCommentEnabled,
+          paused: state.settings.paused,
+        });
+        setBilibiliDraftText(state.draft?.text || "");
+      })
+      .catch(() => setBilibiliNotice("无法读取 B 站互动设置。"));
+  }, []);
   const toggle = () => {
     const next = !enabled;
     setEnabled(next);
@@ -1839,6 +1874,210 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
       .proactiveTrigger(mode)
       .catch(() => undefined)
       .finally(() => setTriggering(false));
+  };
+  const saveBilibiliSettings = async () => {
+    setBilibiliSaving(true);
+    setBilibiliNotice("");
+    try {
+      const result = await lianxinApi.saveBilibiliInteractionSettings(bilibiliDraft);
+      if (!result.ok || !result.state) {
+        setBilibiliNotice(result.error || "设置未保存。");
+        return;
+      }
+      setBilibili(result.state);
+      setBilibiliNotice(result.state.settings.userUidConfirmed
+        ? "设置已保存。UID 资料已确认，但评论与回复仍保持关闭。"
+        : "设置已保存。UID 尚未核验，互动仍保持关闭。");
+    } catch {
+      setBilibiliNotice("设置保存失败，请确认莲心服务正在运行。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const lookupBilibiliUid = async () => {
+    setBilibiliSaving(true);
+    setBilibiliNotice("");
+    setUidLookup(null);
+    try {
+      const result = await lianxinApi.verifyBilibiliUserUid(bilibiliDraft.userUid);
+      if (result.ok && result.uid && result.name) {
+        setBilibiliDraft((current) => ({ ...current, userUid: result.uid! }));
+        setUidLookup({ uid: result.uid, name: result.name });
+      }
+      else setBilibiliNotice(result.error || "无法核验 UID。");
+    } catch {
+      setBilibiliNotice("UID 查询失败，请检查网络后重试。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const confirmBilibiliUid = async () => {
+    if (!uidLookup || uidLookup.uid !== bilibiliDraft.userUid.trim()) return;
+    setBilibiliSaving(true);
+    try {
+      const saved = await lianxinApi.saveBilibiliInteractionSettings({ userUid: uidLookup.uid });
+      if (!saved.ok) {
+        setBilibiliNotice(saved.error || "UID 未保存，无法确认。");
+        return;
+      }
+      const result = await lianxinApi.confirmBilibiliUserUid(uidLookup.uid);
+      if (!result.ok || !result.state) {
+        setBilibiliNotice(result.error || "UID 确认失败。");
+        return;
+      }
+      setBilibili(result.state);
+      setBilibiliNotice(`已确认 UID ${uidLookup.uid} 对应账号：${uidLookup.name}。这只是资料匹配确认，不是账号所有权认证。`);
+    } catch {
+      setBilibiliNotice("UID 确认失败，请重试。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const inspectBilibiliVideo = async () => {
+    setBilibiliSaving(true);
+    setVideoLookup(null);
+    try {
+      const result = await lianxinApi.inspectBilibiliTestVideo(bilibiliDraft.testVideo);
+      if (result.ok && result.video) setVideoLookup(result.video);
+      else setBilibiliNotice(result.error || "无法读取测试视频信息。");
+    } catch {
+      setBilibiliNotice("测试视频查询失败，请检查网络后重试。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const recheckBilibiliComment = async (rpid = "") => {
+    if (bilibiliSaving) return;
+    setBilibiliSaving(true);
+    try {
+      const result = await lianxinApi.recheckBilibiliComment(rpid);
+      if (result.state) setBilibili(result.state);
+      setBilibiliNotice(`${result.message || result.error || "复核未完成。"}\n${result.diagnostic || ""}`);
+    } catch {
+      setBilibiliNotice("只读复核请求失败，没有发送或重发评论。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const requestBilibiliTest = async () => {
+    if (!bilibili || bilibiliSaving || bilibiliDraftBusy) return;
+    const draft = bilibili.draft;
+    if (!draft || bilibiliDraftText.trim() !== draft.text) {
+      setBilibiliNotice("请先在评论正文框中输入内容，再点击“保存当前正文”；不需要先生成草稿。");
+      return;
+    }
+    if (!window.confirm(`使用账号：${bilibili.account.name}（${bilibili.account.uid}）\n测试视频：${draft.bvid}\n提及 UID：${draft.mentionUid}\n\n${draft.text}\n\n确定公开发布到 B 站吗？`)) return;
+    setBilibiliSaving(true);
+    try {
+      const result = await lianxinApi.requestBilibiliTestComment(bilibiliDraft.testVideo, draft.id, true);
+      if (result.state) setBilibili(result.state);
+      setBilibiliNotice(result.message || result.error || result.blockers?.join(" ") || "请核对发送结果。");
+    } catch {
+      setBilibiliNotice("测试请求失败；未确认发送状态，请勿重复操作。 ");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const startBilibiliLogin = async () => {
+    setBilibiliSaving(true);
+    setBilibiliNotice("");
+    try {
+      const result = await lianxinApi.startBilibiliLogin();
+      if (!result.ok || !result.key) {
+        setBilibiliNotice(result.error || "无法生成 B 站登录二维码。");
+        return;
+      }
+      setBilibiliLoginKey(result.key);
+      setBilibiliLoginQr(result.qrDataUrl || "");
+      setBilibiliNotice(result.qrDataUrl ? "请用 B 站 App 扫码；扫码后点击“检查扫码状态”。" : "二维码图片生成失败，请稍后重试。");
+    } catch {
+      setBilibiliNotice("登录二维码请求失败，请确认莲心服务正在运行。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const pollBilibiliLogin = async () => {
+    if (!bilibiliLoginKey || bilibiliSaving) return;
+    setBilibiliSaving(true);
+    try {
+      const result = await lianxinApi.pollBilibiliLogin(bilibiliLoginKey);
+      if (result.state === "connected") {
+        const state = await lianxinApi.bilibiliInteractionState();
+        setBilibili(state);
+        setBilibiliLoginKey("");
+        setBilibiliLoginQr("");
+        setBilibiliNotice(`已连接互动账号：${result.account?.name || "B 站账号"}。凭据保存在本机安全存储中。`);
+      } else if (result.state === "waiting") {
+        setBilibiliNotice("二维码仍在等待扫码。");
+      } else if (result.state === "scanned") {
+        setBilibiliNotice("已扫码，请在手机上确认登录。");
+      } else {
+        setBilibiliNotice(result.error || "登录尚未完成，请重新扫码。");
+        if (result.state === "expired" || result.state === "no_session") {
+          setBilibiliLoginKey("");
+          setBilibiliLoginQr("");
+        }
+      }
+    } catch {
+      setBilibiliNotice("检查登录状态失败，请稍后重试。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const logoutBilibili = async () => {
+    setBilibiliSaving(true);
+    try {
+      const result = await lianxinApi.logoutBilibili();
+      if (result.ok && result.state) {
+        setBilibili(result.state);
+        setBilibiliNotice("已删除本机保存的 B 站互动授权。");
+      } else setBilibiliNotice(result.error || "解除授权失败。");
+    } catch {
+      setBilibiliNotice("解除授权失败，请确认莲心服务正在运行。");
+    } finally {
+      setBilibiliSaving(false);
+    }
+  };
+  const generateBilibiliDraft = async (text?: string) => {
+    if (!bilibiliDraft.testVideo.trim() || bilibiliDraftBusy || bilibiliSaving) return;
+    if (text !== undefined && !text.trim()) {
+      setBilibiliNotice("请先输入要保存的评论正文。");
+      return;
+    }
+    if (text === undefined && bilibiliDraftText.trim()
+      && !window.confirm("生成新草稿会替换正文框中的内容。要保留自己写的文字，请取消并点击“保存当前正文”。\n\n确定替换吗？")) return;
+    setBilibiliDraftBusy(true);
+    setBilibiliNotice("");
+    try {
+      const result = await lianxinApi.createBilibiliCommentDraft(bilibiliDraft.testVideo, text ?? "");
+      if (result.ok && result.draft) {
+        setBilibili(result.state);
+        setBilibiliDraftText(result.draft.text);
+        setBilibiliNotice(text === undefined
+          ? "草稿已生成；可以直接修改正文，修改后请点击“保存当前正文”。当前不会发送到 B 站。"
+          : "当前正文已保存；请核对保存后的全文和 @，再确认发送。没有自动改写或发送。");
+      } else {
+        setBilibiliNotice(result.error || result.blockers?.join(" ") || "草稿未生成。");
+      }
+    } catch {
+      setBilibiliNotice("草稿生成或正文保存失败，请确认莲心服务正在运行。");
+    } finally {
+      setBilibiliDraftBusy(false);
+    }
+  };
+  const clearBilibiliDraft = async () => {
+    if (bilibiliDraftBusy || bilibiliSaving) return;
+    setBilibiliDraftBusy(true);
+    try {
+      const result = await lianxinApi.clearBilibiliCommentDraft();
+      setBilibili(result.state);
+      setBilibiliDraftText("");
+      setBilibiliNotice("草稿已清除。");
+    } catch {
+      setBilibiliNotice("草稿清除失败，请稍后重试。");
+    } finally {
+      setBilibiliDraftBusy(false);
+    }
   };
   return (
     <Overlay onClose={onClose}>
@@ -1910,8 +2149,223 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           B站冲浪
         </button>
       </div>
+      <section className="bili-interaction-panel" aria-labelledby="bili-interaction-title">
+        <h3 id="bili-interaction-title">B 站冲浪与互动</h3>
+        <p className="muted-copy">
+          普通冲浪仍只搜索、去重并推荐视频。设置测试区不会自动发言；公开评论和回复当前均被后端封锁。
+        </p>
+        <div className="bili-interaction-grid">
+          <label>
+            互动模式
+            <select
+              value={bilibiliDraft.mode}
+              onChange={(event) =>
+                setBilibiliDraft((current) => ({
+                  ...current,
+                  mode: event.target.value as "read_only" | "test",
+                }))
+              }
+            >
+              <option value="read_only">只读冲浪</option>
+              <option value="test">指定测试区（手动一次）</option>
+              <option value="automatic" disabled>常规互动（验收后开放）</option>
+            </select>
+          </label>
+          <label>
+            用户的 B 站 UID
+            <input
+              inputMode="numeric"
+              autoComplete="off"
+              value={bilibiliDraft.userUid}
+              onChange={(event) =>
+                setBilibiliDraft((current) => ({ ...current, userUid: event.target.value }))
+              }
+              placeholder="填写主账号 UID"
+            />
+          </label>
+          <label className="bili-video-field">
+            测试视频
+            <input
+              autoComplete="off"
+              value={bilibiliDraft.testVideo}
+              onChange={(event) =>
+                setBilibiliDraft((current) => ({ ...current, testVideo: event.target.value }))
+              }
+              placeholder="BV 号或 bilibili.com/video 链接"
+            />
+          </label>
+        </div>
+        <div className="bili-interaction-row">
+          <div>
+            <strong>自动评论并 @ 主号</strong>
+            <span>开启后，莲心仅在冲浪时读过字幕和评论区、并生成具体评论后，才会发一条；接口受理不保证大号可见。默认关闭。</span>
+          </div>
+          <button
+            className={`toggle ${bilibiliDraft.autoCommentEnabled ? "is-on" : ""}`}
+            onClick={() => setBilibiliDraft((current) => ({ ...current, autoCommentEnabled: !current.autoCommentEnabled }))}
+            aria-label="自动评论并 @ 主号"
+            aria-pressed={bilibiliDraft.autoCommentEnabled}
+          ><span /></button>
+        </div>
+        <div className="bili-interaction-actions">
+          <button className="secondary-button" disabled={!bilibiliDraft.userUid.trim() || bilibiliSaving} onClick={() => void lookupBilibiliUid()}>
+            查询 UID 昵称
+          </button>
+          {uidLookup && uidLookup.uid === bilibiliDraft.userUid.trim() && (
+            <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void confirmBilibiliUid()}>
+              确认是 {uidLookup.name}
+            </button>
+          )}
+          <button className="secondary-button" disabled={!bilibiliDraft.testVideo.trim() || bilibiliSaving} onClick={() => void inspectBilibiliVideo()}>
+            查询测试视频
+          </button>
+        </div>
+        {(bilibili?.settings.userUidConfirmed || videoLookup) && (
+          <div className="bili-capability-status">
+            {bilibili?.settings.userUidConfirmed && (
+              <span>已记录用户资料：{bilibili.settings.userName}（UID {bilibili.settings.userUid}）。资料匹配不代表账号所有权已验证。</span>
+            )}
+            {videoLookup && (
+              <span>{videoLookup.title} · {videoLookup.author} · {videoLookup.bvid} · {videoLookup.commentOpen ? "评论开放" : "评论关闭"}</span>
+            )}
+          </div>
+        )}
+        <div className="bili-interaction-row">
+          <div>
+            <strong>互动账号</strong>
+            <span>
+              扫码只在本机完成，凭据写入 Windows 安全凭据存储，不会显示或写入普通配置文件。
+            </span>
+          </div>
+          <div className="bili-interaction-actions">
+            {bilibili?.account.connected ? (
+              <>
+                <span className="bili-status">已连接：{bilibili.account.name}</span>
+                <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void logoutBilibili()}>
+                  解除授权
+                </button>
+              </>
+            ) : (
+              <button className="secondary-button" disabled={bilibiliSaving || !bilibili?.account.credentialStoreAvailable} onClick={() => void startBilibiliLogin()}>
+                扫码授权互动账号
+              </button>
+            )}
+            {bilibiliLoginKey && (
+              <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void pollBilibiliLogin()}>
+                检查扫码状态
+              </button>
+            )}
+          </div>
+        </div>
+        {bilibiliLoginQr && (
+          <div className="bili-login-qr">
+            <img src={bilibiliLoginQr} alt="B 站扫码登录二维码" />
+            <span>二维码约 180 秒有效；扫码后请点击“检查扫码状态”。</span>
+          </div>
+        )}
+        <div className="bili-draft-panel">
+          <div>
+            <strong id="bili-comment-editor-title">评论正文（可直接手写 / 修改）</strong>
+            <span id="bili-comment-editor-help">不用先生成草稿：直接输入 → 保存当前正文 → 确认发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。测试阶段临时禁用本地持久防重与发送冷却；仅发送到指定测试视频，勿连续重发。</span>
+          </div>
+          <textarea
+            value={bilibiliDraftText}
+            onChange={(event) => setBilibiliDraftText(event.target.value)}
+            aria-labelledby="bili-comment-editor-title"
+            aria-describedby="bili-comment-editor-help bili-comment-editor-state"
+            placeholder="在这里输入你想让莲心发送的话，也可以修改已有草稿。保存后确认，不会自动发送。"
+            readOnly={bilibiliDraftBusy || bilibiliSaving}
+            maxLength={500}
+            rows={4}
+          />
+          <span id="bili-comment-editor-state" role="status">
+            {!bilibiliDraftText.trim() ? "尚未填写正文；AI 生成草稿是可选项。"
+              : bilibiliDraftText.trim() !== bilibili?.draft?.text ? "正文尚未保存：请先点击“保存当前正文”，否则不会发送新内容。"
+                : bilibili?.draft?.status === "pending_confirmation" ? "当前正文已保存（仅本次运行），确认发送时会再次展示全文。"
+                  : "此草稿已尝试发送，请先核对发送记录；如需另写内容，请修改后保存。"}
+          </span>
+          <div className="bili-interaction-actions">
+            <button className="secondary-button" disabled={!bilibiliDraft.testVideo.trim() || bilibiliDraftBusy || bilibiliSaving} onClick={() => void generateBilibiliDraft()}>
+              {bilibiliDraftBusy ? "处理中…" : "AI 生成草稿（可选）"}
+            </button>
+            <button className="secondary-button" disabled={!bilibiliDraft.testVideo.trim() || !bilibiliDraftText.trim() || bilibiliDraftBusy || bilibiliSaving} onClick={() => void generateBilibiliDraft(bilibiliDraftText)}>
+              保存当前正文
+            </button>
+            <button className="secondary-button" disabled={(!bilibili?.draft && !bilibiliDraftText) || bilibiliDraftBusy || bilibiliSaving} onClick={() => void clearBilibiliDraft()}>
+              清除草稿
+            </button>
+          </div>
+        </div>
+        <div className="bili-interaction-row">
+          <div>
+            <strong>回复其他网友</strong>
+            <span>仅限直接回复莲心自己的评论；回复通知读取能力尚未接入。</span>
+          </div>
+          <button
+            className={`toggle ${bilibiliDraft.allowOtherReplies ? "is-on" : ""}`}
+            onClick={() =>
+              setBilibiliDraft((current) => ({
+                ...current,
+                allowOtherReplies: !current.allowOtherReplies,
+              }))
+            }
+            aria-label="允许回复其他网友"
+            aria-pressed={bilibiliDraft.allowOtherReplies}
+          >
+            <span />
+          </button>
+        </div>
+        <div className="bili-interaction-row">
+          <div>
+            <strong>暂停互动</strong>
+            <span>暂停只影响未来的评论与回复，不关闭只读冲浪。</span>
+          </div>
+          <button
+            className={`toggle ${bilibiliDraft.paused ? "is-on" : ""}`}
+            onClick={() =>
+              setBilibiliDraft((current) => ({ ...current, paused: !current.paused }))
+            }
+            aria-label="暂停 B 站互动"
+            aria-pressed={bilibiliDraft.paused}
+          >
+            <span />
+          </button>
+        </div>
+        <div className="bili-capability-status" role="status">
+          <strong>公开写入：{bilibili?.writeCapability.ready ? "已就绪" : "已封锁"}</strong>
+          <span>
+            {bilibili?.writeCapability.blockers.join(" ") || "正在读取写入能力状态。"}
+          </span>
+          <span>UID 目前只保存为待核验设置，不代表已确认用户身份。</span>
+        </div>
+        <div className="bili-interaction-actions">
+          <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void saveBilibiliSettings()}>
+            {bilibiliSaving ? "保存中…" : "保存互动设置"}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={!bilibili?.writeCapability.ready || bilibiliSaving || bilibiliDraftBusy}
+            title={bilibili?.writeCapability.blockers.join(" ") || "写入能力尚未就绪"}
+            onClick={() => void requestBilibiliTest()}
+          >
+            确认发送测试评论
+          </button>
+          <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void recheckBilibiliComment()}>
+            只读复核最近评论（不重发）
+          </button>
+        </div>
+        <p className="muted-copy">小号回读匹配不代表大号可见或 @ 通知送达；未登录最新一页未查到也不代表未发送。复核已有记录即可，不必重新生成草稿或发送。</p>
+        {bilibili?.records?.slice(0, 5).map((record, index) => (
+          <div key={`${record.rpid}-${index}`} className="muted-copy">
+            <span>{record.bvid} · 评论ID {record.rpid || "未知"} · {record.status === "sent_verified" ? "小号回读匹配（非公开可见证明）" : record.status === "sent_unverified" ? "B站已受理，回读未确认" : record.status}</span>
+            <p>{record.diagnostic}</p>
+            {record.rpid && <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void recheckBilibiliComment(record.rpid)}>只读复核此评论</button>}
+          </div>
+        ))}
+        {bilibiliNotice && <p className="muted-copy bili-notice" aria-live="polite">{bilibiliNotice}</p>}
+      </section>
       <p className="muted-copy">
-        默认保持停用。启用后，莲心会依照现有调度器策略主动发起聊天。
+        默认保持停用。B 站冲浪调试触发只会运行既有只读搜索推荐，不会发表评论。
       </p>
     </Overlay>
   );

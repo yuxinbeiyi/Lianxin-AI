@@ -8,11 +8,15 @@ from PyQt5.QtWidgets import (
     QSlider, QCheckBox, QGroupBox, QScrollArea,
     QWidget, QSizePolicy, QFrame, QSpinBox,
     QTabWidget, QComboBox, QMessageBox,
-    QLineEdit, QListWidget, QListWidgetItem,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPixmap
+import base64
+import json
 import os
+import threading
+from urllib.request import Request, urlopen
 import webbrowser
 
 from utils.proactive_chat import ProactiveChatScheduler
@@ -99,11 +103,14 @@ class ProactiveDialog(QDialog):
 
     debug_trigger = pyqtSignal()
     debug_observe_signal = pyqtSignal(str)
+    _bilibili_request_done = pyqtSignal(str, object)
 
     def __init__(self, scheduler: ProactiveChatScheduler, parent=None):
         super().__init__(parent)
         self._scheduler = scheduler
         self._hour_rows: list[_HourRow] = []
+        self._bl_request_busy = False
+        self._bl_login_key = ""
 
         self.setWindowTitle("主动聊天设置")
         self.resize(700, 720)
@@ -113,6 +120,7 @@ class ProactiveDialog(QDialog):
         
 
         self._build_ui()
+        self._bilibili_request_done.connect(self._on_bilibili_request_done)
         self._load_from_scheduler()
 
         # 概率定时器（每分钟更新）
@@ -1077,6 +1085,157 @@ class ProactiveDialog(QDialog):
         tag_inner.addWidget(self._bl_tag_list)
         layout.addWidget(tag_group)
 
+        interaction_group = QGroupBox("B 站互动设置")
+        interaction_group.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        interaction_layout = QVBoxLayout(interaction_group)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("互动模式"))
+        self._bl_interaction_mode = QComboBox()
+        self._bl_interaction_mode.addItem("只读冲浪", "read_only")
+        self._bl_interaction_mode.addItem("指定测试区（手动一次）", "test")
+        mode_row.addWidget(self._bl_interaction_mode, 1)
+        interaction_layout.addLayout(mode_row)
+
+        uid_row = QHBoxLayout()
+        uid_row.addWidget(QLabel("用户的 B 站 UID"))
+        self._bl_interaction_user_uid = QLineEdit()
+        self._bl_interaction_user_uid.setPlaceholderText("填写主账号 UID，保存后仍需核验")
+        uid_row.addWidget(self._bl_interaction_user_uid, 1)
+        interaction_layout.addLayout(uid_row)
+
+        video_row = QHBoxLayout()
+        video_row.addWidget(QLabel("测试视频"))
+        self._bl_interaction_test_video = QLineEdit()
+        self._bl_interaction_test_video.setPlaceholderText("BV 号或 bilibili.com/video 链接")
+        video_row.addWidget(self._bl_interaction_test_video, 1)
+        interaction_layout.addLayout(video_row)
+
+        identity_row = QHBoxLayout()
+        self._bl_verify_uid_btn = QPushButton("查询 UID 昵称")
+        self._bl_verify_uid_btn.clicked.connect(self._on_bl_verify_uid)
+        identity_row.addWidget(self._bl_verify_uid_btn)
+        self._bl_confirm_uid_btn = QPushButton("确认该账号")
+        self._bl_confirm_uid_btn.setEnabled(False)
+        self._bl_confirm_uid_btn.clicked.connect(self._on_bl_confirm_uid)
+        identity_row.addWidget(self._bl_confirm_uid_btn)
+        self._bl_inspect_video_btn = QPushButton("查询测试视频")
+        self._bl_inspect_video_btn.clicked.connect(self._on_bl_inspect_test_video)
+        identity_row.addWidget(self._bl_inspect_video_btn)
+        identity_row.addStretch()
+        interaction_layout.addLayout(identity_row)
+        self._bl_verified_uid = None
+
+        self._bl_interaction_allow_other = QCheckBox("允许回复其他网友（仅限回复莲心自己的评论）")
+        self._bl_interaction_auto_comment = QCheckBox("自动冲浪评论并 @ 用户主号（每轮最多一条，默认关闭）")
+        self._bl_interaction_pause = QCheckBox("暂停 B 站互动，不影响只读冲浪")
+        interaction_layout.addWidget(self._bl_interaction_auto_comment)
+        interaction_layout.addWidget(self._bl_interaction_allow_other)
+        interaction_layout.addWidget(self._bl_interaction_pause)
+
+        self._bl_interaction_guide = QLabel(
+            "普通冲浪仍只搜索并推荐视频。请在本页下方扫码授权互动小号，"
+            "不要粘贴或发送 Cookie。保存草稿后可人工确认发送到指定测试视频；自动回复暂未开放；"
+            "配置测试视频不会自动发送评论。"
+        )
+        self._bl_interaction_guide.setFont(QFont("Microsoft YaHei UI", 8))
+        self._bl_interaction_guide.setWordWrap(True)
+        self._bl_interaction_guide.setStyleSheet("color: #AAB8BA;")
+        interaction_layout.addWidget(self._bl_interaction_guide)
+        layout.addWidget(interaction_group)
+
+        account_group = QGroupBox("互动账号授权（莲心使用的小号）")
+        account_layout = QVBoxLayout(account_group)
+        account_row = QHBoxLayout()
+        self._bl_account_status = QLabel("正在读取授权状态……")
+        self._bl_account_status.setWordWrap(True)
+        account_row.addWidget(self._bl_account_status, 1)
+        self._bl_login_btn = QPushButton("扫码授权互动账号")
+        self._bl_login_btn.clicked.connect(self._on_bl_login_start)
+        account_row.addWidget(self._bl_login_btn)
+        self._bl_logout_btn = QPushButton("解除授权")
+        self._bl_logout_btn.clicked.connect(self._on_bl_logout)
+        self._bl_logout_btn.setVisible(False)
+        account_row.addWidget(self._bl_logout_btn)
+        account_layout.addLayout(account_row)
+        self._bl_check_account_btn = QPushButton("检查授权有效性（联网）")
+        self._bl_check_account_btn.clicked.connect(lambda: self._run_bilibili_request(
+            "account_check", "/api/bilibili-interaction/account/check", {}))
+        account_layout.addWidget(self._bl_check_account_btn)
+        account_layout.addWidget(QLabel("扫码凭据保存在 Windows 安全存储中，重启无需重扫；“已保存”不代表实时登录有效。"))
+
+        self._bl_qr_image = QLabel()
+        self._bl_qr_image.setAlignment(Qt.AlignCenter)
+        self._bl_qr_image.setFixedSize(180, 180)
+        self._bl_qr_image.setStyleSheet("background: white; border-radius: 6px;")
+        self._bl_qr_image.setVisible(False)
+        account_layout.addWidget(self._bl_qr_image, 0, Qt.AlignLeft)
+        qr_actions = QHBoxLayout()
+        self._bl_login_poll_btn = QPushButton("检查扫码状态")
+        self._bl_login_poll_btn.clicked.connect(self._on_bl_login_poll)
+        self._bl_login_poll_btn.setVisible(False)
+        qr_actions.addWidget(self._bl_login_poll_btn)
+        qr_actions.addStretch()
+        account_layout.addLayout(qr_actions)
+        self._bl_interaction_status = QLabel("扫码授权只保存在本机 Windows 安全凭据存储中；不要粘贴 Cookie。")
+        self._bl_interaction_status.setWordWrap(True)
+        self._bl_interaction_status.setStyleSheet("color: #687080;")
+        account_layout.addWidget(self._bl_interaction_status)
+        layout.addWidget(account_group)
+
+        draft_group = QGroupBox("测试视频评论正文（可直接手写 / 修改）")
+        draft_layout = QVBoxLayout(draft_group)
+        self._bl_draft_hint = QLabel()
+        self._bl_draft_hint.setWordWrap(True)
+        draft_layout.addWidget(self._bl_draft_hint)
+        self._bl_current_draft = None
+        self._bl_comment_draft = QPlainTextEdit()
+        self._bl_comment_draft.setAccessibleName("B站评论正文，可直接手写或修改")
+        self._bl_comment_draft.setPlaceholderText("在这里输入你想让莲心发送的话，也可以修改已有草稿。保存后确认，不会自动发送。")
+        self._bl_comment_draft.setFixedHeight(110)
+        self._bl_comment_draft.textChanged.connect(self._update_bl_draft_hint)
+        self._update_bl_draft_hint()
+        draft_layout.addWidget(self._bl_comment_draft)
+        draft_actions = QHBoxLayout()
+        self._bl_generate_draft_btn = QPushButton("AI 生成草稿（可选）")
+        self._bl_generate_draft_btn.clicked.connect(self._on_bl_generate_draft)
+        draft_actions.addWidget(self._bl_generate_draft_btn)
+        self._bl_save_draft_btn = QPushButton("保存当前正文")
+        self._bl_save_draft_btn.clicked.connect(self._on_bl_save_draft)
+        draft_actions.addWidget(self._bl_save_draft_btn)
+        self._bl_clear_draft_btn = QPushButton("清除草稿")
+        self._bl_clear_draft_btn.clicked.connect(self._on_bl_clear_draft)
+        draft_actions.addWidget(self._bl_clear_draft_btn)
+        self._bl_send_draft_btn = QPushButton("确认并发送测试评论")
+        self._bl_send_draft_btn.clicked.connect(self._on_bl_send_draft)
+        draft_actions.addWidget(self._bl_send_draft_btn)
+        draft_actions.addStretch()
+        draft_layout.addLayout(draft_actions)
+        layout.addWidget(draft_group)
+        self._bl_send_records = QLabel("发送记录：暂无。")
+        self._bl_send_records.setWordWrap(True)
+        self._bl_send_records.setTextFormat(Qt.PlainText)
+        layout.addWidget(self._bl_send_records)
+        self._bl_diagnostics = QPlainTextEdit()
+        self._bl_diagnostics.setReadOnly(True)
+        self._bl_diagnostics.setPlaceholderText("发送诊断：尚未收到发送请求。可选中复制此区域，不包含 Cookie。")
+        self._bl_diagnostics.setFixedHeight(130)
+        layout.addWidget(self._bl_diagnostics)
+        self._bl_refresh_diagnostics_btn = QPushButton("刷新发送记录与诊断（不会发送评论）")
+        self._bl_refresh_diagnostics_btn.clicked.connect(lambda: self._run_bilibili_request(
+            "state", "/api/bilibili-interaction/state"))
+        layout.addWidget(self._bl_refresh_diagnostics_btn)
+        self._bl_recheck_btn = QPushButton("重新核验最近已发送评论（只读，不会重发）")
+        self._bl_recheck_btn.clicked.connect(lambda: self._run_bilibili_request(
+            "recheck", "/api/bilibili-interaction/comment/recheck", {}))
+        layout.addWidget(self._bl_recheck_btn)
+        verification_hint = QLabel("“回读确认”仅表示小号端正文和 UID 提及匹配，不代表大号可见或通知送达。未登录查询未查到也不等于未发送；请先复核，勿反复发送。复核使用当前互动账号最近一次有评论 ID 的记录，不受新测试视频设置影响。")
+        verification_hint.setWordWrap(True)
+        layout.addWidget(verification_hint)
+        draft_guide = QLabel("不用先生成草稿：直接输入 → 保存当前正文 → 确认并发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。测试阶段已临时禁用本地持久防重与发送冷却，相同正文也可再次保存后人工确认发送；结果不确定时请先在 B 站核对，勿连续重发。")
+        draft_guide.setWordWrap(True)
+        draft_layout.addWidget(draft_guide)
+
         # 浏览记录区域
         hist_group = QGroupBox("浏览记录")
         hist_group.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
@@ -1234,6 +1393,220 @@ class ProactiveDialog(QDialog):
                 self._bl_hist_list.addItem(sub)
 
     # ── B站事件处理 ─────────────────────────────────────────
+
+    def _run_bilibili_request(self, action: str, path: str, payload=None):
+        if self._bl_request_busy:
+            return
+        self._bl_request_busy = True
+        self._set_bilibili_buttons_enabled(False)
+
+        def request():
+            try:
+                data = None if payload is None else json.dumps(payload).encode("utf-8")
+                headers = {} if data is None else {"Content-Type": "application/json"}
+                req = Request(f"http://127.0.0.1:8766{path}", data=data, headers=headers)
+                with urlopen(req, timeout=90) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            self._bilibili_request_done.emit(action, result)
+
+        threading.Thread(target=request, name="bilibili-interaction-ui", daemon=True).start()
+
+    def _set_bilibili_buttons_enabled(self, enabled: bool):
+        self._bl_comment_draft.setReadOnly(not enabled)
+        for button in (
+            self._bl_login_btn, self._bl_logout_btn, self._bl_login_poll_btn,
+            self._bl_generate_draft_btn, self._bl_save_draft_btn, self._bl_clear_draft_btn,
+            self._bl_send_draft_btn,
+            self._bl_check_account_btn, self._bl_refresh_diagnostics_btn, self._bl_recheck_btn,
+        ):
+            button.setEnabled(enabled)
+
+    def _on_bl_login_start(self):
+        self._run_bilibili_request("login_start", "/api/bilibili-interaction/login/start", {})
+
+    def _on_bl_login_poll(self):
+        if self._bl_login_key:
+            self._run_bilibili_request(
+                "login_poll", "/api/bilibili-interaction/login/poll", {"key": self._bl_login_key}
+            )
+
+    def _on_bl_logout(self):
+        self._run_bilibili_request("logout", "/api/bilibili-interaction/logout", {})
+
+    def _update_bl_draft_hint(self):
+        text = self._bl_comment_draft.toPlainText().strip()
+        draft = self._bl_current_draft or {}
+        if not text:
+            hint = "可直接在下方手写评论，无需先生成草稿。填写后点击“保存当前正文”。"
+        elif text != draft.get("text"):
+            hint = "正文尚未保存：请先点击“保存当前正文”，否则不会发送新内容。"
+        elif draft.get("status") == "pending_confirmation":
+            hint = "当前正文已保存（仅本次运行）；确认发送时会再次展示全文。"
+        else:
+            hint = "此草稿已尝试发送，请先核对发送记录；如需另写内容，请修改后保存。"
+        self._bl_draft_hint.setText(hint)
+
+    def _on_bl_generate_draft(self):
+        if self._bl_request_busy:
+            return
+        target = self._bl_interaction_test_video.text().strip()
+        if not target:
+            self._bl_interaction_status.setText("请先填写测试视频并点击“保存”。")
+            return
+        if self._bl_comment_draft.toPlainText().strip() and QMessageBox.question(
+            self, "替换当前正文？",
+            "生成新草稿会替换正文框中的内容。要保留自己写的文字，请取消并点击“保存当前正文”。\n\n确定替换吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        self._run_bilibili_request("draft", "/api/bilibili-interaction/draft", {"target": target})
+
+    def _on_bl_save_draft(self):
+        target = self._bl_interaction_test_video.text().strip()
+        text = self._bl_comment_draft.toPlainText().strip()
+        if not target or not text:
+            self._bl_interaction_status.setText("测试视频和草稿内容都不能为空。")
+            return
+        self._run_bilibili_request(
+            "draft_save", "/api/bilibili-interaction/draft", {"target": target, "text": text}
+        )
+
+    def _on_bl_clear_draft(self):
+        self._run_bilibili_request("draft_clear", "/api/bilibili-interaction/draft/clear", {})
+
+    def _on_bl_send_draft(self):
+        draft = self._bl_current_draft or {}
+        if not draft or self._bl_comment_draft.toPlainText().strip() != draft.get("text"):
+            QMessageBox.warning(self, "请先保存正文", "请先在评论正文框中输入内容，再点击“保存当前正文”；不需要先生成草稿。")
+            return
+        description = (
+            f"{self._bl_account_status.text()}\n"
+            f"测试视频：{(draft.get('video') or {}).get('title', '')}（{draft.get('bvid')}）\n"
+            f"提及：{draft.get('mentionName')}（UID {draft.get('mentionUid')}）\n\n"
+            f"{draft.get('text')}\n\n这会公开发布到 B 站，确定发送吗？"
+        )
+        if QMessageBox.question(self, "确认公开发送", description,
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._run_bilibili_request("send", "/api/bilibili-interaction/test-comment", {
+            "target": self._bl_interaction_test_video.text().strip(),
+            "draftId": draft["id"], "confirmed": True,
+        })
+
+    def _on_bilibili_request_done(self, action: str, result):
+        self._bl_request_busy = False
+        self._set_bilibili_buttons_enabled(True)
+        snapshot = result if action == "state" else result.get("state", {}) if isinstance(result, dict) else {}
+        if isinstance(snapshot, dict) and "attempts" in snapshot:
+            self._bl_diagnostics.setPlainText("\n".join(
+                f"请求 {item['id']} | 时间 {item['createdAt']} | 阶段 {item.get('stage', 'submit/readback')} | "
+                f"状态 {item.get('status', '未提交')} | 评论ID {item.get('rpid') or '无'}\n{item.get('diagnostic', '')}"
+                for item in snapshot["attempts"][:5]) or "尚无发送请求诊断记录。")
+        if isinstance(snapshot, dict) and "records" in snapshot:
+            records = snapshot.get("records") or []
+            self._bl_send_records.setText("最近发送记录（已保存在本机）：\n" + "\n".join(
+                f"{record['bvid']} | { {'sent_verified': '小号回读匹配（非公开可见证明）', 'sent_unverified': 'B站已受理，回读未确认'}.get(record['status'], record['status'])} | 评论ID {record['rpid'] or '未知'} | {record.get('diagnostic', '')}"
+                for record in records[:5]) if records else "发送记录：暂无。")
+        if action == "state" and isinstance(result, dict) and "account" in result:
+            account = result.get("account") or {}
+            self._bl_account_status.setText(
+                f"已保存授权（未实时校验）：{account.get('name', 'B站账号')}（UID {account.get('uid', '')}）"
+                if account.get("connected") else "尚未授权互动账号。请使用莲心准备使用的 B 站小号扫码。"
+            )
+            self._bl_login_btn.setVisible(not account.get("connected", False))
+            self._bl_logout_btn.setVisible(bool(account.get("connected")))
+            if "draft" in result:
+                saved_text = (self._bl_current_draft or {}).get("text", "")
+                local_text = self._bl_comment_draft.toPlainText().strip()
+                self._bl_current_draft = result["draft"]
+                if local_text == saved_text:
+                    self._bl_comment_draft.setPlainText((self._bl_current_draft or {}).get("text", ""))
+                self._update_bl_draft_hint()
+            return
+        if action == "account_check" and isinstance(result, dict):
+            self._bl_interaction_status.setText(result.get("message") or result.get("error") or "检查未完成。")
+            self._bl_diagnostics.setPlainText(
+                f"授权检查：{result.get('authorization', 'unknown')}\n{result.get('diagnostic', '')}\n"
+                "本次只检查登录，没有发送评论。")
+            return
+        if action == "recheck" and isinstance(result, dict):
+            self._bl_interaction_status.setText(result.get("message") or result.get("error") or "复核未完成。")
+            self._bl_diagnostics.appendPlainText(
+                f"只读复核 评论ID {result.get('rpid', '未知')}：{result.get('diagnostic', '')}\n没有发送或重发评论。")
+            return
+        if not isinstance(result, dict) or not result.get("ok"):
+            self._bl_interaction_status.setText(
+                str(result.get("error") or result.get("message") or "后端未返回明确结果；请刷新诊断，勿重复发送。") if isinstance(result, dict) else "后端响应格式异常。"
+            )
+            if action == "send" and isinstance(result, dict):
+                self._bl_diagnostics.appendPlainText(
+                    f"当前请求 {result.get('attemptId', '未知')}：{result.get('diagnostic', '后端未提供诊断；可能仍在运行旧版服务。')}")
+            if action == "send" and isinstance(result, dict):
+                self._bl_current_draft = (result.get("state") or {}).get("draft", self._bl_current_draft)
+                self._update_bl_draft_hint()
+            return
+        if action == "login_start":
+            self._bl_login_key = str(result.get("key", ""))
+            encoded = str(result.get("qrDataUrl", ""))
+            if not self._bl_login_key or not encoded.startswith("data:image/png;base64,"):
+                self._bl_interaction_status.setText("未能生成登录二维码，请检查后端和本机凭据存储。")
+                return
+            image_bytes = base64.b64decode(encoded.split(",", 1)[1])
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(image_bytes):
+                self._bl_interaction_status.setText("登录二维码无法显示，请重新生成。")
+                return
+            self._bl_qr_image.setPixmap(pixmap.scaled(170, 170, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self._bl_qr_image.setVisible(True)
+            self._bl_login_poll_btn.setVisible(True)
+            self._bl_interaction_status.setText("请用 B 站 App 扫码，约 180 秒有效；扫码后点击“检查扫码状态”。")
+            return
+        if action == "login_poll":
+            state = result.get("state")
+            if state == "connected":
+                account = result.get("account") or {}
+                self._bl_account_status.setText(f"已连接：{account.get('name', 'B站账号')}（UID {account.get('uid', '')}）")
+                self._bl_login_btn.setVisible(False)
+                self._bl_logout_btn.setVisible(True)
+                self._bl_qr_image.setVisible(False)
+                self._bl_login_poll_btn.setVisible(False)
+                self._bl_login_key = ""
+                self._bl_interaction_status.setText("互动小号授权成功，凭据已保存在本机安全存储中。")
+            else:
+                messages = {"waiting": "二维码仍在等待扫码。", "scanned": "已扫码，请在手机上确认登录。", "expired": "二维码已过期，请重新生成。"}
+                self._bl_interaction_status.setText(messages.get(state, result.get("error", "登录尚未完成。")))
+                if state == "expired":
+                    self._bl_login_key = ""
+                    self._bl_qr_image.setVisible(False)
+                    self._bl_login_poll_btn.setVisible(False)
+            return
+        if action == "logout":
+            self._bl_account_status.setText("尚未授权互动账号。请使用莲心准备使用的 B 站小号扫码。")
+            self._bl_login_btn.setVisible(True)
+            self._bl_logout_btn.setVisible(False)
+            self._bl_interaction_status.setText("互动账号授权已从本机安全凭据存储中删除。")
+            return
+        if action in ("draft", "draft_save"):
+            draft = result.get("draft") or {}
+            self._bl_current_draft = draft
+            self._bl_comment_draft.setPlainText(draft.get("text", ""))
+            self._update_bl_draft_hint()
+            self._bl_interaction_status.setText(
+                "草稿已生成；可以直接修改正文，修改后请点击“保存当前正文”。当前不会发送到 B 站。"
+                if action == "draft" else "当前正文已保存；请核对保存后的全文和 @，再确认发送。没有自动改写或发送。"
+            )
+            return
+        if action == "draft_clear":
+            self._bl_current_draft = None
+            self._bl_comment_draft.clear()
+            self._update_bl_draft_hint()
+            self._bl_interaction_status.setText("草稿已清除。")
+        if action == "send":
+            self._bl_current_draft = (result.get("state") or {}).get("draft")
+            self._update_bl_draft_hint()
+            self._bl_interaction_status.setText(result.get("message", "请在 B 站核对发送结果。"))
 
     def _on_bl_add_tag(self):
         kw = self._bl_tag_input.text().strip()
@@ -1441,6 +1814,23 @@ class ProactiveDialog(QDialog):
 
         # 加载 B站设置
         self._bl_enable_cb.setChecked(self._scheduler.bilibili_enabled)
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        interaction = get_bilibili_interaction_service().get_state()["settings"]
+        mode_index = self._bl_interaction_mode.findData(interaction["mode"])
+        if mode_index >= 0:
+            self._bl_interaction_mode.setCurrentIndex(mode_index)
+        self._bl_interaction_user_uid.setText(interaction["userUid"])
+        self._bl_interaction_test_video.setText(interaction["testVideo"])
+        self._bl_interaction_allow_other.setChecked(interaction["allowOtherReplies"])
+        self._bl_interaction_auto_comment.setChecked(interaction["autoCommentEnabled"])
+        self._bl_interaction_pause.setChecked(interaction["paused"])
+        self._bl_confirm_uid_btn.setEnabled(False)
+        QTimer.singleShot(0, lambda: self._run_bilibili_request("state", "/api/bilibili-interaction/state"))
+        if interaction["userUidConfirmed"]:
+            self._bl_interaction_guide.setText(
+                f"已记录公开资料：{interaction['userName']}（UID {interaction['userUid']}）。"
+                "请在本页完成互动账号扫码；保存草稿后可人工确认发送，不会自动公开发言。"
+            )
         from utils.bilibili_history import get_bilibili_history
         self._refresh_bl_tags()
         self._refresh_bl_history()
@@ -1463,6 +1853,57 @@ class ProactiveDialog(QDialog):
         self._slack_cbs["slack_remind_water"].setChecked(self._scheduler.slack_remind_water)
         self._slack_cbs["slack_anniversary_remind"].setChecked(self._scheduler.slack_anniversary_remind)
         self._slack_cbs["slack_next_song"].setChecked(self._scheduler.slack_next_song)
+
+    def _on_bl_verify_uid(self):
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        result = get_bilibili_interaction_service().verify_user_uid(self._bl_interaction_user_uid.text())
+        if not result.get("ok"):
+            QMessageBox.warning(self, "UID 查询失败", result.get("error", "无法读取该用户资料。"))
+            return
+        self._bl_verified_uid = result
+        self._bl_interaction_user_uid.setText(result["uid"])
+        self._bl_confirm_uid_btn.setEnabled(True)
+        QMessageBox.information(
+            self, "请核对 B 站账号",
+            f"UID：{result['uid']}\n昵称：{result['name']}\n\n"
+            "资料匹配不等于账号所有权认证。确认前请核对昵称是否属于你的主账号。"
+        )
+
+    def _on_bl_confirm_uid(self):
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        verified = self._bl_verified_uid
+        if not verified or verified["uid"] != self._bl_interaction_user_uid.text().strip():
+            QMessageBox.warning(self, "需要重新查询", "UID 已变化，请先重新查询公开昵称。")
+            return
+        service = get_bilibili_interaction_service()
+        saved = service.save_settings({"userUid": verified["uid"]})
+        if not saved.get("ok"):
+            QMessageBox.warning(self, "UID 保存失败", saved.get("error", "设置无效。"))
+            return
+        result = service.confirm_user_uid(verified["uid"])
+        if not result.get("ok"):
+            QMessageBox.warning(self, "UID 确认失败", result.get("error", "无法保存确认状态。"))
+            return
+        self._bl_interaction_guide.setText(
+            f"已确认公开资料：{verified['name']}（UID {verified['uid']}）。"
+            "这不代表账号所有权认证；由于评论接口未支持验证真实 UID 提及，公开写入仍关闭。"
+        )
+
+    def _on_bl_inspect_test_video(self):
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        result = get_bilibili_interaction_service().inspect_test_video(
+            self._bl_interaction_test_video.text()
+        )
+        if not result.get("ok"):
+            QMessageBox.warning(self, "测试视频查询失败", result.get("error", "无法读取公开视频信息。"))
+            return
+        video = result["video"]
+        QMessageBox.information(
+            self, "测试视频",
+            f"{video['title']}\nUP主：{video['author']}\nBV：{video['bvid']}\n"
+            f"评论：{'开放' if video['commentOpen'] else '关闭'}\n\n"
+            "这里只读取公开视频信息，不会发送评论。"
+        )
 
     def _on_save(self):
         if sum(slider.value() for slider in self._behavior_weight_sliders.values()) == 0:
@@ -1497,6 +1938,18 @@ class ProactiveDialog(QDialog):
             self._scheduler.camera_index = idx
 
         self._scheduler.bilibili_enabled = self._bl_enable_cb.isChecked()
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        interaction_result = get_bilibili_interaction_service().save_settings({
+            "mode": self._bl_interaction_mode.currentData(),
+            "userUid": self._bl_interaction_user_uid.text(),
+            "testVideo": self._bl_interaction_test_video.text(),
+            "allowOtherReplies": self._bl_interaction_allow_other.isChecked(),
+            "autoCommentEnabled": self._bl_interaction_auto_comment.isChecked(),
+            "paused": self._bl_interaction_pause.isChecked(),
+        })
+        if not interaction_result.get("ok"):
+            QMessageBox.warning(self, "B 站设置未保存", interaction_result.get("error", "设置无效。"))
+            return
 
         self._scheduler.slack_enabled = self._slack_enable_cb.isChecked()
         self._scheduler.slack_idle_minutes = self._slack_idle_spin.value()

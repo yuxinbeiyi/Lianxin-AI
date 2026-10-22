@@ -831,6 +831,17 @@ class ProactiveWorker(QThread):
                     bmgr.add_tag(kw, base_score=50)
 
             from brain.tools import bilibili_search
+            from utils.bilibili_interaction import get_bilibili_interaction_service
+            interaction_service = get_bilibili_interaction_service()
+            interaction_credential = interaction_service._read_credential()
+            scroll_client = None
+            if interaction_credential:
+                try:
+                    from utils.bilibili_scroll import BilibiliScrollClient
+                    scroll_client = BilibiliScrollClient(interaction_credential)
+                    print("[B站冲浪] 使用 DSH 兼容 bilibili_api 浏览链路")
+                except Exception as error:
+                    print(f"[B站冲浪] bilibili_api 浏览链路不可用，将使用公开搜索回退: {error}")
             best_videos = []
             fallback_videos = []
             used_keyword = ""
@@ -838,7 +849,7 @@ class ProactiveWorker(QThread):
                 f"将用 {len(keywords)} 个关键词搜索B站: {', '.join(keywords)}", False, 0)
             for kw in keywords:
                 print(f"[B站冲浪] 搜索关键词: {kw}")
-                results = bilibili_search(kw, max_results=10)
+                results = scroll_client.search(kw, limit=10) if scroll_client else bilibili_search(kw, max_results=10)
                 print(f"[B站冲浪] 搜索结果: {len(results)} 条")
                 self.data_source_called.emit("bilibili_search", f"搜索「{kw}」获得 {len(results)} 条结果", False, 0)
                 if results and not fallback_videos:
@@ -846,14 +857,29 @@ class ProactiveWorker(QThread):
                 fresh_results = bmgr.filter_seen(results)
                 print(f"[B站冲浪] 去重后: {len(fresh_results)} 条")
                 if fresh_results:
-                    best_videos = fresh_results[:1]
-                    used_keyword = kw
-                    self.data_source_called.emit("bilibili_select", f"精选 {len(best_videos)} 个视频 (关键词: {kw})", False, 0)
+                    if scroll_client:
+                        enriched = []
+                        for candidate in fresh_results[:5]:
+                            try:
+                                material = scroll_client.enrich(candidate["bvid"])
+                            except Exception as error:
+                                print(f"[B站冲浪] 跳过无法读取的候选 {candidate.get('bvid')}: {type(error).__name__}")
+                                continue
+                            if material.get("subtitle") and not material.get("subtitle_error"):
+                                enriched.append(material)
+                        selected = self._select_bilibili_video(enriched)
+                        best_videos = [selected] if selected else []
+                    else:
+                        best_videos = fresh_results[:1]
+                    if best_videos:
+                        used_keyword = kw
+                        self.data_source_called.emit("bilibili_select", f"精选 1 个视频 (关键词: {kw})", False, 0)
                     bmgr.mark_tag_searched(kw)
-                    break
+                    if best_videos:
+                        break
 
             # 即使本轮结果都看过，也要把实际逛到的视频标题和链接发给用户。
-            if not best_videos and fallback_videos:
+            if not best_videos and fallback_videos and not scroll_client:
                 best_videos = fallback_videos
                 used_keyword = used_keyword or (keywords[0] if keywords else "B站")
                 print(f"[B站冲浪] 未找到未看视频，使用本轮搜索结果: {len(best_videos)} 条")
@@ -870,6 +896,24 @@ class ProactiveWorker(QThread):
 
             message = self._generate_bilibili_message(used_keyword, best_videos, record_id)
             message = self._ensure_bilibili_details(message, best_videos)
+            interaction_settings = interaction_service._settings()
+            if interaction_settings["auto_comment_enabled"] and best_videos:
+                video = best_videos[0]
+                comment_text = self._generate_bilibili_public_comment(video, interaction_settings["user_name"])
+                if comment_text:
+                    from utils.bilibili_comment_sender import send_auto_comment
+                    send_result = send_auto_comment(interaction_service, video["bvid"], comment_text)
+                    if send_result.get("sent"):
+                        message += (
+                            f"\n\n我也在这条视频下留了一条 @ 你的评论：\n{comment_text}\n"
+                            f"评论 ID：{send_result.get('rpid') or '未知'}；发送状态：{send_result.get('status')}。"
+                            "接口受理和小号回读不代表大号可见，记得用大号核对。"
+                        )
+                    else:
+                        message += f"\n\n这次没有发出 @ 评论：{send_result.get('status', 'unknown')}。"
+                    print(f"[B站冲浪] 自动评论结果 status={send_result.get('status')} rpid={send_result.get('rpid', '')}")
+                else:
+                    message += "\n\n我读过这条视频，但没有生成足够具体、可核实的评论，因此没有 @ 发送。"
             print(f"[B站冲浪] 消息已生成，发送 response_ready")
             self.response_ready.emit(message)
         except Exception as e:
@@ -913,6 +957,80 @@ class ProactiveWorker(QThread):
         except Exception as e:
             print(f"[B站冲浪] 提取关键词失败: {e}")
             return []
+
+    def _generate_bilibili_public_comment(self, video: dict, mention_name: str) -> str:
+        subtitle = str(video.get("subtitle", "") or "").strip()
+        if not subtitle or video.get("subtitle_error"):
+            return ""
+        comments = video.get("comments") or []
+        comment_context = "\n".join(
+            f"- {str(item.get('user', ''))[:40]}: {str(item.get('content', ''))[:220]}"
+            for item in comments[:12]
+        ) or "（没有读到评论）"
+        try:
+            client, model = self._get_client()
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=180,
+                messages=[
+                    {"role": "system", "content": (
+                        "你代表莲心，用中文写一条短视频评论。只依据提供的字幕和评论区事实，"
+                        "挑一个值得占用用户注意力的具体观察；不复读已有评论，不编造，不透露账号由 AI 操作。"
+                        "评论必须以纯文本 @昵称 开头，最多 150 个汉字，不要引号、解释或换行。"
+                        "若视频没有足够具体且有价值的观点，只输出 SKIP。"
+                    )},
+                    {"role": "user", "content": (
+                        f"提及用户：@{mention_name}\n标题：{video.get('title', '')}\n"
+                        f"UP主：{video.get('author', '')}\n字幕：\n{subtitle[:9000]}\n"
+                        f"评论区样本：\n{comment_context}"
+                    )},
+                ],
+            )
+            text = self._response_text(response.choices[0].message)
+            if not text or text.strip().upper() == "SKIP":
+                return ""
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 150 or f"@{mention_name}" not in text:
+                return ""
+            if any(token in text.lower() for token in ("cookie", "sessdata", "uid=")):
+                return ""
+            return text
+        except Exception as error:
+            print(f"[B站冲浪] 自动评论内容生成失败: {type(error).__name__}")
+            return ""
+
+    def _select_bilibili_video(self, candidates: list[dict]) -> dict | None:
+        if not candidates:
+            return None
+        descriptions = []
+        for index, video in enumerate(candidates, 1):
+            comments = " | ".join(str(item.get("content", ""))[:140] for item in video.get("comments", [])[:5])
+            descriptions.append(
+                f"[{index}] {video.get('title', '')} / UP: {video.get('author', '')}\n"
+                f"字幕节选：{str(video.get('subtitle', ''))[:1200]}\n评论区：{comments}"
+            )
+        try:
+            client, model = self._get_client()
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=24,
+                messages=[
+                    {"role": "system", "content": (
+                        "你在替用户挑选值得占用其一次注意力的视频。只按字幕和评论区证据选一个最有具体信息量、"
+                        "且能写出不复读评论的有用观察的视频；宁缺毋滥。仅输出候选编号，若都不值得则输出 SKIP。"
+                    )},
+                    {"role": "user", "content": "候选：\n\n" + "\n\n".join(descriptions)},
+                ],
+            )
+            choice = self._response_text(response.choices[0].message).strip()
+            if choice.upper() == "SKIP":
+                return None
+            match = re.search(r"\b([1-9]\d*)\b", choice)
+            index = int(match.group(1)) if match else 0
+            return candidates[index - 1] if 1 <= index <= len(candidates) else None
+        except Exception as error:
+            print(f"[B站冲浪] 候选比较失败，不自动评论: {type(error).__name__}")
+            return None
 
     def _generate_bilibili_message_legacy(self, keyword: str, videos: list[dict], record_id: str) -> str:
         video_list = "\n".join(

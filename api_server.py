@@ -2809,6 +2809,94 @@ class LianxinBridge:
             return {"ready": False, "running": False}
         return runtime.status()
 
+    def bilibili_interaction_state(self) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().get_state()
+
+    def save_bilibili_interaction_settings(self, payload: dict) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().save_settings(payload)
+
+    def verify_bilibili_user_uid(self, uid: str) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().verify_user_uid(uid)
+
+    def confirm_bilibili_user_uid(self, uid: str) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().confirm_user_uid(uid)
+
+    def inspect_bilibili_test_video(self, target: str) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().inspect_test_video(target)
+
+    def request_bilibili_test_comment(self, target: str = "", draft_id: str = "", confirmed=False) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().request_test_comment(target, draft_id, confirmed)
+
+    def bilibili_login_start(self) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().start_login()
+
+    def bilibili_login_poll(self, key: str) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().poll_login(key)
+
+    def bilibili_logout(self) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().logout()
+
+    def create_bilibili_comment_draft(self, target: str, text: str = "") -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+
+        service = get_bilibili_interaction_service()
+        candidate = str(text or "").strip()
+        if not candidate:
+            inspected = service.inspect_test_video(target)
+            if not inspected.get("ok"):
+                return inspected
+            video = inspected["video"]
+            state = service.get_state()
+            mention_name = state["settings"].get("userName", "")
+            if not mention_name:
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "error": "请先确认用户 UID 对应的公开昵称，再生成草稿。",
+                    "state": state,
+                }
+            candidate = f"这个视频看起来挺有意思的，@{mention_name} 你也可以看看～"
+            try:
+                agent = self.agent()
+                generated = agent._stream_summary_text(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "请为莲心生成一条待人工确认的 B 站评论草稿。只输出评论正文，"
+                                "不加引号、不解释过程、不使用 Markdown；内容简短自然，不能假装已经看完视频。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"视频标题：{video.get('title', '')}\n"
+                                f"UP 主：{video.get('author', '')}\n"
+                                f"必须在正文中自然包含：@{mention_name}"
+                            ),
+                        },
+                    ],
+                    max_tokens=120,
+                )
+                if generated and len(generated.strip()) <= 500:
+                    candidate = generated.strip()
+            except Exception as exc:
+                bridge_log.log("B站互动", f"评论草稿生成失败，使用安全兜底: {exc}")
+        return service.create_comment_draft(target, candidate)
+
+    def clear_bilibili_comment_draft(self) -> dict:
+        from utils.bilibili_interaction import get_bilibili_interaction_service
+        return get_bilibili_interaction_service().clear_comment_draft()
+
     def append_agent_context(self, content: str):
         agent = self.agent()
         if agent is not None:
@@ -4097,6 +4185,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.proactive())
             if path == "/api/proactive/status":
                 return self._send(bridge.proactive_status())
+            if path == "/api/bilibili-interaction/state":
+                return self._send(bridge.bilibili_interaction_state())
             if path == "/api/management/state":
                 return self._send(bridge.management())
             if path == "/api/persona/state":
@@ -4277,6 +4367,34 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_seal(str(body.get("day", "")), str(body.get("content", ""))))
             if path == "/api/proactive/toggle":
                 return self._send(bridge.set_proactive(bool(body.get("enabled"))))
+            if path == "/api/bilibili-interaction/settings":
+                return self._send(bridge.save_bilibili_interaction_settings(body))
+            if path == "/api/bilibili-interaction/verify-user":
+                return self._send(bridge.verify_bilibili_user_uid(str(body.get("uid", ""))))
+            if path == "/api/bilibili-interaction/confirm-user":
+                return self._send(bridge.confirm_bilibili_user_uid(str(body.get("uid", ""))))
+            if path == "/api/bilibili-interaction/inspect-video":
+                return self._send(bridge.inspect_bilibili_test_video(str(body.get("target", ""))))
+            if path == "/api/bilibili-interaction/test-comment":
+                return self._send(bridge.request_bilibili_test_comment(
+                    str(body.get("target", "")), str(body.get("draftId", "")), body.get("confirmed") is True))
+            if path == "/api/bilibili-interaction/comment/recheck":
+                from utils.bilibili_interaction import get_bilibili_interaction_service
+                return self._send(get_bilibili_interaction_service().recheck_comment(str(body.get("rpid", ""))))
+            if path == "/api/bilibili-interaction/account/check":
+                from utils.bilibili_interaction import get_bilibili_interaction_service
+                return self._send(get_bilibili_interaction_service().check_authorization())
+            if path == "/api/bilibili-interaction/login/start":
+                return self._send(bridge.bilibili_login_start())
+            if path == "/api/bilibili-interaction/login/poll":
+                return self._send(bridge.bilibili_login_poll(str(body.get("key", ""))))
+            if path == "/api/bilibili-interaction/logout":
+                return self._send(bridge.bilibili_logout())
+            if path == "/api/bilibili-interaction/draft":
+                return self._send(bridge.create_bilibili_comment_draft(
+                    str(body.get("target", "")), str(body.get("text", ""))))
+            if path == "/api/bilibili-interaction/draft/clear":
+                return self._send(bridge.clear_bilibili_comment_draft())
             if path == "/api/persona/save":
                 return self._send(bridge.persona_save(body))
             if path == "/api/persona/create":
