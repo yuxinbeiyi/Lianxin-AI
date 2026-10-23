@@ -1128,15 +1128,16 @@ class ProactiveDialog(QDialog):
 
         self._bl_interaction_allow_other = QCheckBox("回复其他网友（尚未就绪）")
         self._bl_interaction_allow_other.setEnabled(False)
+        self._bl_interaction_auto_reply = QCheckBox("自动回复我的 B 站留言（仅已核验主号，约每2分钟轮询）")
         self._bl_interaction_auto_comment = QCheckBox("自动冲浪评论并 @ 用户主号（每轮最多一条，默认关闭）")
         self._bl_interaction_pause = QCheckBox("暂停 B 站互动，不影响只读冲浪")
         interaction_layout.addWidget(self._bl_interaction_auto_comment)
-        interaction_layout.addWidget(self._bl_interaction_allow_other)
+        interaction_layout.addWidget(self._bl_interaction_auto_reply)
         interaction_layout.addWidget(self._bl_interaction_pause)
 
         self._bl_interaction_guide = QLabel(
             "每轮按一个兴趣标签搜索最多 3 个视频，按播放量选 1 个后读取资料；自动评论开关控制公开发言。请扫码授权互动小号，"
-            "不要粘贴或发送 Cookie。保存草稿后可人工确认发送到指定测试视频；自动回复暂未开放；"
+            "不要粘贴或发送 Cookie。评论续聊独立开启，只接续开启后的主号新留言，不回复其他网友；"
             "测试视频仅供人工确认发送，不参与自动冲浪。"
         )
         self._bl_interaction_guide.setFont(QFont("Microsoft YaHei UI", 8))
@@ -1783,6 +1784,7 @@ class ProactiveDialog(QDialog):
         self._bl_interaction_test_video.setText(interaction["testVideo"])
         self._bl_interaction_allow_other.setChecked(interaction["allowOtherReplies"])
         self._bl_interaction_auto_comment.setChecked(interaction["autoCommentEnabled"])
+        self._bl_interaction_auto_reply.setChecked(interaction["autoReplyEnabled"])
         self._bl_interaction_pause.setChecked(interaction["paused"])
         self._bl_confirm_uid_btn.setEnabled(False)
         QTimer.singleShot(0, lambda: self._run_bilibili_request("state", "/api/bilibili-interaction/state"))
@@ -1905,6 +1907,7 @@ class ProactiveDialog(QDialog):
             "testVideo": self._bl_interaction_test_video.text(),
             "allowOtherReplies": self._bl_interaction_allow_other.isChecked(),
             "autoCommentEnabled": self._bl_interaction_auto_comment.isChecked(),
+            "autoReplyEnabled": self._bl_interaction_auto_reply.isChecked(),
             "paused": self._bl_interaction_pause.isChecked(),
         })
         if not interaction_result.get("ok"):

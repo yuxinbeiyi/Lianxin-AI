@@ -3643,7 +3643,7 @@ class LianxinProactiveRuntime:
     def _run(self):
         from PyQt5.QtCore import QEventLoop
         from utils.proactive_chat import ProactiveChatScheduler  # noqa: F401
-        from utils.duty_scheduler import DutyScheduler, ProactiveDuty, register_duty
+        from utils.duty_scheduler import DutyScheduler, ProactiveDuty, BilibiliReplyDuty, register_duty
         from gui.proactive_controller import ProactivePresentationController
         from utils.settings import get_settings
 
@@ -3667,6 +3667,7 @@ class LianxinProactiveRuntime:
             proactive_dialog=None,
         )
         register_duty(duty, ProactiveDuty())
+        register_duty(duty, BilibiliReplyDuty())
 
         controller = ProactivePresentationController(
             scheduler=scheduler,

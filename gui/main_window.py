@@ -369,7 +369,7 @@ class MainWindow(QMainWindow):
         # ── 统一后台职责调度器（替代 3 个独立 QTimer）─────────
         from utils.duty_scheduler import (
             DutyScheduler, ProactiveDuty, HeartbeatDuty, SmartReminderDuty,
-            TreeHoleReplyDuty,
+            TreeHoleReplyDuty, BilibiliReplyDuty,
             MemoryExtractionDuty, EmbeddingIndexDuty, MemoryMaintenanceDuty, MemoryCueEvaluationDuty,
             MemoryNarrativeDuty, WorkingMemorySummaryDuty, register_duty,
         )
@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
             proactive_dialog=None,  # set later when proactive_dialog is created
         )
         register_duty(self._duty_scheduler, ProactiveDuty())
+        register_duty(self._duty_scheduler, BilibiliReplyDuty())
         register_duty(self._duty_scheduler, HeartbeatDuty())
         register_duty(self._duty_scheduler, SmartReminderDuty())
         register_duty(self._duty_scheduler, TreeHoleReplyDuty())

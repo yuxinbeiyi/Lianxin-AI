@@ -1822,6 +1822,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
     testVideo: "",
     allowOtherReplies: false,
     autoCommentEnabled: false,
+    autoReplyEnabled: false,
     paused: false,
   });
   const [bilibiliSaving, setBilibiliSaving] = useState(false);
@@ -1866,6 +1867,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           testVideo: state.settings.testVideo,
           allowOtherReplies: state.settings.allowOtherReplies,
           autoCommentEnabled: state.settings.autoCommentEnabled,
+          autoReplyEnabled: state.settings.autoReplyEnabled ?? false,
           paused: state.settings.paused,
         });
         setBilibiliDraftText(state.draft?.text || "");
@@ -1928,10 +1930,11 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
         return;
       }
       setBilibili(result.state);
+      setBilibiliDraft((current) => ({ ...current, autoReplyEnabled: result.state!.settings.autoReplyEnabled }));
       setBilibiliNotice(result.state.settings.userUidConfirmed
         ? result.state.settings.autoCommentEnabled
-          ? "设置已保存。自动评论已开启，仍须通过账号、证据和发送校验；回复功能未开放。"
-          : "设置已保存。自动评论已关闭；仍可只读冲浪。"
+          ? "设置已保存。自动评论已开启；评论续聊由独立开关控制，暂停互动会同时停止两者。"
+          : "设置已保存。自动评论已关闭；只读冲浪和已开启的评论续聊不受影响。"
         : "设置已保存。UID 尚未核验，互动仍保持关闭。");
     } catch {
       setBilibiliNotice("设置保存失败，请确认莲心服务正在运行。");
@@ -2408,20 +2411,19 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
         </details>
         <div className="bili-interaction-row">
           <div>
-            <strong>回复其他网友（尚未就绪）</strong>
-            <span>仅限直接回复莲心自己的评论；回复通知读取能力尚未接入。</span>
+            <strong>自动回复我的 B 站留言</strong>
+            <span>仅回复已核验主号在莲心评论串里的新留言；约每 2 分钟轮询，支持继续聊，不回复其他网友。</span>
           </div>
           <button
-            className={`toggle ${bilibiliDraft.allowOtherReplies ? "is-on" : ""}`}
+            className={`toggle ${bilibiliDraft.autoReplyEnabled ? "is-on" : ""}`}
             onClick={() =>
               setBilibiliDraft((current) => ({
                 ...current,
-                allowOtherReplies: !current.allowOtherReplies,
+                autoReplyEnabled: !current.autoReplyEnabled,
               }))
             }
-            disabled
-            aria-label="允许回复其他网友"
-            aria-pressed={bilibiliDraft.allowOtherReplies}
+            aria-label="自动回复我的 B 站留言"
+            aria-pressed={bilibiliDraft.autoReplyEnabled}
           >
             <span />
           </button>

@@ -114,3 +114,29 @@ def get_video_subtitle(credential, bvid, cid=None):
         raise BilibiliApiUnavailable("bilibili-api-python is not installed") from error
     instance = video.Video(bvid=str(bvid), credential=_credential_from_dict(credential))
     return _run_coroutine(instance.get_subtitle(cid=cid))
+
+
+def get_received_replies(credential):
+    from bilibili_api import session
+    return _run_coroutine(session.get_replies(credential=_credential_from_dict(credential)))
+
+
+def get_comment_thread(credential, aid, root, page=1):
+    from bilibili_api import comment
+    instance = comment.Comment(oid=int(aid), type_=comment.CommentResourceType.VIDEO,
+                               rpid=int(root), credential=_credential_from_dict(credential))
+    result = _run_coroutine(instance.get_sub_comments(page_index=int(page), page_size=20))
+    if not isinstance(result, dict):
+        raise ValueError("Invalid comment thread response")
+    return result
+
+
+def send_comment_reply(credential, aid, root, parent, text):
+    from bilibili_api import comment
+    result = _run_coroutine(comment.send_comment(
+        text=str(text), oid=int(aid), type_=comment.CommentResourceType.VIDEO,
+        root=int(root), parent=int(parent), credential=_credential_from_dict(credential),
+    ))
+    if not isinstance(result, dict):
+        raise ValueError("Invalid comment reply response")
+    return result

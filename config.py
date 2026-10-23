@@ -1532,6 +1532,8 @@ _BILIBILI_INTERACTION_DEFAULTS = {
     "test_video": "",
     "allow_other_replies": False,
     "auto_comment_enabled": False,
+    "auto_reply_enabled": False,
+    "reply_enabled_at": 0,
     "paused": False,
 }
 

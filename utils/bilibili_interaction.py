@@ -497,6 +497,8 @@ class BilibiliInteractionService:
             "test_bvid": parse_bilibili_video_id(raw_video),
             "allow_other_replies": settings.get("allow_other_replies") is True,
             "auto_comment_enabled": settings.get("auto_comment_enabled") is True,
+            "auto_reply_enabled": settings.get("auto_reply_enabled") is True,
+            "reply_enabled_at": settings.get("reply_enabled_at", 0),
             "paused": settings.get("paused") is True,
         }
 
@@ -524,6 +526,15 @@ class BilibiliInteractionService:
     def get_state(self) -> dict:
         settings = self._settings()
         account = self._account_snapshot()
+        reply_blockers = []
+        if not settings["auto_reply_enabled"]:
+            reply_blockers.append("自动回复我的B站留言尚未开启。")
+        if settings["paused"]:
+            reply_blockers.append("B站互动当前已暂停。")
+        if not settings["user_uid"] or not settings["user_uid_confirmed"]:
+            reply_blockers.append("请先填写并核验主号UID。")
+        if not account["connected"] or account["uid"] == settings["user_uid"]:
+            reply_blockers.append("请授权区别于主号的互动小号。")
         with self._lock:
             draft = dict(self._draft) if isinstance(self._draft, dict) else None
         return {
@@ -537,6 +548,7 @@ class BilibiliInteractionService:
                 "testBvid": settings["test_bvid"],
                 "allowOtherReplies": settings["allow_other_replies"],
                 "autoCommentEnabled": settings["auto_comment_enabled"],
+                "autoReplyEnabled": settings["auto_reply_enabled"],
                 "paused": settings["paused"],
             },
             "account": {**account, "credentialStoreAvailable": self._credential_store_available()},
@@ -548,9 +560,9 @@ class BilibiliInteractionService:
                 "blockers": self._write_blockers(settings),
             },
             "replyCapability": {
-                "ready": False,
-                "allowOtherReplies": settings["allow_other_replies"],
-                "blockers": ["回复通知读取和作者 UID 校验尚未接入。"],
+                "ready": not reply_blockers,
+                "allowOtherReplies": False,
+                "blockers": reply_blockers,
             },
             "records": self._journal.records(),
             "attempts": self._journal.attempts(),
@@ -569,6 +581,8 @@ class BilibiliInteractionService:
                 "test_video": current["test_video"],
                 "allow_other_replies": current["allow_other_replies"],
                 "auto_comment_enabled": current["auto_comment_enabled"],
+                "auto_reply_enabled": current["auto_reply_enabled"],
+                "reply_enabled_at": current["reply_enabled_at"],
                 "paused": current["paused"],
             }
             if "mode" in payload:
@@ -599,6 +613,15 @@ class BilibiliInteractionService:
                 if not isinstance(payload["paused"], bool):
                     return {"ok": False, "error": "暂停设置必须是布尔值。"}
                 updated["paused"] = payload["paused"]
+            if "autoReplyEnabled" in payload:
+                if not isinstance(payload["autoReplyEnabled"], bool):
+                    return {"ok": False, "error": "自动回复设置必须是布尔值。"}
+                updated["auto_reply_enabled"] = payload["autoReplyEnabled"]
+                if payload["autoReplyEnabled"] and not current["auto_reply_enabled"]:
+                    updated["reply_enabled_at"] = time.time()
+            if updated["user_uid"] != current["user_uid"]:
+                updated["auto_reply_enabled"] = False
+                updated["reply_enabled_at"] = 0
             try:
                 self._save_config(updated)
             except Exception:
@@ -644,6 +667,9 @@ class BilibiliInteractionService:
                 "user_uid_confirmed": True,
                 "test_video": current["test_video"],
                 "allow_other_replies": current["allow_other_replies"],
+                "auto_comment_enabled": current["auto_comment_enabled"],
+                "auto_reply_enabled": current["auto_reply_enabled"],
+                "reply_enabled_at": current["reply_enabled_at"],
                 "paused": current["paused"],
             }
             try:

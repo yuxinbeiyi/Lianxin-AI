@@ -507,6 +507,36 @@ class TreeHoleReplyDuty(Duty):
 # ProactiveDuty
 # ═══════════════════════════════════════════════════════════════
 
+class BilibiliReplyDuty(Duty):
+    def __init__(self):
+        super().__init__("bilibili_reply", "B站主号评论续聊", 120)
+
+    def _check_enabled(self, state):
+        from config import get_bilibili_interaction_config
+        settings = get_bilibili_interaction_config()
+        return bool(settings.get("auto_reply_enabled") and not settings.get("paused"))
+
+    def _should_fire(self, state):
+        return not self.status.is_running and not state.agent_busy
+
+    def manual_trigger(self, state, **kwargs):
+        if not state.paused and not self.status.user_paused and self._check_enabled(state):
+            return super().manual_trigger(state, **kwargs)
+
+    def _create_worker(self, state, **kwargs):
+        from workers.bilibili_reply_worker import BilibiliReplyWorker
+        return BilibiliReplyWorker(cancelled=lambda: self.status.user_paused or self._scheduler._paused)
+
+    def _wire_worker(self, worker):
+        worker.completed.connect(self._on_completed)
+
+    def _on_completed(self, result):
+        self.status.is_running = False
+        self.status.last_result = "failed" if result == "failed" else "success"
+        self.status.last_result_text = f"B站续聊：{result}"
+        self._scheduler.duty_completed.emit(self.name, self.status.last_result_text)
+
+
 class ProactiveDuty(Duty):
     """主动聊天、观察、B站冲浪和摸鱼的统一抽签入口。"""
 
