@@ -499,6 +499,8 @@ class BilibiliInteractionService:
             "auto_comment_enabled": settings.get("auto_comment_enabled") is True,
             "auto_reply_enabled": settings.get("auto_reply_enabled") is True,
             "reply_enabled_at": settings.get("reply_enabled_at", 0),
+            "mention_reply_enabled": settings.get("mention_reply_enabled") is True,
+            "mention_enabled_at": settings.get("mention_enabled_at", 0),
             "paused": settings.get("paused") is True,
         }
 
@@ -549,6 +551,7 @@ class BilibiliInteractionService:
                 "allowOtherReplies": settings["allow_other_replies"],
                 "autoCommentEnabled": settings["auto_comment_enabled"],
                 "autoReplyEnabled": settings["auto_reply_enabled"],
+                "mentionReplyEnabled": settings["mention_reply_enabled"],
                 "paused": settings["paused"],
             },
             "account": {**account, "credentialStoreAvailable": self._credential_store_available()},
@@ -583,6 +586,8 @@ class BilibiliInteractionService:
                 "auto_comment_enabled": current["auto_comment_enabled"],
                 "auto_reply_enabled": current["auto_reply_enabled"],
                 "reply_enabled_at": current["reply_enabled_at"],
+                "mention_reply_enabled": current["mention_reply_enabled"],
+                "mention_enabled_at": current["mention_enabled_at"],
                 "paused": current["paused"],
             }
             if "mode" in payload:
@@ -622,10 +627,22 @@ class BilibiliInteractionService:
             if updated["user_uid"] != current["user_uid"]:
                 updated["auto_reply_enabled"] = False
                 updated["reply_enabled_at"] = 0
+            if "mentionReplyEnabled" in payload:
+                if not isinstance(payload["mentionReplyEnabled"], bool):
+                    return {"ok": False, "error": "@召唤设置必须是布尔值。"}
+                updated["mention_reply_enabled"] = payload["mentionReplyEnabled"]
+                if payload["mentionReplyEnabled"] and not current["mention_reply_enabled"]:
+                    updated["mention_enabled_at"] = time.time()
+            if updated["user_uid"] != current["user_uid"]:
+                updated["mention_reply_enabled"] = False
+                updated["mention_enabled_at"] = 0
             try:
                 self._save_config(updated)
             except Exception:
                 return {"ok": False, "error": "设置保存失败，请检查本机配置目录权限。"}
+        from utils.bilibili_reply_log import reply_log
+        reply_log("互动设置已保存", main_uid=updated["user_uid"], auto_comment=updated["auto_comment_enabled"],
+                  auto_reply=updated["auto_reply_enabled"], mention_reply=updated["mention_reply_enabled"], paused=updated["paused"])
         return {"ok": True, "state": self.get_state()}
 
     def verify_user_uid(self, uid: str) -> dict:
@@ -670,6 +687,8 @@ class BilibiliInteractionService:
                 "auto_comment_enabled": current["auto_comment_enabled"],
                 "auto_reply_enabled": current["auto_reply_enabled"],
                 "reply_enabled_at": current["reply_enabled_at"],
+                "mention_reply_enabled": current["mention_reply_enabled"],
+                "mention_enabled_at": current["mention_enabled_at"],
                 "paused": current["paused"],
             }
             try:

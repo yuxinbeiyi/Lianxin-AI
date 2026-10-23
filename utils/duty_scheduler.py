@@ -514,7 +514,7 @@ class BilibiliReplyDuty(Duty):
     def _check_enabled(self, state):
         from config import get_bilibili_interaction_config
         settings = get_bilibili_interaction_config()
-        return bool(settings.get("auto_reply_enabled") and not settings.get("paused"))
+        return bool((settings.get("auto_reply_enabled") or settings.get("mention_reply_enabled")) and not settings.get("paused"))
 
     def _should_fire(self, state):
         return not self.status.is_running and not state.agent_busy

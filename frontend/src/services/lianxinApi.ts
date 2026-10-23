@@ -169,6 +169,7 @@ export type BilibiliInteractionState = {
     allowOtherReplies: boolean;
     autoCommentEnabled: boolean;
     autoReplyEnabled: boolean;
+    mentionReplyEnabled: boolean;
     paused: boolean;
   };
   account: { connected: boolean; uid: string; name: string; credentialStoreAvailable: boolean };
@@ -277,7 +278,7 @@ export const lianxinApi = {
   openBilibiliVideo: (bvid: string) => request<{ ok: boolean; url?: string; error?: string }>("/bilibili-surf/open-video", { method: "POST", body: JSON.stringify({ bvid }) }),
   saveBilibiliSurfTag: (payload: { keyword: string; search_query?: string; intent_note?: string; status?: "active" | "paused" }) => request<BilibiliSurfState>("/bilibili-surf/tag", { method: "POST", body: JSON.stringify(payload) }),
   recheckBilibiliComment: (rpid = "") => request<{ ok: boolean; message?: string; error?: string; diagnostic?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/comment/recheck", { method: "POST", body: JSON.stringify({ rpid }) }),
-  saveBilibiliInteractionSettings: (payload: { mode?: "read_only" | "test"; userUid?: string; testVideo?: string; allowOtherReplies?: boolean; autoCommentEnabled?: boolean; autoReplyEnabled?: boolean; paused?: boolean }) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/settings", { method: "POST", body: JSON.stringify(payload) }),
+  saveBilibiliInteractionSettings: (payload: { mode?: "read_only" | "test"; userUid?: string; testVideo?: string; allowOtherReplies?: boolean; autoCommentEnabled?: boolean; autoReplyEnabled?: boolean; mentionReplyEnabled?: boolean; paused?: boolean }) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/settings", { method: "POST", body: JSON.stringify(payload) }),
   verifyBilibiliUserUid: (uid: string) => request<{ ok: boolean; uid?: string; name?: string; error?: string }>("/bilibili-interaction/verify-user", { method: "POST", body: JSON.stringify({ uid }) }),
   confirmBilibiliUserUid: (uid: string) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/confirm-user", { method: "POST", body: JSON.stringify({ uid }) }),
   inspectBilibiliTestVideo: (target: string) => request<{ ok: boolean; error?: string; video?: { bvid: string; title: string; author: string; commentOpen: boolean } }>("/bilibili-interaction/inspect-video", { method: "POST", body: JSON.stringify({ target }) }),

@@ -1823,6 +1823,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
     allowOtherReplies: false,
     autoCommentEnabled: false,
     autoReplyEnabled: false,
+    mentionReplyEnabled: false,
     paused: false,
   });
   const [bilibiliSaving, setBilibiliSaving] = useState(false);
@@ -1868,6 +1869,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           allowOtherReplies: state.settings.allowOtherReplies,
           autoCommentEnabled: state.settings.autoCommentEnabled,
           autoReplyEnabled: state.settings.autoReplyEnabled ?? false,
+          mentionReplyEnabled: state.settings.mentionReplyEnabled ?? false,
           paused: state.settings.paused,
         });
         setBilibiliDraftText(state.draft?.text || "");
@@ -1920,7 +1922,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
       setSurfSaving(false);
     }
   };
-  const saveBilibiliSettings = async () => {
+  const saveBilibiliSettings = async (closeAfterSave = true) => {
     setBilibiliSaving(true);
     setBilibiliNotice("");
     try {
@@ -1930,11 +1932,16 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
         return;
       }
       setBilibili(result.state);
-      setBilibiliDraft((current) => ({ ...current, autoReplyEnabled: result.state!.settings.autoReplyEnabled }));
+      setBilibiliDraft((current) => ({ ...current, autoReplyEnabled: result.state!.settings.autoReplyEnabled,
+        mentionReplyEnabled: result.state!.settings.mentionReplyEnabled }));
+      if (closeAfterSave) {
+        onClose();
+        return;
+      }
       setBilibiliNotice(result.state.settings.userUidConfirmed
-        ? result.state.settings.autoCommentEnabled
-          ? "设置已保存。自动评论已开启；评论续聊由独立开关控制，暂停互动会同时停止两者。"
-          : "设置已保存。自动评论已关闭；只读冲浪和已开启的评论续聊不受影响。"
+        ? result.state.settings.paused
+          ? "设置已应用。互动已暂停，不会发送评论、续聊或 @ 召唤回复。"
+          : "设置已应用。自动评论、评论续聊和 @ 召唤各自按开关运行；可继续调试。"
         : "设置已保存。UID 尚未核验，互动仍保持关闭。");
     } catch {
       setBilibiliNotice("设置保存失败，请确认莲心服务正在运行。");
@@ -2430,6 +2437,17 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
         </div>
         <div className="bili-interaction-row">
           <div>
+            <strong>在评论区 @ 莲心时回复我</strong>
+            <span>仅响应已核验主号对互动小号的真实 @；先读取该视频资料和可用字幕，再在原留言下回复。默认关闭。</span>
+          </div>
+          <button className={`toggle ${bilibiliDraft.mentionReplyEnabled ? "is-on" : ""}`}
+            onClick={() => setBilibiliDraft((current) => ({ ...current, mentionReplyEnabled: !current.mentionReplyEnabled }))}
+            aria-label="在评论区 @ 莲心时回复我" aria-pressed={bilibiliDraft.mentionReplyEnabled}>
+            <span />
+          </button>
+        </div>
+        <div className="bili-interaction-row">
+          <div>
             <strong>暂停互动</strong>
             <span>暂停只影响未来的评论与回复，不关闭只读冲浪。</span>
           </div>
@@ -2445,15 +2463,18 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="bili-capability-status" role="status">
-          <strong>手动测试发送：{bilibili?.writeCapability.ready ? "已就绪" : "已封锁"}</strong>
-          <span>
-            {bilibili?.writeCapability.blockers.join(" ") || "正在读取写入能力状态。"}
-          </span>
-          <span>主号昵称需先查询并确认；公开资料匹配不等于账号所有权认证。</span>
+          <strong>已保存状态：{!bilibili ? "读取中" : bilibili.settings.paused ? "互动已暂停"
+            : !bilibili.settings.userUidConfirmed || !bilibili.account.connected ? "待完成账号核验"
+            : bilibili.settings.autoCommentEnabled || bilibili.settings.autoReplyEnabled || bilibili.settings.mentionReplyEnabled ? "互动已启用" : "仅只读"}</strong>
+          <span>三个发言开关独立生效；后台约每 2 分钟检查留言和 @ 通知，发布前仍会实时核验授权。</span>
+          <span>使用 B 站的 @ 选择器选中互动小号，仅输入“@莲心”文字不会触发。详细过程请查看后端日志。</span>
         </div>
         <div className="bili-interaction-actions">
           <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void saveBilibiliSettings()}>
-            {bilibiliSaving ? "保存中…" : "保存互动设置"}
+            {bilibiliSaving ? "保存中…" : "保存并关闭"}
+          </button>
+          <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void saveBilibiliSettings(false)}>
+            应用并继续调试
           </button>
         </div>
         <details className="bili-manual-test">

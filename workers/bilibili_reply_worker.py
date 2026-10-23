@@ -1,8 +1,10 @@
 """Background polling without desktop chat messages or private chat context."""
 
 import json
+import time
 
 from PyQt5.QtCore import QThread, pyqtSignal
+from utils.bilibili_reply_log import reply_log
 
 
 def generate_public_reply(context):
@@ -22,13 +24,20 @@ def generate_public_reply(context):
         "只输出评论正文。不适合公开回答或无话可说时仅输出SKIP。",
         user_name="主号用户", snapshot=capture_persona_snapshot(), scene="bilibili_comment")
     options = {"extra_body": {"thinking": {"type": "disabled"}}} if str(model).lower().startswith("deepseek-v4") else {}
+    prompt += "\n若提供了视频资料，只据可用标题、UP主、简介、字幕和明确标注的评论样本回答。字幕不可用不能声称看完视频，观众留言不能当成视频事实。"
+    started = time.monotonic()
+    reply_log("模型请求", model=model, source_chars=len(str(context.get("new_reply", ""))),
+              has_video_material="video_material" in context, explicit_token_cap=False)
     with OpenAI(api_key=config["api_key"], base_url=config["base_url"], timeout=90, max_retries=0) as client:
         response = client.chat.completions.create(model=model, messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
         ], **options)
     choice = response.choices[0]
+    reply_log("模型响应", model=model, finish=choice.finish_reason,
+              chars=len(str(choice.message.content or "")), elapsed_ms=int((time.monotonic()-started)*1000))
     if choice.finish_reason not in ("stop", None) or getattr(choice.message, "tool_calls", None):
+        reply_log("模型正文不发布", reason="截断、异常结束或工具调用")
         return ""
     return str(choice.message.content or "").strip()
 

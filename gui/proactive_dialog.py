@@ -1129,10 +1129,12 @@ class ProactiveDialog(QDialog):
         self._bl_interaction_allow_other = QCheckBox("回复其他网友（尚未就绪）")
         self._bl_interaction_allow_other.setEnabled(False)
         self._bl_interaction_auto_reply = QCheckBox("自动回复我的 B 站留言（仅已核验主号，约每2分钟轮询）")
+        self._bl_interaction_mention_reply = QCheckBox("在评论区 @ 莲心时回复我（仅主号，先读取视频资料）")
         self._bl_interaction_auto_comment = QCheckBox("自动冲浪评论并 @ 用户主号（每轮最多一条，默认关闭）")
         self._bl_interaction_pause = QCheckBox("暂停 B 站互动，不影响只读冲浪")
         interaction_layout.addWidget(self._bl_interaction_auto_comment)
         interaction_layout.addWidget(self._bl_interaction_auto_reply)
+        interaction_layout.addWidget(self._bl_interaction_mention_reply)
         interaction_layout.addWidget(self._bl_interaction_pause)
 
         self._bl_interaction_guide = QLabel(
@@ -1785,6 +1787,7 @@ class ProactiveDialog(QDialog):
         self._bl_interaction_allow_other.setChecked(interaction["allowOtherReplies"])
         self._bl_interaction_auto_comment.setChecked(interaction["autoCommentEnabled"])
         self._bl_interaction_auto_reply.setChecked(interaction["autoReplyEnabled"])
+        self._bl_interaction_mention_reply.setChecked(interaction["mentionReplyEnabled"])
         self._bl_interaction_pause.setChecked(interaction["paused"])
         self._bl_confirm_uid_btn.setEnabled(False)
         QTimer.singleShot(0, lambda: self._run_bilibili_request("state", "/api/bilibili-interaction/state"))
@@ -1908,6 +1911,7 @@ class ProactiveDialog(QDialog):
             "allowOtherReplies": self._bl_interaction_allow_other.isChecked(),
             "autoCommentEnabled": self._bl_interaction_auto_comment.isChecked(),
             "autoReplyEnabled": self._bl_interaction_auto_reply.isChecked(),
+            "mentionReplyEnabled": self._bl_interaction_mention_reply.isChecked(),
             "paused": self._bl_interaction_pause.isChecked(),
         })
         if not interaction_result.get("ok"):

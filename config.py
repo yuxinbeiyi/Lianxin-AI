@@ -1534,6 +1534,8 @@ _BILIBILI_INTERACTION_DEFAULTS = {
     "auto_comment_enabled": False,
     "auto_reply_enabled": False,
     "reply_enabled_at": 0,
+    "mention_reply_enabled": False,
+    "mention_enabled_at": 0,
     "paused": False,
 }
 

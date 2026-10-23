@@ -121,6 +121,16 @@ def get_received_replies(credential):
     return _run_coroutine(session.get_replies(credential=_credential_from_dict(credential)))
 
 
+def get_received_mentions(credential, last_id=None, at_time=None):
+    from bilibili_api import session
+    return _run_coroutine(session.get_at(credential=_credential_from_dict(credential), last_id=last_id, at_time=at_time))
+
+
+def get_video_info_by_aid(credential, aid):
+    from bilibili_api import video
+    return _run_coroutine(video.Video(aid=int(aid), credential=_credential_from_dict(credential)).get_info())
+
+
 def get_comment_thread(credential, aid, root, page=1):
     from bilibili_api import comment
     instance = comment.Comment(oid=int(aid), type_=comment.CommentResourceType.VIDEO,
