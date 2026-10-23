@@ -152,6 +152,8 @@ export type BilibiliSurfState = {
     reason: string;
     summary: string;
     send_status: string;
+    share_status?: string;
+    comment_receipt?: { text: string; rpid: string };
     duration_ms: number;
   };
 };
@@ -193,9 +195,16 @@ export type LegacyFeature =
 
 const API_ROOT = "http://127.0.0.1:8766/api";
 
+export class ApiRequestError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_ROOT}${path}`, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
-  if (!response.ok) throw new Error((await response.text()) || `API ${response.status}`);
+  if (!response.ok) throw new ApiRequestError(response.status, (await response.text()) || `API ${response.status}`);
   return response.json() as Promise<T>;
 }
 
@@ -264,6 +273,7 @@ export const lianxinApi = {
   proactiveTrigger: (mode: string) => request<{ ok: boolean }>("/proactive/trigger", { method: "POST", body: JSON.stringify({ mode }) }),
   bilibiliInteractionState: () => request<BilibiliInteractionState>("/bilibili-interaction/state"),
   bilibiliSurfState: () => request<BilibiliSurfState>("/bilibili-surf/state"),
+  openBilibiliVideo: (bvid: string) => request<{ ok: boolean; url?: string; error?: string }>("/bilibili-surf/open-video", { method: "POST", body: JSON.stringify({ bvid }) }),
   saveBilibiliSurfTag: (payload: { keyword: string; search_query?: string; intent_note?: string; status?: "active" | "paused" }) => request<BilibiliSurfState>("/bilibili-surf/tag", { method: "POST", body: JSON.stringify(payload) }),
   recheckBilibiliComment: (rpid = "") => request<{ ok: boolean; message?: string; error?: string; diagnostic?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/comment/recheck", { method: "POST", body: JSON.stringify({ rpid }) }),
   saveBilibiliInteractionSettings: (payload: { mode?: "read_only" | "test"; userUid?: string; testVideo?: string; allowOtherReplies?: boolean; autoCommentEnabled?: boolean; paused?: boolean }) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/settings", { method: "POST", body: JSON.stringify(payload) }),

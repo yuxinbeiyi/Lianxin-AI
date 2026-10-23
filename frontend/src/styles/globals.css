@@ -560,6 +560,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .bili-manual-test { margin-block: 12px; padding: 12px; border: 1px solid var(--lx-border); border-radius: 10px; }
 .bili-manual-test > summary { cursor: pointer; color: var(--lx-text); font-weight: 600; }
 .bili-comment-notice { padding: 8px 10px; border-left: 3px solid #df8da8; background: rgba(223,141,168,.1); border-radius: 6px; }
+.bili-video-link { color: var(--lx-info); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.bili-video-link[aria-disabled="true"] { opacity: .6; cursor: progress; }
+.bili-video-link-error { display: block; margin-top: 6px; font-size: 12px; color: #e5a0a0; }
 
 .bili-surf-settings { margin: 12px 0; padding: 10px 12px; border: 1px solid rgba(157,214,205,.16); border-radius: 11px; background: rgba(255,255,255,.025); }
 .bili-surf-settings > summary { color: var(--lx-info); font-size: 12px; cursor: pointer; }

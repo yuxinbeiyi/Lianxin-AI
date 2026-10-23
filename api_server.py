@@ -2818,6 +2818,19 @@ class LianxinBridge:
         from utils.bilibili_surf_policy import SurfDiagnostics
         return {"ok": True, "tags": get_bilibili_history().get_search_tags(), "latest": SurfDiagnostics().latest()}
 
+    def open_bilibili_video(self, bvid: str) -> dict:
+        import re
+        import webbrowser
+        if not isinstance(bvid, str) or not re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid):
+            return {"ok": False, "error": "视频编号无效，没有打开浏览器。"}
+        url = f"https://www.bilibili.com/video/{bvid}"
+        try:
+            if webbrowser.open(url, new=2):
+                return {"ok": True, "url": url}
+        except Exception as error:
+            bridge_log.log("B站冲浪", f"打开系统浏览器失败: {type(error).__name__}")
+        return {"ok": False, "error": "系统浏览器未能打开，请复制视频链接后手动打开。"}
+
     def save_bilibili_surf_tag(self, payload: dict) -> dict:
         from utils.bilibili_history import get_bilibili_history
         try:
@@ -4395,6 +4408,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.save_bilibili_interaction_settings(body))
             if path == "/api/bilibili-surf/tag":
                 return self._send(bridge.save_bilibili_surf_tag(body))
+            if path == "/api/bilibili-surf/open-video":
+                return self._send(bridge.open_bilibili_video(body.get("bvid", "")))
             if path == "/api/bilibili-interaction/verify-user":
                 return self._send(bridge.verify_bilibili_user_uid(str(body.get("uid", ""))))
             if path == "/api/bilibili-interaction/confirm-user":

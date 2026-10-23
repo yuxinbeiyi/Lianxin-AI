@@ -77,6 +77,7 @@ import { ExecutionCard } from "./components/ExecutionCard";
 import { TimeCapsuleWorkspace } from "./components/TimeCapsuleWorkspace";
 import { MusicWorkspace } from "./components/MusicWorkspace";
 import { VideoCallPanel } from "./components/VideoCallPanel";
+import { BilibiliMessageLine } from "./components/BilibiliMessageLine";
 
 type PanelId =
   | "none"
@@ -692,7 +693,7 @@ function MessageItem({
               className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}
             >
               {message.content.split("\n").map((line, index) => (
-                <p key={`${message.id}-text-${index}`}>{line}</p>
+                <p key={`${message.id}-text-${index}`}><BilibiliMessageLine text={line} /></p>
               ))}
             </div>
           )}
@@ -767,10 +768,7 @@ function MessageItem({
             <p key={`${message.id}-${index}`}
               className={line.startsWith("莲心在 B 站视频《") ? "bili-comment-notice" : undefined}
               role={line.startsWith("莲心在 B 站视频《") ? "status" : undefined}
-            >{line}{line.startsWith("莲心在 B 站视频《") && (() => {
-              const target = message.content.match(/https:\/\/www\.bilibili\.com\/video\/BV[A-Za-z0-9]+/);
-              return target ? <a href={target[0]} target="_blank" rel="noreferrer"> 打开视频</a> : null;
-            })()}</p>
+            ><BilibiliMessageLine text={line} /></p>
           ))}
         </div>
       </div>
@@ -1898,7 +1896,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
   };
   useEffect(() => {
     void refreshBilibiliSurf();
-  }, []);
+  }, [running]);
   const saveSurfTag = async (payload: { keyword: string; search_query?: string; status?: "active" | "paused" }) => {
     setSurfSaving(true);
     setSurfNotice("");
@@ -2231,6 +2229,19 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
             {bilibiliSurf?.latest ? (
               <span>{bilibiliSurf.latest.summary} · 标签「{bilibiliSurf.latest.tag || "未选标签"}」/ 查询「{bilibiliSurf.latest.query || "无"}」 · 返回 {bilibiliSurf.latest.returned_count} 条，详情 {bilibiliSurf.latest.enriched_count} 条 · {bilibiliSurf.latest.send_status === "sent_verified" ? "评论已提交并回读匹配" : bilibiliSurf.latest.send_status === "sent_unverified" ? "评论已提交，回读未确认" : bilibiliSurf.latest.send_status === "unknown" ? "发送状态未知，请勿重试" : bilibiliSurf.latest.send_status === "read_only" ? "只读：未发评论" : bilibiliSurf.latest.send_status === "comment_skipped" ? "评论生成未通过，未发送" : bilibiliSurf.latest.send_status === "not_attempted" ? "未进入发送阶段" : `发送状态：${bilibiliSurf.latest.send_status}`} · {new Date(bilibiliSurf.latest.timestamp * 1000).toLocaleString()}</span>
             ) : <span>还没有冲浪诊断记录。</span>}
+            {bilibiliSurf?.latest?.share_status && (
+              <details>
+                <summary>本轮调试详情</summary>
+                <p className="muted-copy">聊天只展示一条自然分享。{bilibiliSurf.latest.share_status === "generated" ? "分享文案正常生成。" : "分享文案使用本地短句兜底，未因此重发评论。"}</p>
+                {bilibiliSurf.latest.comment_receipt && (
+                  <>
+                    <p>评论正文：{bilibiliSurf.latest.comment_receipt.text}</p>
+                    <p>评论 ID：{bilibiliSurf.latest.comment_receipt.rpid}</p>
+                    <p className="muted-copy">评论已提交；主号可见性与 @ 通知仍需单独确认，接口返回或回读匹配不代表通知已送达。</p>
+                  </>
+                )}
+              </details>
+            )}
           </div>
         </details>
         <div className="bili-interaction-grid">

@@ -117,14 +117,20 @@ class SurfDiagnostics:
                 "timestamp": record.get("timestamp", time.time())}
         for key, maximum in (("tag", 80), ("query", 80), ("query_source", 16),
                              ("selection_status", 32), ("reason", 40),
-                             ("send_status", 48), ("error_type", 80)):
+                             ("send_status", 48), ("share_status", 32), ("error_type", 80)):
             safe[key] = str(record.get(key) or "")[:maximum]
         safe["summary"] = REASON_MESSAGES.get(safe["reason"], "本轮已结束，请查看发送状态。")
         for key in ("returned_count", "fresh_count", "enriched_count", "duration_ms"):
             value = record.get(key, 0)
             safe[key] = max(0, int(value)) if isinstance(value, (int, float)) else 0
         safe["stage_ms"] = {key: max(0, int(value)) for key, value in record.get("stage_ms", {}).items()
-                            if key in {"search", "material", "selection", "comment", "send"} and isinstance(value, (int, float))}
+                            if key in {"search", "material", "selection", "comment", "send", "share"} and isinstance(value, (int, float))}
+        receipt = record.get("comment_receipt")
+        if safe["send_status"] in {"sent_verified", "sent_unverified"} and isinstance(receipt, dict):
+            rpid = str(receipt.get("rpid") or "")
+            text = str(receipt.get("text") or "")
+            if re.fullmatch(r"[0-9]{1,30}", rpid) and not re.search(r"cookie|sessdata|bili_jct|uid\s*=", text, re.I):
+                safe["comment_receipt"] = {"rpid": rpid, "text": text[:4000]}
         safe["candidates"] = []
         for item in record.get("candidates", [])[:10]:
             entry = {key: str(item.get(key) or "")[:maximum] for key, maximum in
