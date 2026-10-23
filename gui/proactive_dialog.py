@@ -1126,7 +1126,8 @@ class ProactiveDialog(QDialog):
         interaction_layout.addLayout(identity_row)
         self._bl_verified_uid = None
 
-        self._bl_interaction_allow_other = QCheckBox("允许回复其他网友（仅限回复莲心自己的评论）")
+        self._bl_interaction_allow_other = QCheckBox("回复其他网友（尚未就绪）")
+        self._bl_interaction_allow_other.setEnabled(False)
         self._bl_interaction_auto_comment = QCheckBox("自动冲浪评论并 @ 用户主号（每轮最多一条，默认关闭）")
         self._bl_interaction_pause = QCheckBox("暂停 B 站互动，不影响只读冲浪")
         interaction_layout.addWidget(self._bl_interaction_auto_comment)
@@ -1134,9 +1135,9 @@ class ProactiveDialog(QDialog):
         interaction_layout.addWidget(self._bl_interaction_pause)
 
         self._bl_interaction_guide = QLabel(
-            "普通冲浪仍只搜索并推荐视频。请在本页下方扫码授权互动小号，"
+            "每轮按一个兴趣标签搜索最多 3 个视频，按播放量选 1 个后读取资料；自动评论开关控制公开发言。请扫码授权互动小号，"
             "不要粘贴或发送 Cookie。保存草稿后可人工确认发送到指定测试视频；自动回复暂未开放；"
-            "配置测试视频不会自动发送评论。"
+            "测试视频仅供人工确认发送，不参与自动冲浪。"
         )
         self._bl_interaction_guide.setFont(QFont("Microsoft YaHei UI", 8))
         self._bl_interaction_guide.setWordWrap(True)
@@ -1212,27 +1213,7 @@ class ProactiveDialog(QDialog):
         draft_actions.addStretch()
         draft_layout.addLayout(draft_actions)
         layout.addWidget(draft_group)
-        self._bl_send_records = QLabel("发送记录：暂无。")
-        self._bl_send_records.setWordWrap(True)
-        self._bl_send_records.setTextFormat(Qt.PlainText)
-        layout.addWidget(self._bl_send_records)
-        self._bl_diagnostics = QPlainTextEdit()
-        self._bl_diagnostics.setReadOnly(True)
-        self._bl_diagnostics.setPlaceholderText("发送诊断：尚未收到发送请求。可选中复制此区域，不包含 Cookie。")
-        self._bl_diagnostics.setFixedHeight(130)
-        layout.addWidget(self._bl_diagnostics)
-        self._bl_refresh_diagnostics_btn = QPushButton("刷新发送记录与诊断（不会发送评论）")
-        self._bl_refresh_diagnostics_btn.clicked.connect(lambda: self._run_bilibili_request(
-            "state", "/api/bilibili-interaction/state"))
-        layout.addWidget(self._bl_refresh_diagnostics_btn)
-        self._bl_recheck_btn = QPushButton("重新核验最近已发送评论（只读，不会重发）")
-        self._bl_recheck_btn.clicked.connect(lambda: self._run_bilibili_request(
-            "recheck", "/api/bilibili-interaction/comment/recheck", {}))
-        layout.addWidget(self._bl_recheck_btn)
-        verification_hint = QLabel("“回读确认”仅表示小号端正文和 UID 提及匹配，不代表大号可见或通知送达。未登录查询未查到也不等于未发送；请先复核，勿反复发送。复核使用当前互动账号最近一次有评论 ID 的记录，不受新测试视频设置影响。")
-        verification_hint.setWordWrap(True)
-        layout.addWidget(verification_hint)
-        draft_guide = QLabel("不用先生成草稿：直接输入 → 保存当前正文 → 确认并发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。测试阶段已临时禁用本地持久防重与发送冷却，相同正文也可再次保存后人工确认发送；结果不确定时请先在 B 站核对，勿连续重发。")
+        draft_guide = QLabel("不用先生成草稿：直接输入 → 保存当前正文 → 确认并发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。保留同账号同视频防重；结果不确定时请先在 B 站核对，勿连续重发。")
         draft_guide.setWordWrap(True)
         draft_layout.addWidget(draft_guide)
 
@@ -1339,7 +1320,7 @@ class ProactiveDialog(QDialog):
 
         # 调试按钮
         debug_row = QHBoxLayout()
-        self._btn_debug_bl = QPushButton("🧪 调试：立即测试B站冲浪")
+        self._btn_debug_bl = QPushButton("🧪 立即测试兴趣标签冲浪")
         self._btn_debug_bl.setFixedHeight(32)
         self._btn_debug_bl.setFont(QFont("Microsoft YaHei UI", 9))
         self._btn_debug_bl.setCursor(Qt.PointingHandCursor)
@@ -1419,7 +1400,7 @@ class ProactiveDialog(QDialog):
             self._bl_login_btn, self._bl_logout_btn, self._bl_login_poll_btn,
             self._bl_generate_draft_btn, self._bl_save_draft_btn, self._bl_clear_draft_btn,
             self._bl_send_draft_btn,
-            self._bl_check_account_btn, self._bl_refresh_diagnostics_btn, self._bl_recheck_btn,
+            self._bl_check_account_btn,
         ):
             button.setEnabled(enabled)
 
@@ -1499,16 +1480,6 @@ class ProactiveDialog(QDialog):
         self._bl_request_busy = False
         self._set_bilibili_buttons_enabled(True)
         snapshot = result if action == "state" else result.get("state", {}) if isinstance(result, dict) else {}
-        if isinstance(snapshot, dict) and "attempts" in snapshot:
-            self._bl_diagnostics.setPlainText("\n".join(
-                f"请求 {item['id']} | 时间 {item['createdAt']} | 阶段 {item.get('stage', 'submit/readback')} | "
-                f"状态 {item.get('status', '未提交')} | 评论ID {item.get('rpid') or '无'}\n{item.get('diagnostic', '')}"
-                for item in snapshot["attempts"][:5]) or "尚无发送请求诊断记录。")
-        if isinstance(snapshot, dict) and "records" in snapshot:
-            records = snapshot.get("records") or []
-            self._bl_send_records.setText("最近发送记录（已保存在本机）：\n" + "\n".join(
-                f"{record['bvid']} | { {'sent_verified': '小号回读匹配（非公开可见证明）', 'sent_unverified': 'B站已受理，回读未确认'}.get(record['status'], record['status'])} | 评论ID {record['rpid'] or '未知'} | {record.get('diagnostic', '')}"
-                for record in records[:5]) if records else "发送记录：暂无。")
         if action == "state" and isinstance(result, dict) and "account" in result:
             account = result.get("account") or {}
             self._bl_account_status.setText(
@@ -1527,22 +1498,11 @@ class ProactiveDialog(QDialog):
             return
         if action == "account_check" and isinstance(result, dict):
             self._bl_interaction_status.setText(result.get("message") or result.get("error") or "检查未完成。")
-            self._bl_diagnostics.setPlainText(
-                f"授权检查：{result.get('authorization', 'unknown')}\n{result.get('diagnostic', '')}\n"
-                "本次只检查登录，没有发送评论。")
-            return
-        if action == "recheck" and isinstance(result, dict):
-            self._bl_interaction_status.setText(result.get("message") or result.get("error") or "复核未完成。")
-            self._bl_diagnostics.appendPlainText(
-                f"只读复核 评论ID {result.get('rpid', '未知')}：{result.get('diagnostic', '')}\n没有发送或重发评论。")
             return
         if not isinstance(result, dict) or not result.get("ok"):
             self._bl_interaction_status.setText(
-                str(result.get("error") or result.get("message") or "后端未返回明确结果；请刷新诊断，勿重复发送。") if isinstance(result, dict) else "后端响应格式异常。"
+                str(result.get("error") or result.get("message") or "后端未返回明确结果；请先在 B 站核对，勿重复发送。") if isinstance(result, dict) else "后端响应格式异常。"
             )
-            if action == "send" and isinstance(result, dict):
-                self._bl_diagnostics.appendPlainText(
-                    f"当前请求 {result.get('attemptId', '未知')}：{result.get('diagnostic', '后端未提供诊断；可能仍在运行旧版服务。')}")
             if action == "send" and isinstance(result, dict):
                 self._bl_current_draft = (result.get("state") or {}).get("draft", self._bl_current_draft)
                 self._update_bl_draft_hint()
@@ -1696,7 +1656,7 @@ class ProactiveDialog(QDialog):
     def _do_bl_debug(self):
         print("[B站冲浪] 发射 debug_observe_signal(bilibili) → main_window")
         self._btn_debug_bl.setEnabled(True)
-        self._btn_debug_bl.setText("🧪 调试：立即测试B站冲浪")
+        self._btn_debug_bl.setText("🧪 立即测试兴趣标签冲浪")
         self.debug_observe_signal.emit("bilibili")
 
     # ── 摄像头扫描 ────────────────────────────────────────────
@@ -1829,7 +1789,7 @@ class ProactiveDialog(QDialog):
         if interaction["userUidConfirmed"]:
             self._bl_interaction_guide.setText(
                 f"已记录公开资料：{interaction['userName']}（UID {interaction['userUid']}）。"
-                "请在本页完成互动账号扫码；保存草稿后可人工确认发送，不会自动公开发言。"
+                "请完成互动小号扫码；自动评论开关控制公开发言，固定测试视频不参与冲浪。"
             )
         from utils.bilibili_history import get_bilibili_history
         self._refresh_bl_tags()
@@ -1886,7 +1846,7 @@ class ProactiveDialog(QDialog):
             return
         self._bl_interaction_guide.setText(
             f"已确认公开资料：{verified['name']}（UID {verified['uid']}）。"
-            "这不代表账号所有权认证；由于评论接口未支持验证真实 UID 提及，公开写入仍关闭。"
+            "资料匹配不代表所有权认证；评论可见性和 @ 通知需在主号侧单独核对。"
         )
 
     def _on_bl_inspect_test_video(self):

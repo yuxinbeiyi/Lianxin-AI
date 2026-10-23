@@ -177,7 +177,7 @@ if not errorlevel 1 (
 ) else (
     echo [3/4] 启动后端接口 api_server.py ^(http://127.0.0.1:8766^)...
     echo [%date% %time%] 新版界面启动：拉起 api_server>> "%LOG%"
-    start "莲心 AI 后端 8766" /d "%ROOT%" cmd /k ""%PY%" api_server.py"
+    start "莲心 AI 后端 8766" /d "%ROOT%" cmd /c ""%PY%" api_server.py"
 )
 
 netstat -ano | findstr /c:":5173 " >nul 2>nul

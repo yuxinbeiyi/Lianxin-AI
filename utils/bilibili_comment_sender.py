@@ -330,11 +330,9 @@ def send_auto_comment(service, target, text):
         return {"ok": False, "sent": False, "status": "blocked", "blockers": blockers}
 
     candidate = re.sub(r"\s+", " ", str(text or "").strip())
-    mention = f"@{settings['user_name']}"
-    if not candidate or len(candidate) > 500:
+    mention = f"@{settings['user_name']} "
+    if not candidate or not candidate.startswith(mention):
         return {"ok": False, "sent": False, "status": "invalid_text"}
-    if mention not in candidate:
-        candidate = f"{mention} {candidate}"
     video = service._video_lookup(bvid)
     if video.get("bvid") != bvid or video.get("commentOpen") is not True:
         return {"ok": False, "sent": False, "status": "video_not_commentable"}

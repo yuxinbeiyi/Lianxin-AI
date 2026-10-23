@@ -2813,6 +2813,21 @@ class LianxinBridge:
         from utils.bilibili_interaction import get_bilibili_interaction_service
         return get_bilibili_interaction_service().get_state()
 
+    def bilibili_surf_state(self) -> dict:
+        from utils.bilibili_history import get_bilibili_history
+        from utils.bilibili_surf_policy import SurfDiagnostics
+        return {"ok": True, "tags": get_bilibili_history().get_search_tags(), "latest": SurfDiagnostics().latest()}
+
+    def save_bilibili_surf_tag(self, payload: dict) -> dict:
+        from utils.bilibili_history import get_bilibili_history
+        try:
+            get_bilibili_history().update_search_tag(payload)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        except OSError:
+            return {"ok": False, "error": "兴趣标签未能保存，请检查本地数据目录是否可写。"}
+        return self.bilibili_surf_state()
+
     def save_bilibili_interaction_settings(self, payload: dict) -> dict:
         from utils.bilibili_interaction import get_bilibili_interaction_service
         return get_bilibili_interaction_service().save_settings(payload)
@@ -4187,6 +4202,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.proactive_status())
             if path == "/api/bilibili-interaction/state":
                 return self._send(bridge.bilibili_interaction_state())
+            if path == "/api/bilibili-surf/state":
+                return self._send(bridge.bilibili_surf_state())
             if path == "/api/management/state":
                 return self._send(bridge.management())
             if path == "/api/persona/state":
@@ -4268,6 +4285,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._body()
+            if path == "/api/app/shutdown":
+                if self.headers.get("X-Lianxin-Shutdown") != "1":
+                    return self._send({"ok": False, "error": "desktop_request_required"}, 403)
+                from utils.app_lifecycle import request_shutdown
+                self._send({"ok": True})
+                request_shutdown(self.server)
+                return
             if path == "/api/conversations":
                 return self._send(bridge.new_session(), 201)
             if path.startswith("/api/conversations/") and path.endswith("/select"):
@@ -4369,6 +4393,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.set_proactive(bool(body.get("enabled"))))
             if path == "/api/bilibili-interaction/settings":
                 return self._send(bridge.save_bilibili_interaction_settings(body))
+            if path == "/api/bilibili-surf/tag":
+                return self._send(bridge.save_bilibili_surf_tag(body))
             if path == "/api/bilibili-interaction/verify-user":
                 return self._send(bridge.verify_bilibili_user_uid(str(body.get("uid", ""))))
             if path == "/api/bilibili-interaction/confirm-user":
@@ -4670,6 +4696,12 @@ def main():
         pass
     finally:
         server.server_close()
+        for stop in (bridge.stop_proactive_runtime, bridge.cancel_chat, bridge.stop_voice_input,
+                     bridge.stop_voice, bridge.stop_call_sound):
+            try:
+                stop()
+            except Exception:
+                pass
         try:
             bridge.stop_qq()
         except Exception:
@@ -4690,6 +4722,8 @@ def main():
             bridge.shutdown_web_bridges()
         except Exception:
             pass
+        from utils.app_lifecycle import stop_owned_processes
+        stop_owned_processes()
     bridge_log.log("退出", "后端已关闭")
 
 

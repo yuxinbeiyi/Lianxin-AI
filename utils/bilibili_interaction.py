@@ -694,8 +694,6 @@ class BilibiliInteractionService:
         candidate = re.sub(r"\s+", " ", str(text or "").strip())
         if not candidate:
             return {"ok": False, "status": "invalid", "error": "评论草稿不能为空。"}
-        if len(candidate) > 500:
-            return {"ok": False, "status": "invalid", "error": "评论草稿不能超过 500 个字符。"}
         mention = f"@{settings['user_name']}"
         if mention not in candidate:
             candidate = f"{mention} {candidate}"

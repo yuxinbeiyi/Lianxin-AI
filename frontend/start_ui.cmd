@@ -9,6 +9,8 @@ echo Working dir: %CD%
 echo.
 call npm run tauri dev
 
-echo.
-echo Tauri dev exited with code %errorlevel%. You can close this window.
-pause
+if errorlevel 1 (
+  echo.
+  echo Tauri dev exited with code %errorlevel%.
+  pause
+)

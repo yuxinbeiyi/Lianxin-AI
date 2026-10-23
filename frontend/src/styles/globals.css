@@ -556,3 +556,22 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .exec-card-detail button:hover { color: #d9e7e7; border-color: rgba(157,214,205,.4); }
 .exec-card-detail pre { max-height: 220px; margin: 7px 0 0; padding: 9px 11px; overflow: auto; border: 1px solid rgba(157,214,205,.14); border-radius: 9px; background: rgba(4,14,20,.6); color: #b8c7c9; white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; font-size: 11px; line-height: 1.55; }
 
+
+.bili-manual-test { margin-block: 12px; padding: 12px; border: 1px solid var(--lx-border); border-radius: 10px; }
+.bili-manual-test > summary { cursor: pointer; color: var(--lx-text); font-weight: 600; }
+.bili-comment-notice { padding: 8px 10px; border-left: 3px solid #df8da8; background: rgba(223,141,168,.1); border-radius: 6px; }
+
+.bili-surf-settings { margin: 12px 0; padding: 10px 12px; border: 1px solid rgba(157,214,205,.16); border-radius: 11px; background: rgba(255,255,255,.025); }
+.bili-surf-settings > summary { color: var(--lx-info); font-size: 12px; cursor: pointer; }
+.bili-surf-tag-list { display: grid; gap: 7px; margin-top: 10px; }
+.bili-surf-tag { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(120px, 1.5fr) auto auto; align-items: center; gap: 7px; }
+.bili-surf-tag > div { display: grid; gap: 2px; }
+.bili-surf-tag > div strong, .bili-surf-latest strong { color: #d9e7e7; font-size: 11px; }
+.bili-surf-tag > div span, .bili-surf-latest span, .bili-surf-notice { color: var(--lx-text-muted); font-size: 10px; }
+.bili-surf-tag input, .bili-surf-add input { min-width: 0; padding: 6px 8px; border: 1px solid rgba(157,214,205,.18); border-radius: 7px; background: rgba(4,14,20,.48); color: #d9e7e7; font-size: 11px; }
+.bili-surf-tag .secondary-button, .bili-surf-add .secondary-button { padding: 5px 9px; font-size: 10px; }
+.bili-surf-add { display: flex; gap: 7px; margin-top: 9px; }
+.bili-surf-add input { flex: 1; }
+.bili-surf-notice { display: block; margin-top: 7px; }
+.bili-surf-latest { display: grid; gap: 4px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(157,214,205,.12); }
+@media (max-width: 620px) { .bili-surf-tag { grid-template-columns: 1fr auto auto; } .bili-surf-tag > div { grid-column: 1 / -1; } .bili-surf-tag input { grid-column: 1 / -1; } }

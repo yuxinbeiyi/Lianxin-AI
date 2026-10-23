@@ -125,6 +125,36 @@ export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?:
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
 export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: { text: string; estimated_tokens: number; layers: string[]; error?: string }; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> } };
 export type SettingsPanelState = { global: { silentMode: boolean; userName: string; emotionProbability: number; backgroundEnabled: boolean; backgroundSource: string; backgroundSourceType: string; backgroundOpacity: number; chatBackgroundOpacity: number; backgroundFitMode: string; segmentPauseChatMin: number; segmentPauseChatMax: number; segmentPauseSemanticMin: number; segmentPauseSemanticMax: number }; sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string } };
+export type BilibiliSurfTag = {
+  keyword: string;
+  search_query: string;
+  intent_note: string;
+  query_source: "user" | "original";
+  status: "active" | "paused";
+  source: string;
+  base_score: number;
+  boost_score: number;
+};
+export type BilibiliSurfState = {
+  ok: boolean;
+  error?: string;
+  tags: BilibiliSurfTag[];
+  latest: null | {
+    run_id: string;
+    timestamp: number;
+    tag: string;
+    query: string;
+    query_source: string;
+    returned_count: number;
+    fresh_count: number;
+    enriched_count: number;
+    selection_status: string;
+    reason: string;
+    summary: string;
+    send_status: string;
+    duration_ms: number;
+  };
+};
 export type BilibiliInteractionState = {
   settings: {
     mode: "read_only" | "test";
@@ -233,6 +263,8 @@ export const lianxinApi = {
   proactiveStatus: () => request<{ ready: boolean; running: boolean }>("/proactive/status"),
   proactiveTrigger: (mode: string) => request<{ ok: boolean }>("/proactive/trigger", { method: "POST", body: JSON.stringify({ mode }) }),
   bilibiliInteractionState: () => request<BilibiliInteractionState>("/bilibili-interaction/state"),
+  bilibiliSurfState: () => request<BilibiliSurfState>("/bilibili-surf/state"),
+  saveBilibiliSurfTag: (payload: { keyword: string; search_query?: string; intent_note?: string; status?: "active" | "paused" }) => request<BilibiliSurfState>("/bilibili-surf/tag", { method: "POST", body: JSON.stringify(payload) }),
   recheckBilibiliComment: (rpid = "") => request<{ ok: boolean; message?: string; error?: string; diagnostic?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/comment/recheck", { method: "POST", body: JSON.stringify({ rpid }) }),
   saveBilibiliInteractionSettings: (payload: { mode?: "read_only" | "test"; userUid?: string; testVideo?: string; allowOtherReplies?: boolean; autoCommentEnabled?: boolean; paused?: boolean }) => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/settings", { method: "POST", body: JSON.stringify(payload) }),
   verifyBilibiliUserUid: (uid: string) => request<{ ok: boolean; uid?: string; name?: string; error?: string }>("/bilibili-interaction/verify-user", { method: "POST", body: JSON.stringify({ uid }) }),

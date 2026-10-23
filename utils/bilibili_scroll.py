@@ -29,6 +29,7 @@ class BilibiliScrollClient:
                 "title": title,
                 "author": str(item.get("author", "") or ""),
                 "play_count": item.get("play", 0),
+                "like_count": item.get("like", 0),
                 "review_count": item.get("review", 0),
                 "description": str(item.get("description", "") or "")[:500],
                 "link": f"https://www.bilibili.com/video/{bvid}",

@@ -62,6 +62,7 @@ import {
   lianxinApi,
   type AvatarState,
   type BilibiliInteractionState,
+  type BilibiliSurfState,
   type BackgroundState,
   type ChatStreamEvent,
   type LegacyFeature,
@@ -763,7 +764,13 @@ function MessageItem({
           }}
         >
           {message.content.split("\n").map((line, index) => (
-            <p key={`${message.id}-${index}`}>{line}</p>
+            <p key={`${message.id}-${index}`}
+              className={line.startsWith("莲心在 B 站视频《") ? "bili-comment-notice" : undefined}
+              role={line.startsWith("莲心在 B 站视频《") ? "status" : undefined}
+            >{line}{line.startsWith("莲心在 B 站视频《") && (() => {
+              const target = message.content.match(/https:\/\/www\.bilibili\.com\/video\/BV[A-Za-z0-9]+/);
+              return target ? <a href={target[0]} target="_blank" rel="noreferrer"> 打开视频</a> : null;
+            })()}</p>
           ))}
         </div>
       </div>
@@ -1823,6 +1830,11 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
   const [bilibiliNotice, setBilibiliNotice] = useState("");
   const [uidLookup, setUidLookup] = useState<{ uid: string; name: string } | null>(null);
   const [videoLookup, setVideoLookup] = useState<{ bvid: string; title: string; author: string; commentOpen: boolean } | null>(null);
+  const [bilibiliSurf, setBilibiliSurf] = useState<BilibiliSurfState | null>(null);
+  const [surfTagDrafts, setSurfTagDrafts] = useState<Record<string, string>>({});
+  const [newSurfTag, setNewSurfTag] = useState("");
+  const [surfNotice, setSurfNotice] = useState("");
+  const [surfSaving, setSurfSaving] = useState(false);
   const [bilibiliLoginKey, setBilibiliLoginKey] = useState("");
   const [bilibiliLoginQr, setBilibiliLoginQr] = useState("");
   const [bilibiliDraftText, setBilibiliDraftText] = useState("");
@@ -1875,6 +1887,39 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
       .catch(() => undefined)
       .finally(() => setTriggering(false));
   };
+  const refreshBilibiliSurf = async () => {
+    try {
+      const state = await lianxinApi.bilibiliSurfState();
+      setBilibiliSurf(state);
+      setSurfTagDrafts((current) => Object.fromEntries(state.tags.map((tag) => [tag.keyword, current[tag.keyword] ?? tag.search_query ?? ""])));
+    } catch {
+      setSurfNotice("兴趣标签暂时无法读取。");
+    }
+  };
+  useEffect(() => {
+    void refreshBilibiliSurf();
+  }, []);
+  const saveSurfTag = async (payload: { keyword: string; search_query?: string; status?: "active" | "paused" }) => {
+    setSurfSaving(true);
+    setSurfNotice("");
+    try {
+      const state = await lianxinApi.saveBilibiliSurfTag(payload);
+      if (!state.ok) {
+        setSurfNotice(state.error || "兴趣标签未保存。");
+        return;
+      }
+      setBilibiliSurf(state);
+      setSurfTagDrafts((current) => Object.fromEntries(state.tags.map((tag) => [tag.keyword,
+        tag.keyword === payload.keyword && payload.search_query !== undefined ? tag.search_query || "" : current[tag.keyword] ?? tag.search_query ?? "",
+      ])));
+      if (payload.search_query === undefined && payload.status === undefined) setNewSurfTag("");
+      setSurfNotice("兴趣标签已保存；留空搜索词时使用标签原词。");
+    } catch {
+      setSurfNotice("兴趣标签保存失败，请检查莲心服务。");
+    } finally {
+      setSurfSaving(false);
+    }
+  };
   const saveBilibiliSettings = async () => {
     setBilibiliSaving(true);
     setBilibiliNotice("");
@@ -1886,7 +1931,9 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
       }
       setBilibili(result.state);
       setBilibiliNotice(result.state.settings.userUidConfirmed
-        ? "设置已保存。UID 资料已确认，但评论与回复仍保持关闭。"
+        ? result.state.settings.autoCommentEnabled
+          ? "设置已保存。自动评论已开启，仍须通过账号、证据和发送校验；回复功能未开放。"
+          : "设置已保存。自动评论已关闭；仍可只读冲浪。"
         : "设置已保存。UID 尚未核验，互动仍保持关闭。");
     } catch {
       setBilibiliNotice("设置保存失败，请确认莲心服务正在运行。");
@@ -2146,31 +2193,47 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           disabled={triggering || running}
           onClick={() => trigger("bilibili")}
         >
-          B站冲浪
+          测试兴趣标签冲浪
         </button>
       </div>
       <section className="bili-interaction-panel" aria-labelledby="bili-interaction-title">
         <h3 id="bili-interaction-title">B 站冲浪与互动</h3>
         <p className="muted-copy">
-          普通冲浪仍只搜索、去重并推荐视频。设置测试区不会自动发言；公开评论和回复当前均被后端封锁。
+          每轮按一个兴趣标签搜索最多 3 个视频，按播放量选 1 个后读取简介、字幕与评论，结合当前人格决定是否评论。固定测试视频不参与自动冲浪。
         </p>
+        <details className="bili-surf-settings">
+          <summary>兴趣标签与最近一轮</summary>
+          <div className="bili-surf-tag-list">
+            {(bilibiliSurf?.tags || []).map((tag) => (
+              <div className="bili-surf-tag" key={tag.keyword}>
+                <div><strong>{tag.keyword}</strong><span>{tag.status === "paused" ? "已暂停" : tag.search_query ? `按“${tag.search_query}”搜索` : "按标签原词搜索"}</span></div>
+                <input
+                  aria-label={`${tag.keyword}的搜索词`}
+                  maxLength={80}
+                  disabled={surfSaving}
+                  value={surfTagDrafts[tag.keyword] ?? ""}
+                  placeholder={tag.keyword}
+                  onChange={(event) => setSurfTagDrafts((current) => ({ ...current, [tag.keyword]: event.target.value }))}
+                />
+                <button className="secondary-button" disabled={surfSaving} onClick={() => void saveSurfTag({ keyword: tag.keyword, search_query: surfTagDrafts[tag.keyword] ?? "" })}>保存</button>
+                <button className="secondary-button" disabled={surfSaving} onClick={() => void saveSurfTag({ keyword: tag.keyword, status: tag.status === "paused" ? "active" : "paused" })}>{tag.status === "paused" ? "恢复" : "暂停"}</button>
+              </div>
+            ))}
+          </div>
+          <div className="bili-surf-add">
+            <input aria-label="新增兴趣标签" disabled={surfSaving} maxLength={40} value={newSurfTag} placeholder="添加兴趣标签" onChange={(event) => setNewSurfTag(event.target.value)} />
+            <button className="secondary-button" disabled={surfSaving || !newSurfTag.trim()} onClick={() => void saveSurfTag({ keyword: newSurfTag.trim() })}>添加</button>
+          </div>
+          {surfNotice && <span className="bili-surf-notice">{surfNotice}</span>}
+          <div className="bili-surf-latest">
+            <strong>最近一轮</strong>
+            <button className="secondary-button" disabled={surfSaving} onClick={() => void refreshBilibiliSurf()}>刷新结果（只读）</button>
+            {bilibiliSurf?.latest ? (
+              <span>{bilibiliSurf.latest.summary} · 标签「{bilibiliSurf.latest.tag || "未选标签"}」/ 查询「{bilibiliSurf.latest.query || "无"}」 · 返回 {bilibiliSurf.latest.returned_count} 条，详情 {bilibiliSurf.latest.enriched_count} 条 · {bilibiliSurf.latest.send_status === "sent_verified" ? "评论已提交并回读匹配" : bilibiliSurf.latest.send_status === "sent_unverified" ? "评论已提交，回读未确认" : bilibiliSurf.latest.send_status === "unknown" ? "发送状态未知，请勿重试" : bilibiliSurf.latest.send_status === "read_only" ? "只读：未发评论" : bilibiliSurf.latest.send_status === "comment_skipped" ? "评论生成未通过，未发送" : bilibiliSurf.latest.send_status === "not_attempted" ? "未进入发送阶段" : `发送状态：${bilibiliSurf.latest.send_status}`} · {new Date(bilibiliSurf.latest.timestamp * 1000).toLocaleString()}</span>
+            ) : <span>还没有冲浪诊断记录。</span>}
+          </div>
+        </details>
         <div className="bili-interaction-grid">
-          <label>
-            互动模式
-            <select
-              value={bilibiliDraft.mode}
-              onChange={(event) =>
-                setBilibiliDraft((current) => ({
-                  ...current,
-                  mode: event.target.value as "read_only" | "test",
-                }))
-              }
-            >
-              <option value="read_only">只读冲浪</option>
-              <option value="test">指定测试区（手动一次）</option>
-              <option value="automatic" disabled>常规互动（验收后开放）</option>
-            </select>
-          </label>
           <label>
             用户的 B 站 UID
             <input
@@ -2183,22 +2246,11 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
               placeholder="填写主账号 UID"
             />
           </label>
-          <label className="bili-video-field">
-            测试视频
-            <input
-              autoComplete="off"
-              value={bilibiliDraft.testVideo}
-              onChange={(event) =>
-                setBilibiliDraft((current) => ({ ...current, testVideo: event.target.value }))
-              }
-              placeholder="BV 号或 bilibili.com/video 链接"
-            />
-          </label>
         </div>
         <div className="bili-interaction-row">
           <div>
             <strong>自动评论并 @ 主号</strong>
-            <span>开启后，莲心仅在冲浪时读过字幕和评论区、并生成具体评论后，才会发一条；接口受理不保证大号可见。默认关闭。</span>
+            <span>开启并保存后，莲心按兴趣搜索并结合证据与当前人格决定是否评论，每轮最多一条；接口受理不保证大号可见。默认关闭。</span>
           </div>
           <button
             className={`toggle ${bilibiliDraft.autoCommentEnabled ? "is-on" : ""}`}
@@ -2216,9 +2268,6 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
               确认是 {uidLookup.name}
             </button>
           )}
-          <button className="secondary-button" disabled={!bilibiliDraft.testVideo.trim() || bilibiliSaving} onClick={() => void inspectBilibiliVideo()}>
-            查询测试视频
-          </button>
         </div>
         {(bilibili?.settings.userUidConfirmed || videoLookup) && (
           <div className="bili-capability-status">
@@ -2263,10 +2312,46 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
             <span>二维码约 180 秒有效；扫码后请点击“检查扫码状态”。</span>
           </div>
         )}
+        <details className="bili-manual-test">
+          <summary>手动测试评论</summary>
+          <p className="muted-copy">不影响自动冲浪目标；仅在人工确认后公开发送。</p>
+          <div className="bili-interaction-grid">
+          <label>
+            手动测试模式
+            <select
+              value={bilibiliDraft.mode}
+              onChange={(event) =>
+                setBilibiliDraft((current) => ({
+                  ...current,
+                  mode: event.target.value as "read_only" | "test",
+                }))
+              }
+            >
+              <option value="read_only">禁止手动发送</option>
+              <option value="test">指定测试区（手动一次）</option>
+            </select>
+          </label>
+          <label className="bili-video-field">
+            测试视频
+            <input
+              autoComplete="off"
+              value={bilibiliDraft.testVideo}
+              onChange={(event) =>
+                setBilibiliDraft((current) => ({ ...current, testVideo: event.target.value }))
+              }
+              placeholder="BV 号或 bilibili.com/video 链接"
+            />
+          </label>
+          </div>
+          <div className="bili-interaction-actions">
+          <button className="secondary-button" disabled={!bilibiliDraft.testVideo.trim() || bilibiliSaving} onClick={() => void inspectBilibiliVideo()}>
+            查询测试视频
+          </button>
+          </div>
         <div className="bili-draft-panel">
           <div>
             <strong id="bili-comment-editor-title">评论正文（可直接手写 / 修改）</strong>
-            <span id="bili-comment-editor-help">不用先生成草稿：直接输入 → 保存当前正文 → 确认发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。测试阶段临时禁用本地持久防重与发送冷却；仅发送到指定测试视频，勿连续重发。</span>
+            <span id="bili-comment-editor-help">不用先生成草稿：直接输入 → 保存当前正文 → 确认发送测试评论。保存时会整理空白并自动补齐目标账号的 @，请以保存后的全文为准。保留同账号同视频防重；仅发送到指定测试视频，结果不明确时勿重发。</span>
           </div>
           <textarea
             value={bilibiliDraftText}
@@ -2296,9 +2381,23 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </div>
+        <div className="bili-interaction-actions">
+          <button
+            className="secondary-button"
+            disabled={!bilibili?.writeCapability.ready || bilibiliSaving || bilibiliDraftBusy}
+            title={bilibili?.writeCapability.blockers.join(" ") || "写入能力尚未就绪"}
+            onClick={() => void requestBilibiliTest()}
+          >
+            确认发送测试评论
+          </button>
+          <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void recheckBilibiliComment()}>
+            只读复核最近评论（不重发）
+          </button>
+        </div>
+        </details>
         <div className="bili-interaction-row">
           <div>
-            <strong>回复其他网友</strong>
+            <strong>回复其他网友（尚未就绪）</strong>
             <span>仅限直接回复莲心自己的评论；回复通知读取能力尚未接入。</span>
           </div>
           <button
@@ -2309,6 +2408,7 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
                 allowOtherReplies: !current.allowOtherReplies,
               }))
             }
+            disabled
             aria-label="允许回复其他网友"
             aria-pressed={bilibiliDraft.allowOtherReplies}
           >
@@ -2332,28 +2432,19 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="bili-capability-status" role="status">
-          <strong>公开写入：{bilibili?.writeCapability.ready ? "已就绪" : "已封锁"}</strong>
+          <strong>手动测试发送：{bilibili?.writeCapability.ready ? "已就绪" : "已封锁"}</strong>
           <span>
             {bilibili?.writeCapability.blockers.join(" ") || "正在读取写入能力状态。"}
           </span>
-          <span>UID 目前只保存为待核验设置，不代表已确认用户身份。</span>
+          <span>主号昵称需先查询并确认；公开资料匹配不等于账号所有权认证。</span>
         </div>
         <div className="bili-interaction-actions">
           <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void saveBilibiliSettings()}>
             {bilibiliSaving ? "保存中…" : "保存互动设置"}
           </button>
-          <button
-            className="secondary-button"
-            disabled={!bilibili?.writeCapability.ready || bilibiliSaving || bilibiliDraftBusy}
-            title={bilibili?.writeCapability.blockers.join(" ") || "写入能力尚未就绪"}
-            onClick={() => void requestBilibiliTest()}
-          >
-            确认发送测试评论
-          </button>
-          <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void recheckBilibiliComment()}>
-            只读复核最近评论（不重发）
-          </button>
         </div>
+        <details className="bili-manual-test">
+          <summary>最近发送记录与只读复核</summary>
         <p className="muted-copy">小号回读匹配不代表大号可见或 @ 通知送达；未登录最新一页未查到也不代表未发送。复核已有记录即可，不必重新生成草稿或发送。</p>
         {bilibili?.records?.slice(0, 5).map((record, index) => (
           <div key={`${record.rpid}-${index}`} className="muted-copy">
@@ -2362,10 +2453,11 @@ function ProactivePanel({ onClose }: { onClose: () => void }) {
             {record.rpid && <button className="secondary-button" disabled={bilibiliSaving} onClick={() => void recheckBilibiliComment(record.rpid)}>只读复核此评论</button>}
           </div>
         ))}
+        </details>
         {bilibiliNotice && <p className="muted-copy bili-notice" aria-live="polite">{bilibiliNotice}</p>}
       </section>
       <p className="muted-copy">
-        默认保持停用。B 站冲浪调试触发只会运行既有只读搜索推荐，不会发表评论。
+        自动评论默认关闭。调试与自动调度共用兴趣标签冲浪链路；开启自动评论且校验通过后可能公开发送一条评论。
       </p>
     </Overlay>
   );
