@@ -1,8 +1,7 @@
 /**
- * 新旧界面共用的语义分段逻辑（TypeScript 版）。
+ * 新版界面的文本分段逻辑（TypeScript 版）。
  *
- * 与 `utils/text_segmentation.py` 保持同一套规则，供新版界面复现旧界面的
- * 「分段发送」体验：一条长回复拆成若干条气泡，逐条送、逐条念。
+ * 短日常对话按完整句子拆分，长内容、结构化回复与工作类请求保持完整。
  */
 
 const SENTENCE_TARGET = 80;
@@ -12,12 +11,17 @@ const CONVERSATION_MERGE_LIMIT = 46;
 const CONVERSATION_LENGTH_LIMIT = 220;
 
 /** 回复是否应按「闲聊」节奏切分：短、无代码块、无结构化标记。 */
-export function shouldSendAsConversation(text: string): boolean {
+export function shouldSendAsConversation(text: string, userPrompt = ""): boolean {
   const value = (text || "").trim();
-  if (!value || value.length > CONVERSATION_LENGTH_LIMIT || value.includes("```"))
+  const prompt = (userPrompt || "").trim();
+  if (!value || value.length > CONVERSATION_LENGTH_LIMIT || /```|~~~/.test(value))
     return false;
-  const structuredMarkers = ["\n1.", "\n- ", "\n|", "{", "def ", "Traceback"];
-  return !structuredMarkers.some((marker) => value.includes(marker));
+  const structuredPattern = /(^|\n)\s*(?:#{1,6}\s|[-*+\u2022]\s|\d+[.)\u3001]\s*|[\u4e00-\u5341]+[\u3001\uff09]|>\s|\|)|\|[^\n]+\|/m;
+  if (structuredPattern.test(value) || /\b(?:Traceback|def\s+\w+|class\s+\w+)\b/.test(value))
+    return false;
+  const workIntentPattern = /\u67e5\u627e|\u67e5\u8d44\u6599|\u641c\u7d22|\u68c0\u7d22|\u6587\u732e|\u8bba\u6587|\u5206\u6790|\u65b9\u6848|\u5b9e\u73b0|\u4ee3\u7801|\u5f00\u53d1|\u5de5\u4f5c|\u62a5\u544a|\u603b\u7ed3|\u6574\u7406|\u7ffb\u8bd1|\u6da6\u8272|\u8ba1\u5212|\u8bbe\u8ba1|\u8c03\u8bd5|\u4fee\u590d|\u6d4b\u8bd5|\u8868\u683c|\u63a8\u5bfc|\u8ba1\u7b97|\u8be6\u7ec6\u89e3\u91ca|\b(?:research|paper|report|debug|implement|translate|code)\b/i;
+  if (/```|~~~/.test(prompt) || structuredPattern.test(prompt) || workIntentPattern.test(prompt)) return false;
+  return true;
 }
 
 /** 按完整句子切分，保留句末标点。 */

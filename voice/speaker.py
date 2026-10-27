@@ -246,7 +246,31 @@ class VoiceSpeaker:
 
         return [p.strip() for p in merged if p.strip()]
 
-    def speak(self, text: str):
+    def prepare(self, text: str) -> str | None:
+        """Synthesize a short speech segment without starting playback."""
+        if not text or not text.strip():
+            return None
+        cleaned_text = self._clean_text_for_tts(text)
+        if not cleaned_text:
+            return None
+        if self._stop_flag:
+            return None
+        return self._synthesize(cleaned_text)
+
+    def play_prepared(self, path: str) -> bool:
+        """Play a previously synthesized segment and always release its file."""
+        if not path:
+            return False
+        if self._stop_flag:
+            self._remove_temp_file(path)
+            return False
+        try:
+            self.init_player()
+            return self._play(path)
+        finally:
+            self._remove_temp_file(path)
+
+    def speak(self, text: str, *, reset_stop: bool = True):
         """合成并播放文字（阻塞直到播放完毕）。自动清洗文本，长文本分句合成。"""
         if not text or not text.strip():
             return
@@ -257,7 +281,10 @@ class VoiceSpeaker:
             print("[TTS] 清洗后文本为空，放弃朗读")
             return
         
-        self._stop_flag = False
+        if reset_stop:
+            self._stop_flag = False
+        if self._stop_flag:
+            return
         self.init_player()
 
         # 分句：每句不超过 100 字，防止 GPT-SoVITS 长文本后半段乱读
@@ -527,7 +554,11 @@ class VoiceSpeaker:
 
     def _play(self, path: str):
         try:
+            if self._stop_flag:
+                return False
             with VoiceSpeaker._pygame_lock:
+                if self._stop_flag:
+                    return False
                 if not pygame.get_init():
                     pygame.init()
                 if not pygame.mixer.get_init():
@@ -549,14 +580,6 @@ class VoiceSpeaker:
             # 等待播放结束（不持锁，避免阻塞其他线程的 stop()）
             while True:
                 if self._stop_flag:
-                    with VoiceSpeaker._pygame_lock:
-                        if self._current_channel:
-                            try:
-                                self._current_channel.stop()
-                            except Exception:
-                                pass
-                        else:
-                            pygame.mixer.stop()
                     break
                 with VoiceSpeaker._pygame_lock:
                     if self._current_channel:
@@ -566,8 +589,10 @@ class VoiceSpeaker:
                 if not busy:
                     break
                 pygame.time.wait(50)
+            return not self._stop_flag
         except Exception as e:
             print(f"[TTS播放出错] {e}")
+            return False
         finally:
             with VoiceSpeaker._pygame_lock:
                 self._current_channel = None

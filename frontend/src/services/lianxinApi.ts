@@ -318,8 +318,10 @@ export const lianxinApi = {
   taskSnapshot: () => request<{ workflowRuns: unknown[]; todos: unknown[]; autoTasks: unknown[]; logs: unknown[]; progress: { completed: number; total: number; active: string } }>("/tasks/snapshot"),
   taskEvents: (after: number) => request<{ items: Array<{ id: number; type: string; data: any }>; latest: number }>(`/tasks/events?after=${after}`),
   capabilities: () => request<{ items: Array<{ name: string; display_name: string; description: string; category: string; enabled: boolean; available: boolean; favorite: boolean }> }>("/capabilities"),
-  speak: (text: string) => request<{ speaking: boolean }>("/tts/speak", { method: "POST", body: JSON.stringify({ text }) }),
-  stopSpeaking: () => request<{ speaking: boolean }>("/tts/stop", { method: "POST", body: "{}" }),
+  speak: (text: string, generation?: number) => request<{ speaking: boolean }>("/tts/speak", { method: "POST", body: JSON.stringify({ text, generation }) }),
+  prepareSpeech: (text: string, generation: number) => request<{ prepared: boolean; id?: string; unavailable?: boolean; muted?: boolean; cancelled?: boolean }>("/tts/prepare", { method: "POST", body: JSON.stringify({ text, generation }) }),
+  playPreparedSpeech: (id: string) => request<{ played: boolean; cancelled?: boolean }>("/tts/play-prepared", { method: "POST", body: JSON.stringify({ id }) }),
+  stopSpeaking: () => request<{ speaking: boolean; generation: number }>("/tts/stop", { method: "POST", body: "{}" }),
   ttsStatus: () =>
     request<{
       speaking: boolean;

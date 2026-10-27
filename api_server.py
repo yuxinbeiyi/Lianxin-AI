@@ -763,6 +763,8 @@ class LianxinBridge:
         self._avatar_stats = None
         self._tts_lock = threading.RLock()
         self._tts_worker = None
+        self._tts_generation = 0
+        self._prepared_tts = {}
         self._call_sound = None
         self._call_channel = None
         self._netease_spawn_lock = threading.Lock()
@@ -1144,13 +1146,17 @@ class LianxinBridge:
         from brain.capability_catalog import list_capabilities
         return {"items": [item.__dict__ for item in list_capabilities(include_disabled=True)]}
 
-    def speak(self, text: str, voice: str = "") -> dict:
+    def speak(self, text: str, voice: str = "", generation: int | None = None) -> dict:
         if not str(text or "").strip():
             raise ValueError("朗读内容不能为空")
         from utils.settings import SettingsManager
         if SettingsManager().silent_mode:
             return {"speaking": False, "muted": True}
-        self.stop_speaking()
+        with self._tts_lock:
+            if generation is not None and generation != self._tts_generation:
+                return {"speaking": False, "cancelled": True}
+            self.stop_speaking()
+            generation = self._tts_generation
         from voice.speaker import VoiceSpeaker
         if not voice:
             try:
@@ -1184,38 +1190,116 @@ class LianxinBridge:
         speaker = VoiceSpeaker(voice=voice)
         def run():
             voice_manager = self._voice
-            if voice_manager is not None:
-                voice_manager.pause_vad()
-                with self._voice_lock:
-                    self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "speaking"})
-            try:
-                speaker.speak(str(text))
-            finally:
+            with self._tts_lock:
+                if generation != self._tts_generation:
+                    return
                 if voice_manager is not None:
-                    voice_manager.resume_vad()
+                    voice_manager.pause_vad()
                     with self._voice_lock:
-                        self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "idle"})
-                    threading.Timer(2.5, lambda: self.play_sound("StartSpeak.mp3")).start()
+                        self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "speaking"})
+            try:
+                speaker.speak(str(text), reset_stop=False)
+            finally:
                 with self._tts_lock:
                     if self._tts_worker is speaker:
                         self._tts_worker = None
+                        if voice_manager is not None:
+                            voice_manager.resume_vad()
+                            with self._voice_lock:
+                                self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "idle"})
         with self._tts_lock:
+            if generation != self._tts_generation:
+                return {"speaking": False, "cancelled": True}
             self._tts_worker = speaker
         threading.Thread(target=run, name="lianxin-api-tts", daemon=True).start()
         return {"speaking": True}
 
+    def prepare_speech(self, text: str, generation: int | None = None) -> dict:
+        if not str(text or "").strip():
+            raise ValueError("Speech text must not be empty")
+        from utils.settings import SettingsManager
+        if SettingsManager().silent_mode:
+            return {"prepared": False, "muted": True}
+        import uuid
+        from voice.speaker import VoiceSpeaker
+        with self._tts_lock:
+            if generation is not None and generation != self._tts_generation:
+                return {"prepared": False, "cancelled": True}
+            generation = self._tts_generation
+        from config import get_tts_config
+        voice = str(get_tts_config().get("edge_tts_voice") or "zh-CN-XiaoxiaoNeural")
+        speaker = VoiceSpeaker(voice=voice)
+        path = speaker.prepare(str(text))
+        if not path:
+            return {"prepared": False, "unavailable": True}
+        with self._tts_lock:
+            if generation != self._tts_generation:
+                speaker._remove_temp_file(path)
+                return {"prepared": False, "cancelled": True}
+            prepared_id = uuid.uuid4().hex
+            while len(self._prepared_tts) >= 8:
+                expired_id = next(iter(self._prepared_tts))
+                expired_speaker, expired_path, _ = self._prepared_tts.pop(expired_id)
+                expired_speaker._remove_temp_file(expired_path)
+            self._prepared_tts[prepared_id] = (speaker, path, generation)
+        return {"prepared": True, "id": prepared_id}
+
+    def play_prepared_speech(self, prepared_id: str) -> dict:
+        with self._tts_lock:
+            prepared = self._prepared_tts.pop(str(prepared_id or ""), None)
+            if prepared is None:
+                return {"played": False, "cancelled": True}
+            speaker, path, generation = prepared
+            if generation != self._tts_generation:
+                speaker._remove_temp_file(path)
+                return {"played": False, "cancelled": True}
+            from utils.settings import SettingsManager
+            if SettingsManager().silent_mode:
+                speaker._remove_temp_file(path)
+                return {"played": False, "muted": True}
+            previous = self._tts_worker
+            if previous is not None and previous is not speaker:
+                speaker._remove_temp_file(path)
+                return {"played": False, "busy": True}
+            self._tts_worker = speaker
+            voice_manager = self._voice
+            if voice_manager is not None:
+                voice_manager.pause_vad()
+                with self._voice_lock:
+                    self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "speaking"})
+        try:
+            played = speaker.play_prepared(path)
+        finally:
+            with self._tts_lock:
+                if self._tts_worker is speaker:
+                    self._tts_worker = None
+                    if voice_manager is not None:
+                        voice_manager.resume_vad()
+                        with self._voice_lock:
+                            self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "idle"})
+        return {"played": bool(played) and generation == self._tts_generation,
+                "cancelled": generation != self._tts_generation}
+
     def stop_speaking(self) -> dict:
         from skills.语音合成.tools import stop_voice_playback
-        stop_voice_playback()
         with self._tts_lock:
+            self._tts_generation += 1
+            stop_voice_playback()
             speaker = self._tts_worker
             self._tts_worker = None
-        if speaker is not None:
-            try:
-                speaker.stop()
-            except Exception:
-                pass
-        return {"speaking": False}
+            if speaker is not None:
+                try:
+                    speaker.stop()
+                except Exception:
+                    pass
+                if self._voice is not None:
+                    self._voice.resume_vad()
+                    with self._voice_lock:
+                        self._voice_events.append({"id": time.time_ns(), "type": "voice.tts", "state": "idle"})
+            for prepared_speaker, path, _ in self._prepared_tts.values():
+                prepared_speaker._remove_temp_file(path)
+            self._prepared_tts.clear()
+            return {"speaking": False, "generation": self._tts_generation}
 
     def tts_state(self) -> dict:
         from brain import tts_health
@@ -4388,7 +4472,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/voice/input/stop":
                 return self._send(bridge.stop_voice_input())
             if path == "/api/tts/speak":
-                return self._send(bridge.speak(str(body.get("text", "")), str(body.get("voice", ""))))
+                return self._send(bridge.speak(str(body.get("text", "")), str(body.get("voice", "")), body.get("generation")))
+            if path == "/api/tts/prepare":
+                return self._send(bridge.prepare_speech(str(body.get("text", "")), body.get("generation")))
+            if path == "/api/tts/play-prepared":
+                return self._send(bridge.play_prepared_speech(str(body.get("id", ""))))
             if path == "/api/tts/stop":
                 return self._send(bridge.stop_speaking())
             if path == "/api/tts/status":

@@ -55,9 +55,9 @@ import { managementGroups, primaryNavigation, demoMessages } from "./data/demo";
 import {
   shouldSendAsConversation,
   splitConversationText,
-  splitSemanticText,
 } from "./utils/textSegmentation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { playSpeechSequence } from "./utils/speechSequence";
 import {
   lianxinApi,
   type AvatarState,
@@ -3138,16 +3138,11 @@ export function App() {
   const [ttsNotice, setTtsNotice] = useState("");
   const ttsNoticeIdRef = useRef(0);
   const [silentMode, setSilentMode] = useState(false);
-  // 分段发送：节奏参数由后端设置项提供，分段计划按「回复正文」缓存。
-  const [segmentPause, setSegmentPause] = useState({
-    chatMin: 0.45,
-    chatMax: 1.1,
-    semanticMin: 3,
-    semanticMax: 7,
-  });
   const [segmentPlans, setSegmentPlans] = useState<Record<string, string[]>>({});
   const [segmentShown, setSegmentShown] = useState<Record<string, number>>({});
   const segmentTokenRef = useRef(0);
+  const turnGenerationRef = useRef(0);
+  const speechStopRef = useRef<Promise<number | null>>(Promise.resolve(null));
   useEffect(() => {
     const sync = () =>
       void lianxinApi
@@ -3172,16 +3167,6 @@ export function App() {
         .settingsPanels()
         .then((state) => {
           setSilentMode(Boolean(state.global.silentMode || state.sound.silentMode));
-          const positive = (value: unknown, fallback: number) => {
-            const parsed = typeof value === "number" ? value : Number(value);
-            return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-          };
-          setSegmentPause({
-            chatMin: positive(state.global.segmentPauseChatMin, 0.45),
-            chatMax: positive(state.global.segmentPauseChatMax, 1.1),
-            semanticMin: positive(state.global.segmentPauseSemanticMin, 3),
-            semanticMax: positive(state.global.segmentPauseSemanticMax, 7),
-          });
         })
         .catch(() => undefined);
     sync();
@@ -3548,7 +3533,8 @@ export function App() {
     };
   }, [avatar.fingerprint]);
   const openSession = (id: number) => {
-    fastForwardSegments();
+    turnGenerationRef.current += 1;
+    cancelSegments();
     return void lianxinApi
       .selectSession(id)
       .then(() => lianxinApi.messages(id))
@@ -3564,94 +3550,36 @@ export function App() {
   const segmentKeyOf = (content: string) =>
     (content || "").replace(/\s+/g, " ").trim();
 
-  const segmentSleep = (ms: number) =>
-    new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-
-  // 一条回复该不该分段、按哪种节奏分。不足两段时返回 null，走原来的整条发送。
-  const buildSegmentPlan = (value: string) => {
+  const buildSegmentPlan = (value: string, userPrompt: string) => {
     const text = (value || "").trim();
-    if (!text) return null;
-    const conversational = shouldSendAsConversation(text);
-    const parts = conversational
-      ? splitConversationText(text)
-      : splitSemanticText(text);
+    if (!text || !shouldSendAsConversation(text, userPrompt)) return null;
+    const parts = splitConversationText(text);
     if (parts.length < 2) return null;
-    return { key: segmentKeyOf(text), parts, conversational };
+    return { key: segmentKeyOf(text), parts };
   };
 
-  const waitForSpeechIdle = async (token: number, budgetMs: number) => {
-    const deadline = Date.now() + budgetMs;
-    while (Date.now() < deadline) {
-      if (token !== segmentTokenRef.current) return;
-      await segmentSleep(200);
-      try {
-        const state = await lianxinApi.ttsStatus();
-        if (!state.speaking) return;
-      } catch {
-        return;
-      }
-    }
-  };
-
-  // 逐段上屏 + 逐段朗读，段间停顿读设置项。token 变化即中断。
-  const revealSegments = async (plan: {
-    key: string;
-    parts: string[];
-    conversational: boolean;
-  }) => {
+  const revealSegments = async (plan: { key: string; parts: string[] }, generation: number) => {
     const token = segmentTokenRef.current + 1;
     segmentTokenRef.current = token;
-    setSegmentPlans((current) => ({ ...current, [plan.key]: plan.parts }));
-    setSegmentShown((current) => ({ ...current, [plan.key]: 1 }));
-    const bounds = plan.conversational
-      ? [segmentPause.chatMin, segmentPause.chatMax]
-      : [segmentPause.semanticMin, segmentPause.semanticMax];
-    const lowMs = Math.max(
-      100,
-      Math.round(Math.min(bounds[0], bounds[1]) * 1000),
-    );
-    const highMs = Math.max(
-      lowMs,
-      Math.round(Math.max(bounds[0], bounds[1]) * 1000),
-    );
-    for (let index = 0; index < plan.parts.length; index += 1) {
-      if (token !== segmentTokenRef.current) return;
-      const segment = plan.parts[index];
-      let speaking = false;
-      try {
-        const result = await lianxinApi.speak(segment);
-        speaking = Boolean(result?.speaking);
-      } catch {
-        speaking = false;
-      }
-      if (index === plan.parts.length - 1) return;
-      if (speaking) {
-        await waitForSpeechIdle(
-          token,
-          Math.min(60000, 1500 + segment.length * 220),
-        );
-      }
-      if (token !== segmentTokenRef.current) return;
-      await segmentSleep(
-        lowMs + Math.round(Math.random() * Math.max(0, highMs - lowMs)),
-      );
-      if (token !== segmentTokenRef.current) return;
-      setSegmentShown((current) => ({ ...current, [plan.key]: index + 2 }));
-    }
-  };
 
-  // 用户催到了（新消息 / 取消）：剩余段落立刻全部上屏，不丢内容。
-  const fastForwardSegments = () => {
-    segmentTokenRef.current += 1;
-    setSegmentShown(() => {
-      const next: Record<string, number> = {};
-      for (const [key, parts] of Object.entries(segmentPlans))
-        next[key] = parts.length;
-      return next;
+    await playSpeechSequence(plan.parts, generation, {
+      prepare: lianxinApi.prepareSpeech,
+      play: lianxinApi.playPreparedSpeech,
+      speak: lianxinApi.speak,
+      reveal: (count) => setSegmentShown((current) => ({ ...current, [plan.key]: count })),
+      isCurrent: () => token === segmentTokenRef.current,
+      beforePlay: () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
     });
   };
 
-  // 渲染用：把一条 assistant 消息摊成若干条气泡。带附件/图片的整条保留。
+  const cancelSegments = () => {
+    segmentTokenRef.current += 1;
+    speechStopRef.current = speechStopRef.current
+      .then(() => lianxinApi.stopSpeaking())
+      .then((result) => result.generation)
+      .catch(() => null);
+  };
+
   const segmentBubblesFor = (message: Message): string[] => {
     const content = message.content ?? "";
     if (message.role !== "assistant") return [content];
@@ -3661,7 +3589,7 @@ export function App() {
     const parts = segmentPlans[key];
     if (!parts) return [content];
     const shown = segmentShown[key] ?? parts.length;
-    return parts.slice(0, Math.max(1, Math.min(shown, parts.length)));
+    return parts.slice(0, Math.max(0, Math.min(shown, parts.length)));
   };
 
   const sendQueueRef = useRef(Promise.resolve());
@@ -3672,13 +3600,13 @@ export function App() {
     attachments: Attachment[] = [],
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
+    turnGeneration = turnGenerationRef.current,
   ) => {
     const messageTime = "现在";
     const imageIds = attachments.map(
       (_, index) => `image-${Date.now()}-${index}`,
     );
     void lianxinApi.playSound("ButtonAll.mp3").catch(() => undefined);
-    void lianxinApi.stopSpeaking().catch(() => undefined);
     setMessages((current) => [
       ...current,
       {
@@ -3749,11 +3677,18 @@ export function App() {
           time: "现在",
         },
       ]);
-      if (reply.trim()) {
+      if (reply.trim() && turnGeneration === turnGenerationRef.current) {
+        const plan = !attachments.length ? buildSegmentPlan(reply, text) : null;
+        if (plan) {
+          setSegmentPlans((current) => ({ ...current, [plan.key]: plan.parts }));
+          setSegmentShown((current) => ({ ...current, [plan.key]: 0 }));
+        }
+        const generation = await speechStopRef.current;
+        if (turnGeneration !== turnGenerationRef.current) return;
         void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
-        const plan = buildSegmentPlan(reply);
-        if (plan) await revealSegments(plan);
-        else void lianxinApi.speak(reply).catch(() => undefined);
+        if (plan && generation !== null) void revealSegments(plan, generation);
+        else if (generation !== null) void lianxinApi.speak(reply, generation).catch(() => undefined);
+        else if (plan) setSegmentShown((current) => ({ ...current, [plan.key]: plan.parts.length }));
       }
     } catch (error) {
       setMessages((current) => [
@@ -3773,12 +3708,12 @@ export function App() {
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
   ) => {
-    // 新一轮用户消息：把上一轮还没播完的分段立刻补全，避免内容被跳过。
-    fastForwardSegments();
+    const turnGeneration = ++turnGenerationRef.current;
+    cancelSegments();
     pendingSendsRef.current += 1;
     setBusy(true);
     sendQueueRef.current = sendQueueRef.current
-      .then(() => processSend(text, attachments, selection, quote))
+      .then(() => processSend(text, attachments, selection, quote, turnGeneration))
       .catch((error) => {
         console.error("[CHAT_QUEUE] failed", error);
       })
@@ -3814,14 +3749,16 @@ export function App() {
     return () => window.removeEventListener("open-tools", open);
   }, []);
   const handleCancel = () => {
-    fastForwardSegments();
+    turnGenerationRef.current += 1;
+    cancelSegments();
     void lianxinApi.cancelChat();
     setBusy(false);
   };
   // 工具信息栏永不随对话清空，只有重启莲心或新建/切换会话时才消失。
   messagesRef.current = messages;
   const handleNewChat = () => {
-    fastForwardSegments();
+    turnGenerationRef.current += 1;
+    cancelSegments();
     setMessages([]);
     setInteractionMessages([]);
     setToolBlocks([]);
@@ -3850,7 +3787,7 @@ export function App() {
   const toggleMute = () => {
     const next = !silentMode;
     setSilentMode(next);
-    if (next) void lianxinApi.stopSpeaking().catch(() => undefined);
+    if (next) cancelSegments();
     void lianxinApi.saveSettingsPanels({ global: { silentMode: next }, sound: { silentMode: next } }).catch(() => setSilentMode(!next));
   };
   const openLegacy = (feature: LegacyFeature) => {
