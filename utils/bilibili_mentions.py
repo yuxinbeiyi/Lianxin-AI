@@ -6,61 +6,20 @@ from contextlib import closing
 from utils import bilibili_api_transport as transport
 from utils.bilibili_interaction import parse_bilibili_video_id
 from utils.bilibili_reply import identity
+from utils.bilibili_notifications import DiscoveryStopped
 from utils.bilibili_reply_log import reply_log
 
 
-def scan_mentions(worker, snapshot):
-    account, main_uid, enabled_at, credential = snapshot
-    reply_log("@轮询开始", account=account, main_uid=main_uid)
-    try:
-        key = f"mention_cursor:{account}"
-        with closing(worker.connect()) as database:
-            cursor = json.loads(worker.meta(database, key, "{}"))
-        response = transport.get_received_mentions(credential)
-        if identity(cursor.get("id")):
-            latest = response.get("items") or []
-            if latest:
-                try:
-                    scan_notice(worker, snapshot, latest[0])
-                except Exception as error:
-                    reply_log("最新@通知核实暂缓", error=type(error).__name__)
-            response = transport.get_received_mentions(credential, last_id=int(cursor["id"]), at_time=cursor.get("time"))
-        items = response.get("items") or []
-        if not isinstance(items, list):
-            raise ValueError("Invalid mention notifications")
-        reply_log("读取@通知", account=account, count=len(items))
-        offset_key = f"mention_offset:{account}"
-        with closing(worker.connect()) as database, database:
-            offset = int(worker.meta(database, offset_key))
-        chosen = items[offset:offset+3]
-        for notice in chosen:
-            if worker.snapshot("mention") != snapshot:
-                return
-            try:
-                scan_notice(worker, snapshot, notice)
-            except Exception as error:
-                reply_log("@通知核实暂缓", error=type(error).__name__)
-        next_offset = offset + len(chosen)
-        next_cursor = cursor
-        if next_offset >= len(items):
-            next_offset = 0
-            paging = response.get("cursor") or {}
-            next_cursor = {"id": identity(paging.get("id")), "time": paging.get("time")} if not paging.get("is_end", True) else {}
-        with closing(worker.connect()) as database, database:
-            worker.set_meta(database, offset_key, next_offset)
-            worker.set_meta(database, key, json.dumps(next_cursor))
-    except Exception as error:
-        reply_log("@通知读取失败", error=type(error).__name__, reason="未发现事件不代表没有收到@，等待下轮")
-
-
-def scan_notice(worker, snapshot, notice):
+def scan_notice(worker, snapshot, notice, budget):
     account, main_uid, enabled_at, credential = snapshot
     item = notice.get("item") or {}
     author = identity((notice.get("user") or {}).get("mid"))
+    if not author or not item.get("type") or item.get("business_id") is None:
+        return "deferred", ""
     if author != main_uid or item.get("type") != "reply" or str(item.get("business_id")) != "1":
         reply_log("忽略@通知", notice=identity(notice.get("id")), author=author,
                   reason="非主号或非视频评论，未交给模型")
-        return
+        return "ignored", ""
     aid = identity(item.get("subject_id"))
     sources = {identity(item.get(key)) for key in ("source_id", "target_id", "id")} - {""}
     explicit_root = identity(item.get("root_id"))
@@ -68,8 +27,12 @@ def scan_notice(worker, snapshot, notice):
         identity(item.get(key)) for key in ("source_id", "target_id", "id") if identity(item.get(key))))
     if not aid or not sources or not roots:
         reply_log("忽略@通知", reason="视频或评论定位字段缺失")
-        return
-    info = transport.get_video_info_by_aid(credential, aid)
+        return "deferred", ""
+    def read(function, *args, **kwargs):
+        if worker.snapshot("mention") != snapshot:
+            raise DiscoveryStopped("Mention authorization changed")
+        return budget.read(function, *args, **kwargs)
+    info = read(transport.get_video_info_by_aid, credential, aid, cache_key=("aid", account, aid))
     bvid = parse_bilibili_video_id(info.get("bvid", ""))
     if identity(info.get("aid")) != aid or not bvid:
         raise ValueError("Video identity mismatch")
@@ -79,11 +42,13 @@ def scan_notice(worker, snapshot, notice):
             page = int(worker.meta(database, page_key, "1"))
         for page_index in (1,) if page == 1 else (1, page):
             try:
-                result = transport.get_comment_thread(credential, aid, root_id, page_index)
+                result = read(transport.get_comment_thread, credential, aid, root_id, page_index,
+                    cache_key=("thread", account, aid, root_id, page_index))
+            except DiscoveryStopped:
+                raise
             except Exception as error:
                 reply_log("@原评论读取暂缓", root=root_id, page=page_index, error=type(error).__name__)
-                result = {}
-                continue
+                raise
             root = result.get("root") or {}
             root_author = identity((root.get("member") or {}).get("mid"))
             if (identity(root.get("rpid")) != root_id or identity(root.get("root"))
@@ -99,7 +64,11 @@ def scan_notice(worker, snapshot, notice):
                 reply_log("核实@留言", bvid=bvid, source=source_id, author=identity((reply.get("member") or {}).get("mid")),
                           root=root_id, reason=reason or "主号UID与互动账号@元数据核验通过")
                 if reason:
+                    if reason == "开启前的历史留言":
+                        return "ignored", source_id
                     continue
+                if worker.snapshot("mention") != snapshot:
+                    raise DiscoveryStopped("Mention authorization changed")
                 payload = {"reply": reply, "page": page_index, "title": str(info.get("title", ""))[:500], "root_author": root_author}
                 with closing(worker.connect()) as database, database:
                     inserted = database.execute("INSERT OR IGNORE INTO bili_reply_jobs "
@@ -107,15 +76,16 @@ def scan_notice(worker, snapshot, notice):
                         (account, source_id, main_uid, root_id, bvid, aid, json.dumps(payload, ensure_ascii=False),
                          float(reply["ctime"]), "mention")).rowcount
                     if not inserted:
-                        inserted = database.execute("UPDATE bili_reply_jobs SET kind='mention',payload=? "
+                        inserted = database.execute("UPDATE bili_reply_jobs SET kind='mention',payload=?,index_dirty=1 "
                             "WHERE account=? AND source=? AND kind='reply' AND state='pending'",
                             (json.dumps(payload, ensure_ascii=False), account, source_id)).rowcount
                 reply_log("@留言入队" if inserted else "@留言已防重", bvid=bvid, source=source_id, root=root_id)
-                return
+                return "verified", source_id
         count = int((result.get("page") or {}).get("count", 0))
         with closing(worker.connect()) as database, database:
             worker.set_meta(database, page_key, page + 1 if page * 20 < count else 1)
     reply_log("@留言本轮未定位", bvid=bvid, reason="未找到可验证原评论；分页轮扫或平台可见性可能影响发现")
+    return "deferred", ""
 
 
 def read_mention_material(credential, job):

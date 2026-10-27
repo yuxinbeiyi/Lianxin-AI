@@ -18,7 +18,6 @@ from utils.paths import get_user_data_dir
 _HISTORY_PATH = get_user_data_dir() / "bilibili_history.json"
 
 _SEARCH_COOLDOWN_SECONDS = 30
-_TAG_COOLDOWN_HOURS = 48
 _DECAY_PER_7_DAYS = 3
 
 
@@ -180,9 +179,6 @@ class BilibiliHistoryManager:
         scored = []
         for t in self._data["tags"]:
             if t.get("status") != "active":
-                continue
-            last = t.get("last_searched", 0)
-            if last > 0 and (now - last) < _TAG_COOLDOWN_HOURS * 3600:
                 continue
             base = t.get("base_score", 50)
             boost = t.get("boost_score", 0)

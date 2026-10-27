@@ -34,6 +34,12 @@ class CommentJournal:
         if "verification" not in columns:
             connection.execute("ALTER TABLE comments ADD COLUMN verification TEXT DEFAULT '{}'")
             connection.commit()
+        for name, definition in (("aid", "TEXT NOT NULL DEFAULT ''"),
+                ("sent_at", "REAL NOT NULL DEFAULT 0"), ("index_dirty", "INTEGER NOT NULL DEFAULT 1")):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE comments ADD COLUMN {name} {definition}")
+                connection.commit()
+        connection.execute("CREATE INDEX IF NOT EXISTS bili_comments_dirty ON comments(index_dirty) WHERE index_dirty=1")
         connection.execute("CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, created_at INTEGER, result TEXT)")
         return connection
 
@@ -82,13 +88,16 @@ class CommentJournal:
         finally:
             connection.close()
 
-    def finish(self, fingerprint, status, rpid, verified, diagnostic="", verification=None):
+    def finish(self, fingerprint, status, rpid, verified, diagnostic="", verification=None, *, aid=None, sent_at=None):
         connection = self.connect()
         try:
             with connection:
                 connection.execute(
-                    "UPDATE comments SET status=?, rpid=?, mention_verified=?, diagnostic=?, verification=? WHERE fingerprint=?",
-                    (status, rpid, int(verified), diagnostic, json.dumps(verification or {}, ensure_ascii=False), fingerprint))
+                    "UPDATE comments SET status=?, rpid=?, mention_verified=?, diagnostic=?, verification=?, "
+                    "aid=CASE WHEN ? IS NULL THEN aid ELSE ? END, "
+                    "sent_at=CASE WHEN sent_at>0 OR ? IS NULL THEN sent_at ELSE ? END, index_dirty=1 WHERE fingerprint=?",
+                    (status, rpid, int(verified), diagnostic, json.dumps(verification or {}, ensure_ascii=False),
+                     aid, str(aid or ""), sent_at, sent_at, fingerprint))
         finally:
             connection.close()
 
@@ -200,7 +209,7 @@ def recheck_comment(service, rpid):
         verification, diagnostic = verify_comment(service, aid, record, credential)
         status = "sent_verified" if verification["mentionVerified"] else "sent_unverified"
         service._journal.finish(record["fingerprint"], status, record["rpid"], verification["mentionVerified"],
-                                diagnostic, verification)
+                                diagnostic, verification, aid=aid)
         return {"ok": True, "rpid": record["rpid"], "verification": verification,
                 "message": verification_message(verification), "diagnostic": diagnostic, "state": service.get_state()}
     except Exception as error:
@@ -274,7 +283,7 @@ def send_test_comment(service, target, draft_id, confirmed):
                 rpid = returned_id
                 status = "sent_unverified"
                 diagnostic += "; stage=readback"
-                service._journal.finish(fingerprint, status, rpid, False, diagnostic)
+                service._journal.finish(fingerprint, status, rpid, False, diagnostic, aid=aid, sent_at=time.time())
                 verification, readback_diagnostic = verify_comment(service, aid, {
                     "rpid": rpid, "account_uid": account_uid, "text": draft["text"],
                     "mention_uid": settings["user_uid"]}, credential)

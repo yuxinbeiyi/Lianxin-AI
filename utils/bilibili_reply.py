@@ -7,6 +7,8 @@ from contextlib import closing
 
 from utils import bilibili_api_transport as transport
 from utils.bilibili_reply_log import reply_log
+from utils.bilibili_thread_index import BilibiliThreadIndex
+from utils.bilibili_notifications import DiscoveryBudget, DiscoveryStopped, NotificationInbox
 
 
 def identity(value):
@@ -38,6 +40,30 @@ class BilibiliReplyService:
             columns = {row[1] for row in database.execute("PRAGMA table_info(bili_reply_jobs)")}
             if "kind" not in columns:
                 database.execute("ALTER TABLE bili_reply_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'")
+            for name, definition in (("sent_at", "REAL NOT NULL DEFAULT 0"),
+                    ("index_dirty", "INTEGER NOT NULL DEFAULT 1")):
+                if name not in columns:
+                    database.execute(f"ALTER TABLE bili_reply_jobs ADD COLUMN {name} {definition}")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_jobs_dirty ON bili_reply_jobs(index_dirty) WHERE index_dirty=1")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_comment_roots ON comments(account_uid,mention_uid,rpid,status)")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_external_roots ON bili_reply_jobs(account,main_uid,root) "
+                "WHERE state='sent'")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_jobs_ready_order ON bili_reply_jobs "
+                "(account,main_uid,created,length(source),source) WHERE state IN ('pending','generating')")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_jobs_thread_order ON bili_reply_jobs "
+                "(account,main_uid,aid,root,created,length(source),source) WHERE state IN ('pending','generating')")
+            database.execute("CREATE INDEX IF NOT EXISTS bili_jobs_exhausted ON bili_reply_jobs "
+                "(account,main_uid,lease) WHERE attempts>=3 AND state IN ('pending','generating')")
+        self.thread_index = BilibiliThreadIndex(self.connect)
+        self.inbox = NotificationInbox(self.connect)
+
+    def maintain_index(self):
+        try:
+            summary = self.thread_index.maintain()
+            if summary["processed"]:
+                reply_log("线程索引维护", **summary, scheduler="recent_due")
+        except Exception as error:
+            reply_log("线程索引维护暂缓", error=type(error).__name__, reason="源审计与修复标记保留，不影响发送状态")
 
     def connect(self):
         return self.service._journal.connect()
@@ -65,8 +91,10 @@ class BilibiliReplyService:
     def set_meta(self, database, key, value):
         database.execute("INSERT OR REPLACE INTO bili_reply_meta VALUES (?,?)", (key, str(value)))
 
-    def thread(self, credential, job, page=1):
-        result = transport.get_comment_thread(credential, job["aid"], job["root"], page)
+    def thread(self, credential, job, page=1, budget=None):
+        arguments = (credential, job["aid"], job["root"], page)
+        result = budget.read(transport.get_comment_thread, *arguments,
+            cache_key=("thread", job["account"], job["aid"], job["root"], page)) if budget else transport.get_comment_thread(*arguments)
         root = result.get("root") or {}
         if (identity(root.get("rpid")) != job["root"]
                 or identity(root.get("root"))
@@ -126,49 +154,48 @@ class BilibiliReplyService:
     def valid_source(self, reply, job, enabled_at):
         return not self.rejection(reply, job, enabled_at)
 
-    def scan(self, snapshot):
+    def scan(self, snapshot, budget=None):
+        if budget is None:
+            self.maintain_index()
+        budget = budget or DiscoveryBudget(lambda: self.snapshot() == snapshot)
         account, main_uid, enabled_at, credential = snapshot
-        with closing(self.connect()) as database, database:
-            roots = [dict(row) for row in database.execute(
-                "SELECT * FROM comments WHERE account_uid=? AND mention_uid=? "
-                "AND status IN ('sent_verified','sent_unverified') AND rpid != '' ORDER BY created_at DESC",
-                (account, main_uid))]
-            external = database.execute("SELECT bvid,root,payload FROM bili_reply_jobs WHERE account=? AND main_uid=? "
-                "AND kind='mention' AND state='sent' ORDER BY created DESC", (account, main_uid))
-            known = {(record["bvid"], record["rpid"]) for record in roots}
-            for record in external:
-                if (record["bvid"], record["root"]) not in known:
-                    roots.append({"bvid": record["bvid"], "rpid": record["root"],
-                                  "root_author": json.loads(record["payload"])["root_author"]})
-                    known.add((record["bvid"], record["root"]))
-            offset = int(self.meta(database, f"root:{account}"))
-            self.set_meta(database, f"root:{account}", (offset + min(3, len(roots))) % max(1, len(roots)))
-        reply_log("轮询开始", account=account, main_uid=main_uid, known_threads=len(roots), offset=offset)
-        for index in range(min(3, len(roots))):
-            if self.cancelled():
-                return
-            record = roots[(offset + index) % len(roots)]
-            try:
-                self.scan_root(record, snapshot)
-            except Exception as error:
-                print(f"[B站续聊] 评论串读取暂缓: {type(error).__name__}")
-        if roots and not self.cancelled():
-            try:
-                notifications = transport.get_received_replies(credential)
-                hints = {identity((item.get("item") or {}).get("root_id"))
-                         for item in (notifications.get("items") or []) if isinstance(item, dict)}
-                scanned = {str(roots[(offset + index) % len(roots)]["rpid"]) for index in range(min(3, len(roots)))}
-                hinted = next((record for record in roots if str(record["rpid"]) in hints - scanned), None)
-                if hinted:
-                    self.scan_root(hinted, snapshot)
-            except Exception as error:
-                print(f"[B站续聊] 通知读取暂缓，已使用评论串轮扫: {type(error).__name__}")
-
-    def scan_root(self, record, snapshot):
-        account, main_uid, enabled_at, credential = snapshot
-        video = self.service._video_lookup(record["bvid"])
-        if video.get("bvid") != record["bvid"] or not identity(video.get("aid")):
+        try:
+            roots = self.thread_index.recent_due(account, main_uid, self.clock())
+        except Exception as error:
+            reply_log("近期补查暂缓", error=type(error).__name__, reason="索引不可用，不回退全历史扫描")
             return
+        scanned = 0
+        for record in roots:
+            if self.snapshot() != snapshot:
+                break
+            try:
+                if (record["bvid"], record["root"]) not in budget.threads:
+                    self.scan_root({**record, "rpid": record["root"]}, snapshot, budget)
+                    scanned += 1
+            except DiscoveryStopped:
+                break
+            except Exception as error:
+                reply_log("近期串读取暂缓", root=record["root"], error=type(error).__name__)
+                try:
+                    self.thread_index.scan_failed(record, self.clock())
+                except Exception as persistence_error:
+                    reply_log("补查退避保存暂缓", error=type(persistence_error).__name__)
+                self.inbox.throttle(account, self.clock(), error, budget)
+                if budget.blocked:
+                    break
+        reply_log("近期补查汇总", selected=len(roots), scanned=scanned, interval_seconds=600, limit=2)
+
+    def scan_root(self, record, snapshot, budget):
+        account, main_uid, enabled_at, credential = snapshot
+        if self.snapshot() != snapshot:
+            raise DiscoveryStopped("Reply authorization changed")
+        budget.threads.add((record["bvid"], str(record["rpid"])))
+        lookup = getattr(self.service, "_reply_video_lookup", self.service._video_lookup)
+        video = budget.read(lookup, record["bvid"], cache_key=("video", account, record["bvid"]))
+        if video.get("bvid") != record["bvid"] or not identity(video.get("aid")):
+            raise ValueError("Video identity mismatch")
+        if record.get("aid") and str(record["aid"]) != identity(video["aid"]):
+            raise ValueError("Indexed video identity mismatch")
         job = {"account": account, "main_uid": main_uid, "root": identity(record["rpid"]),
                "bvid": record["bvid"], "aid": identity(video["aid"]), "root_author": record.get("root_author", account)}
         if not job["root"]:
@@ -176,7 +203,15 @@ class BilibiliReplyService:
         page_key = f"page:{account}:{job['root']}"
         with closing(self.connect()) as database:
             page = int(self.meta(database, page_key, "1"))
-        root, replies, paging = self.thread(credential, job, page)
+        if self.snapshot() != snapshot:
+            raise DiscoveryStopped("Reply authorization changed")
+        root, replies, paging = self.thread(credential, job, page, budget)
+        if self.snapshot() != snapshot:
+            raise DiscoveryStopped("Reply authorization changed")
+        try:
+            self.thread_index.resolve(account, main_uid, job["aid"], job["root"], job["bvid"], job["root_author"])
+        except Exception as error:
+            reply_log("线程身份补全暂缓", root=job["root"], error=type(error).__name__)
         candidates = [reply for reply in replies if self.valid_source(reply, job, enabled_at)]
         reply_log("评论串扫描", bvid=job["bvid"], root=job["root"], page=page, scanned=len(replies), eligible=len(candidates))
         for reply in replies:
@@ -185,7 +220,8 @@ class BilibiliReplyService:
                       eligible=reply in candidates, reason=self.rejection(reply, job, enabled_at) or "主号与父子关系校验通过")
         with closing(self.connect()) as database, database:
             total = int(paging.get("count", 0))
-            self.set_meta(database, page_key, page + 1 if page * 20 < total else 1)
+            next_page = page + 1 if page * 20 < total else 1
+            self.set_meta(database, page_key, next_page)
             for reply in candidates:
                 payload = {"reply": reply, "page": page, "title": str(video.get("title", ""))[:500], "root_author": job["root_author"]}
                 inserted = database.execute("INSERT OR IGNORE INTO bili_reply_jobs "
@@ -193,22 +229,132 @@ class BilibiliReplyService:
                     (account, identity(reply["rpid"]), main_uid, job["root"], job["bvid"], job["aid"],
                      json.dumps(payload, ensure_ascii=False), float(reply["ctime"]))).rowcount
                 reply_log("留言入队" if inserted else "留言已处理或已在队列", source=identity(reply["rpid"]), bvid=job["bvid"])
+        try:
+            self.thread_index.scanned({**record, **job}, job["aid"], self.clock(), next_page,
+                max((float(reply["ctime"]) for reply in candidates), default=0))
+        except Exception as error:
+            reply_log("补查状态保存暂缓", root=job["root"], error=type(error).__name__, reason="已核验任务保留")
+        return {identity(reply["rpid"]) for reply in candidates}
 
-    def claim(self, snapshot, kind="reply"):
-        account, main_uid, enabled_at, credential = snapshot
+    def scan_reply_notice(self, snapshot, notice, budget):
+        account, main_uid = snapshot[:2]
+        item = notice.get("item") or {}
+        if not identity((notice.get("user") or {}).get("mid")) or not item.get("type") or item.get("business_id") is None:
+            return "deferred", ""
+        if identity((notice.get("user") or {}).get("mid")) != main_uid:
+            return "ignored", ""
+        if item.get("type") != "reply" or str(item.get("business_id")) != "1":
+            return "ignored", ""
+        sources = {identity(item.get(key)) for key in ("source_id", "target_id", "id")} - {""}
+        roots = list(dict.fromkeys(identity(item.get(key)) for key in ("root_id", "target_id", "source_id") if identity(item.get(key))))
+        if not roots or not sources:
+            return "deferred", ""
+        record = None
+        with closing(self.connect()) as database:
+            for root in roots[:3]:
+                row = database.execute("SELECT bvid,rpid,account_uid AS root_author,created_at,sent_at,aid FROM comments "
+                    "WHERE account_uid=? AND mention_uid=? AND rpid=? AND status IN ('sent_verified','sent_unverified') LIMIT 1",
+                    (account, main_uid, root)).fetchone()
+                if row:
+                    record = dict(row)
+                    break
+                row = database.execute("SELECT bvid,root AS rpid,payload,created AS created_at,sent_at,aid FROM bili_reply_jobs "
+                    "WHERE account=? AND main_uid=? AND root=? AND state='sent' AND kind='mention' LIMIT 1",
+                    (account, main_uid, root)).fetchone()
+                if row:
+                    record = {**dict(row), "root_author": json.loads(row["payload"])["root_author"]}
+                    break
+        if not record:
+            return "ignored", ""
+        found = self.scan_root(record, snapshot, budget) or set()
+        matching = sources & found
+        return ("verified", next(iter(matching))) if matching else ("deferred", "")
+
+    def discover(self, snapshots):
+        def active():
+            if any(self.inbox.blocked_until(snapshot[0]) > self.clock() for snapshot in snapshots.values()):
+                budget.blocked = True
+                return False
+            return any(self.snapshot(kind) == snapshot for kind, snapshot in snapshots.items())
+        budget = DiscoveryBudget(active)
+        if any(self.inbox.blocked_until(snapshot[0]) > self.clock() for snapshot in snapshots.values()):
+            budget.blocked = True
+            reply_log("账号发现退避", reason="此前通知接口限流，暂不读取或发送")
+            return budget
+        reply_log("通知流检查", account=next(iter(snapshots.values()))[0], streams=",".join(snapshots), latest_first=True)
+        for history in (False, True):
+            for stream, snapshot in snapshots.items():
+                try:
+                    self.inbox.fetch(self, snapshot, stream, budget, history)
+                except Exception as error:
+                    reply_log("通知落盘暂缓", stream=stream, error=type(error).__name__, reason="未完成的检查点保留")
+        from utils.bilibili_mentions import scan_notice
+        for notice in self.inbox.candidates(snapshots, self.clock()):
+            stream = notice["stream"]
+            snapshot = snapshots[stream]
+            if self.snapshot(stream) != snapshot or budget.blocked:
+                continue
+            try:
+                budget.candidates += 1
+                payload = json.loads(notice["payload"])
+                state, source = (scan_notice(self, snapshot, payload, budget) if stream == "mention"
+                                 else self.scan_reply_notice(snapshot, payload, budget))
+                self.inbox.finish(notice, state, self.clock(), source)
+            except DiscoveryStopped:
+                reply_log("通知核验暂缓", stream=stream, reason="预算、暂停或身份变化；通知留待下轮")
+                break
+            except Exception as error:
+                reply_log("通知核验异常", stream=stream, notice=notice["notice_id"], error=type(error).__name__)
+                try:
+                    self.inbox.throttle(snapshot[0], self.clock(), error, budget)
+                    self.inbox.finish(notice, "deferred", self.clock())
+                except Exception as persistence_error:
+                    reply_log("通知重试标记暂缓", error=type(persistence_error).__name__)
+        if "reply" in snapshots and not budget.blocked and budget.reads < 12:
+            self.scan(snapshots["reply"], budget)
+        reply_log("通知发现汇总", reads=budget.reads, pages=budget.pages, stored=budget.stored,
+                  candidates=budget.candidates, account_backoff=budget.blocked, fallback="recent_due")
+        return budget
+
+    def claim(self, snapshots, kind="reply"):
+        snapshots = snapshots if isinstance(snapshots, dict) else {kind: snapshots}
+        if not snapshots or any(name not in ("reply", "mention") or self.snapshot(name) != value
+                                for name, value in snapshots.items()):
+            return None
+        account, main_uid = next(iter(snapshots.values()))[:2]
+        if any(value[:2] != (account, main_uid) for value in snapshots.values()):
+            return None
+        parameters = {"account": account, "main": main_uid, "now": self.clock()}
+        for name, value in snapshots.items():
+            parameters[f"kind_{name}"] = name
+            parameters[f"cutoff_{name}"] = value[2]
+        def scope(alias):
+            return "(" + " OR ".join(f"({alias}.kind=:kind_{name} AND {alias}.created>:cutoff_{name})"
+                                     for name in snapshots) + ")"
         with closing(self.connect()) as database, database:
             database.execute("BEGIN IMMEDIATE")
             remaining = float(self.meta(database, "last_send")) + 120 - self.clock()
             if remaining > 0:
-                reply_log("发送冷却", kind=kind, remaining_seconds=int(remaining)+1)
+                reply_log("发送冷却", streams=",".join(snapshots), remaining_seconds=int(remaining)+1)
                 return None
-            row = database.execute("SELECT * FROM bili_reply_jobs WHERE account=? AND main_uid=? AND kind=? "
-                "AND created>? AND attempts<3 AND (state='pending' OR (state='generating' AND lease<?)) "
-                "ORDER BY created,source LIMIT 1", (account, main_uid, kind, enabled_at, self.clock())).fetchone()
+            database.execute("UPDATE bili_reply_jobs SET state='exhausted',owner='',lease=0 WHERE rowid IN ("
+                "SELECT rowid FROM bili_reply_jobs AS expired WHERE account=:account AND main_uid=:main "
+                "AND attempts>=3 AND state IN ('pending','generating') "
+                f"AND (state='pending' OR lease<=:now) AND {scope('expired')} LIMIT 100)", parameters)
+            row = database.execute("SELECT job.* FROM bili_reply_jobs AS job "
+                "WHERE job.account=:account AND job.main_uid=:main AND job.state IN ('pending','generating') "
+                f"AND {scope('job')} AND job.attempts<3 AND (job.state='pending' OR job.lease<=:now) "
+                "AND NOT EXISTS (SELECT 1 FROM bili_reply_jobs AS prior WHERE prior.account=job.account "
+                "AND prior.main_uid=job.main_uid AND prior.aid=job.aid AND prior.root=job.root "
+                f"AND prior.state IN ('pending','generating') AND {scope('prior')} "
+                "AND (prior.attempts<3 OR (prior.state='generating' AND prior.lease>:now)) "
+                "AND (prior.created,length(prior.source),prior.source)<(job.created,length(job.source),job.source)) "
+                "ORDER BY job.created,length(job.source),job.source LIMIT 1", parameters).fetchone()
             if row is None:
                 return None
             database.execute("UPDATE bili_reply_jobs SET state='generating',owner=?,lease=?,attempts=attempts+1 "
                 "WHERE account=? AND source=?", (self.owner, self.clock()+600, account, row["source"]))
+            reply_log("队列选择", kind=row["kind"], source=row["source"], root=row["root"], rule="留言时间先来先回，同串不越过生成中任务")
             return dict(row)
 
     def mark(self, job, state):
@@ -231,14 +377,14 @@ class BilibiliReplyService:
         if not snapshot and not mention_snapshot:
             reply_log("轮询未执行", reason="功能关闭、暂停、身份未核验、授权缺失或退出请求")
             return "disabled"
-        if snapshot:
-            self.scan(snapshot)
-        if mention_snapshot:
-            from utils.bilibili_mentions import scan_mentions
-            scan_mentions(self, mention_snapshot)
-        job = self.claim(snapshot) if snapshot else None
-        if job is None and mention_snapshot:
-            job = self.claim(mention_snapshot, "mention")
+        self.maintain_index()
+        snapshots = {kind: value for kind, value in (("reply", snapshot), ("mention", mention_snapshot)) if value}
+        budget = self.discover(snapshots)
+        if budget.blocked or any(self.inbox.blocked_until(value[0]) > self.clock() for value in snapshots.values()):
+            return "backoff"
+        if any(self.snapshot(kind) != value for kind, value in snapshots.items()):
+            return "cancelled"
+        job = self.claim(snapshots)
         if not job:
             reply_log("本轮无待处理留言", reason="无新留言、已防重或发送冷却中")
             return "idle"
@@ -285,6 +431,9 @@ class BilibiliReplyService:
                 return "skipped"
             latest = self.snapshot(kind)
             phase = "before_send_recheck"
+            if self.inbox.blocked_until(job["account"]) > self.clock():
+                reply_log("发送暂缓", source=job["source"], reason="账号接口退避中；生成任务保留租约")
+                return "backoff"
             if not latest or latest != snapshot or not self.service.check_authorization().get("ok"):
                 self.mark(job, "skipped")
                 reply_log("发送前取消", source=job["source"], reason="设置、身份变化或实时授权未通过")
@@ -325,8 +474,8 @@ class BilibiliReplyService:
                 return "unknown"
             phase = "persist_result"
             with closing(self.connect()) as database, database:
-                database.execute("UPDATE bili_reply_jobs SET state='sent',rpid=? WHERE account=? AND source=? "
-                    "AND owner=? AND state='sending'", (rpid, job["account"], job["source"], self.owner))
+                database.execute("UPDATE bili_reply_jobs SET state='sent',rpid=?,sent_at=?,index_dirty=1 WHERE account=? AND source=? "
+                    "AND owner=? AND state='sending'", (rpid, self.clock(), job["account"], job["source"], self.owner))
             reply_log("回复已提交", bvid=job["bvid"], parent=job["source"], rpid=rpid, visibility="需到B站核对")
             return "sent"
         except Exception as error:

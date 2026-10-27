@@ -19,10 +19,17 @@ REASON_MESSAGES = {
     "search_error": "这轮视频搜索服务异常，没有发送评论。",
     "material_error": "这轮视频资料读取失败，没有发送评论。",
     "model_error": "这轮模型处理发生异常，没有发送评论。",
+    "model_rate_limited": "模型服务暂时繁忙，这轮先不评论，稍后再试。",
+    "model_quota_error": "模型服务提示额度不足，这轮没有评论，请检查接口额度。",
+    "model_channel_error": "当前模型服务暂不可用，这轮没有评论，请检查模型渠道。",
+    "model_auth_error": "模型接口授权未通过，这轮没有评论，请检查接口配置。",
+    "model_timeout": "模型这次响应超时了，这轮先不评论。",
+    "model_cancelled": "这轮冲浪已停止，没有发送评论。",
     "model_output_truncated": "这轮模型输出达到长度上限，未获得完整结果，没有发送评论。",
     "model_empty_output": "这轮模型没有返回有效正文，没有发送评论。",
     "invalid_output": "这轮筛选结果未通过校验，没有发送评论。",
-    "cooldown": "兴趣标签或搜索仍在冷却，稍后再去 B 站看看。",
+    "cooldown": "搜索请求间隔未到，稍后再去 B 站看看。",
+    "tags_paused": "兴趣标签目前都暂停了，先启用一个标签再去 B 站看看。",
     "selected": "已选中一个相关视频。",
     "run_error": "这轮冲浪发生技术异常，未继续发送评论。",
 }
@@ -106,6 +113,32 @@ def parse_selection(raw, candidates):
     return {"status": "selected", "reason": reason, "video": video} if video else invalid
 
 
+def parse_comment_decision(raw, video, mention_name):
+    invalid = {"status": "invalid_output", "reason": "invalid_output", "video": None, "comment": ""}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return invalid
+    if not isinstance(data, dict) or set(data) != {"decision", "bvid", "reason_code", "reason", "comment"}:
+        return invalid
+    comment = data.pop("comment")
+    if not isinstance(comment, str):
+        return invalid
+    result = parse_selection(json.dumps(data, ensure_ascii=False), [video])
+    if result["status"] == "skipped":
+        return {**result, "comment": ""} if comment == "" else invalid
+    if result["status"] != "selected" or not comment.strip():
+        return invalid
+    if any(unicodedata.category(char).startswith("C") and char not in "\n\r\t" for char in comment):
+        return invalid
+    comment = " ".join(comment.split())
+    if (not mention_name or not comment.startswith(f"@{mention_name} ")
+            or not comment[len(mention_name)+2:].strip()
+            or re.search(r"cookie|sessdata|bili_jct|\buid\s*=|sk-[a-z0-9_-]+", comment, re.I)):
+        return invalid
+    return {**result, "comment": comment}
+
+
 class SurfDiagnostics:
     def __init__(self, path=None, limit=100):
         self.path = path or (get_user_data_dir() / "bilibili_surf_diagnostics.json")
@@ -125,6 +158,18 @@ class SurfDiagnostics:
             safe[key] = max(0, int(value)) if isinstance(value, (int, float)) else 0
         safe["stage_ms"] = {key: max(0, int(value)) for key, value in record.get("stage_ms", {}).items()
                             if key in {"search", "material", "selection", "comment", "send", "share"} and isinstance(value, (int, float))}
+        safe["model_errors"] = []
+        from utils.bilibili_surf_model import safe_label
+        for item in record.get("model_errors", [])[-4:]:
+            if not isinstance(item, dict):
+                continue
+            entry = {key: safe_label(item.get(key), maximum) for key, maximum in (
+                ("stage", 32), ("model", 120), ("api_host", 96), ("error_type", 80),
+                ("error_code", 80), ("request_id", 96), ("reason", 40))}
+            for key in ("http_status", "attempt", "elapsed_ms"):
+                value = item.get(key, 0)
+                entry[key] = max(0, int(value)) if isinstance(value, (int, float)) else 0
+            safe["model_errors"].append(entry)
         receipt = record.get("comment_receipt")
         if safe["send_status"] in {"sent_verified", "sent_unverified"} and isinstance(receipt, dict):
             rpid = str(receipt.get("rpid") or "")

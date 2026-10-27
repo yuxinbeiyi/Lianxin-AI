@@ -116,9 +116,10 @@ def get_video_subtitle(credential, bvid, cid=None):
     return _run_coroutine(instance.get_subtitle(cid=cid))
 
 
-def get_received_replies(credential):
+def get_received_replies(credential, last_reply_id=None, reply_time=None):
     from bilibili_api import session
-    return _run_coroutine(session.get_replies(credential=_credential_from_dict(credential)))
+    return _run_coroutine(session.get_replies(credential=_credential_from_dict(credential),
+        last_reply_id=last_reply_id, reply_time=reply_time))
 
 
 def get_received_mentions(credential, last_id=None, at_time=None):

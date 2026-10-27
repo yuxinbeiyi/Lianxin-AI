@@ -126,7 +126,6 @@ class ProactiveChatScheduler:
             "bilibili_probability": 40,
             "bilibili_max_results": 5,
             "bilibili_sort": "totalrank",
-            "bilibili_tag_cooldown_hours": 48,
             # 摸鱼设置
             "slack_enabled": False,
             "slack_idle_minutes": 20,
@@ -430,14 +429,6 @@ class ProactiveChatScheduler:
     @bilibili_sort.setter
     def bilibili_sort(self, val: str):
         self._settings["bilibili_sort"] = val
-
-    @property
-    def bilibili_tag_cooldown_hours(self) -> int:
-        return self._settings.get("bilibili_tag_cooldown_hours", 48)
-
-    @bilibili_tag_cooldown_hours.setter
-    def bilibili_tag_cooldown_hours(self, val: int):
-        self._settings["bilibili_tag_cooldown_hours"] = max(1, min(168, val))
 
     def should_surf_bilibili(self) -> bool:
         if not self.bilibili_enabled:

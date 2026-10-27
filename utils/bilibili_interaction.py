@@ -146,6 +146,7 @@ class BilibiliInteractionService:
         self._save_config = config_saver or save_bilibili_interaction_config
         self._profile_lookup = profile_lookup or self._fetch_public_user_profile
         self._video_lookup = video_lookup or self._fetch_public_video_info
+        self._reply_video_lookup = video_lookup or self._fetch_public_video_identity
         self._lock = Lock()
         self._login_lock = Lock()
         self._credential_store = (
@@ -268,7 +269,7 @@ class BilibiliInteractionService:
         return {"uid": resolved_uid, "name": name}
 
     @classmethod
-    def _fetch_public_video_info(cls, bvid: str) -> dict:
+    def _fetch_public_video_identity(cls, bvid: str) -> dict:
         from urllib.parse import quote
         response = cls._fetch_json(
             f"https://api.bilibili.com/x/web-interface/view?bvid={quote(bvid, safe='')}"
@@ -284,9 +285,13 @@ class BilibiliInteractionService:
             "bvid": bvid,
             "title": str(data["title"]).strip(),
             "author": str(owner.get("name", "")).strip(),
-            "commentOpen": cls._fetch_public_comment_status(aid),
             "aid": aid,
         }
+
+    @classmethod
+    def _fetch_public_video_info(cls, bvid: str) -> dict:
+        info = cls._fetch_public_video_identity(bvid)
+        return {**info, "commentOpen": cls._fetch_public_comment_status(info["aid"])}
 
     @classmethod
     def _fetch_public_comment_status(cls, aid: int) -> bool:
