@@ -28,6 +28,7 @@ _START_TIME = time.time()
 _LOG_PATH: Path | None = None
 _REAL_STDOUT = None
 _REAL_STDERR = None
+_LOG_STREAM = None
 _WRITE_LOCK = threading.Lock()
 
 
@@ -108,7 +109,7 @@ _rotate_log = rotate_log
 
 def install(log_filename: str = "debug.log") -> Path:
     """Rotate the previous log, then tee stdout/stderr to console + logs/<file>."""
-    global _LOG_PATH, _REAL_STDOUT, _REAL_STDERR
+    global _LOG_PATH, _REAL_STDOUT, _REAL_STDERR, _LOG_STREAM
     log_dir = _PROJECT_ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     target = log_dir / log_filename
@@ -122,6 +123,7 @@ def install(log_filename: str = "debug.log") -> Path:
     except Exception:
         log_fp = None
     if log_fp is not None:
+        _LOG_STREAM = log_fp
         sys.stdout = _TeeWriter(log_fp, _REAL_STDOUT)
         sys.stderr = _TeeWriter(log_fp, _REAL_STDERR)
     return _LOG_PATH
@@ -131,10 +133,28 @@ def log_path() -> Path:
     return _LOG_PATH or (_PROJECT_ROOT / "logs" / "debug.log")
 
 
-def log(tag: str, message: str) -> None:
-    """Emit a ``[HH:MM:SS] [Tag] message`` line (one locked write with the newline)."""
+def log(tag: str, message: str, *, console: bool = True) -> None:
+    """Emit one line, optionally keeping verbose diagnostics out of the console."""
     ts = time.strftime("%H:%M:%S")
-    sys.stdout.write(f"[{ts}] [{tag}] {message}\n")
+    line = f"[{ts}] [{tag}] {message}\n"
+    with _WRITE_LOCK:
+        if console and _REAL_STDOUT is not None:
+            try:
+                _REAL_STDOUT.write(line)
+                _REAL_STDOUT.flush()
+            except Exception:
+                pass
+        if _LOG_STREAM is not None:
+            try:
+                _LOG_STREAM.write(line)
+                _LOG_STREAM.flush()
+            except Exception:
+                pass
+        elif console:
+            try:
+                sys.stdout.write(line)
+            except Exception:
+                pass
 
 
 def uptime_seconds() -> float:

@@ -578,3 +578,169 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .bili-surf-notice { display: block; margin-top: 7px; }
 .bili-surf-latest { display: grid; gap: 4px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(157,214,205,.12); }
 @media (max-width: 620px) { .bili-surf-tag { grid-template-columns: 1fr auto auto; } .bili-surf-tag > div { grid-column: 1 / -1; } .bili-surf-tag input { grid-column: 1 / -1; } }
+
+/* Refined mint controls for the primary scroll surfaces. */
+.nav-scroll,
+.message-viewport,
+.companion-rail,
+.settings-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(105, 215, 195, .46) transparent;
+}
+
+.nav-scroll::-webkit-scrollbar,
+.message-viewport::-webkit-scrollbar,
+.companion-rail::-webkit-scrollbar,
+.settings-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.nav-scroll::-webkit-scrollbar-track,
+.message-viewport::-webkit-scrollbar-track,
+.companion-rail::-webkit-scrollbar-track,
+.settings-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-scroll::-webkit-scrollbar-thumb,
+.message-viewport::-webkit-scrollbar-thumb,
+.companion-rail::-webkit-scrollbar-thumb,
+.settings-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(105, 215, 195, .42);
+}
+
+.nav-scroll::-webkit-scrollbar-thumb:hover,
+.message-viewport::-webkit-scrollbar-thumb:hover,
+.companion-rail::-webkit-scrollbar-thumb:hover,
+.settings-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(105, 215, 195, .70);
+}
+
+.search-box {
+  -webkit-app-region: no-drag;
+}
+
+.search-box input {
+  min-width: 0;
+  flex: 1;
+  color: var(--lx-text);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+.search-box input::placeholder {
+  color: var(--lx-text-muted);
+}
+
+.search-count {
+  flex: 0 0 auto;
+  color: var(--lx-accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.search-nav-button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--lx-text-muted);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+
+.search-nav-button:hover:not(:disabled) {
+  color: var(--lx-text);
+  background: rgba(105, 215, 195, .12);
+}
+
+.search-nav-button:disabled {
+  opacity: .35;
+}
+
+.presence-summary {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 10px 0;
+}
+
+.presence-time {
+  color: var(--lx-text);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+}
+
+.presence-date,
+.presence-duration {
+  overflow: hidden;
+  color: var(--lx-text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presence-duration {
+  color: var(--lx-accent);
+}
+
+.character-stage {
+  position: relative;
+  isolation: isolate;
+  border-color: transparent;
+  box-shadow: 0 0 0 1px rgba(105, 215, 195, .08);
+}
+
+.character-stage::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(105, 215, 195, .70), rgba(105, 215, 195, .10) 48%, rgba(146, 239, 210, .56));
+  content: "";
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: .55;
+  animation: lx-character-breathe 5.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.character-stage:hover {
+  border-color: transparent;
+  box-shadow: 0 0 18px rgba(105, 215, 195, .14);
+}
+
+.message-row.search-match {
+  scroll-margin-block: 25vh;
+}
+
+.message-row.search-match .message-bubble {
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.message-row.search-match.is-search-active .message-bubble {
+  border-color: rgba(105, 215, 195, .74);
+  box-shadow: 0 0 0 2px rgba(105, 215, 195, .12), 0 0 20px rgba(105, 215, 195, .12);
+}
+
+@keyframes lx-character-breathe {
+  0%, 100% { opacity: .38; box-shadow: 0 0 5px rgba(105, 215, 195, .08); }
+  50% { opacity: .82; box-shadow: 0 0 17px rgba(105, 215, 195, .18); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-stage::before {
+    animation: none;
+    opacity: .55;
+  }
+}

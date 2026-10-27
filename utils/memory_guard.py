@@ -39,6 +39,7 @@ CRITICAL_AVAILABLE_MB = 512  # 系统可用内存低于此值 → 危急，转�
 _HEARTBEAT_INTERVAL = 60.0   # 常规心跳日志间隔（秒）
 _SAMPLE_INTERVAL = 10.0      # 采样间隔（秒）
 _STALL_DUMP_INTERVAL = 30.0  # 危急转储去重间隔（秒）
+_CONSOLE_HEARTBEAT_INTERVAL = 300.0  # 终端正常心跳间隔（秒）
 
 _start_lock = threading.Lock()
 _monitor_started = False
@@ -147,6 +148,7 @@ def _monitor_loop() -> None:
     """后台监控线程主体：心跳 + 阈值告警 + 危急转储。"""
     global _monitor_started
     last_heartbeat = 0.0
+    last_console_heartbeat = 0.0
     while True:
         try:
             status = get_memory_status()
@@ -155,7 +157,11 @@ def _monitor_loop() -> None:
                 # 常规心跳：周期性确认进程还活着、内存走势正常
                 if now - last_heartbeat >= _HEARTBEAT_INTERVAL:
                     last_heartbeat = now
-                    print(f"[内存] 心跳 {format_status(status)}", flush=True)
+                    console = now - last_console_heartbeat >= _CONSOLE_HEARTBEAT_INTERVAL
+                    if console:
+                        last_console_heartbeat = now
+                    from utils.bridge_log import log as bridge_log
+                    bridge_log("内存", f"心跳 {format_status(status)}", console=console)
 
                 rss = status.get("rss_mb")
                 available = status.get("available_mb", 0.0)

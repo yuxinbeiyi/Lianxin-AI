@@ -219,8 +219,16 @@ export type MusicFeedbackSettings = {
   saveToChat: boolean;
 };
 
+export type DataTideState = {
+  metrics?: {
+    today_seconds?: number;
+    seconds?: number;
+  };
+  user_name?: string;
+};
 export const lianxinApi = {
   status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
+  dataTideState: () => request<DataTideState>("/data-tide/state"),
   cancelChat: () => request<{ cancelled: boolean }>("/chat/cancel", { method: "POST", body: "{}" }),
   sessions: (keyword = "") => request<{ items: Array<{ id: number; title?: string; updated_at?: string; summary?: string; is_pinned?: number }> }>(`/conversations${keyword ? `?q=${encodeURIComponent(keyword)}` : ""}`),
   messages: (id: number, after = 0) => request<{ items: ApiMessage[] }>(`/conversations/${id}/messages${after ? `?after=${after}` : ""}`),

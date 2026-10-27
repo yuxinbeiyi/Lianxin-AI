@@ -369,6 +369,13 @@ function TopBar({
   onMinimize,
   onMaximize,
   onClose,
+  searchQuery,
+  searchMatchCount,
+  searchActiveIndex,
+  onSearchQueryChange,
+  onSearchPrevious,
+  onSearchNext,
+  onSearchClear,
 }: {
   onNewChat: () => void;
   onPanel: (panel: PanelId) => void;
@@ -376,6 +383,13 @@ function TopBar({
   onMinimize: () => void;
   onMaximize: () => void;
   onClose: () => void;
+  searchQuery: string;
+  searchMatchCount: number;
+  searchActiveIndex: number;
+  onSearchQueryChange: (value: string) => void;
+  onSearchPrevious: () => void;
+  onSearchNext: () => void;
+  onSearchClear: () => void;
 }) {
   return (
     <header className="topbar" data-tauri-drag-region>
@@ -394,8 +408,42 @@ function TopBar({
       </div>
       <div className="search-box" role="search">
         <Search size={17} />
-        <span>搜索对话、记忆和功能</span>
-        <kbd>Ctrl K</kbd>
+        <input
+          type="search"
+          value={searchQuery}
+          placeholder={"\u641c\u7d22\u5f53\u524d\u5bf9\u8bdd"}
+          aria-label={"\u641c\u7d22\u5f53\u524d\u5bf9\u8bdd"}
+          data-tauri-drag-region="false"
+          onChange={(event) => onSearchQueryChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (event.shiftKey) onSearchPrevious();
+              else onSearchNext();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              onSearchClear();
+            }
+          }}
+        />
+        {searchQuery.trim() ? (
+          <>
+            <span className="search-count">
+              {searchMatchCount ? `${searchActiveIndex + 1} / ${searchMatchCount}` : "\u65e0\u7ed3\u679c"}
+            </span>
+            <button className="search-nav-button" type="button" title={"\u4e0a\u4e00\u4e2a\u5339\u914d"} onClick={onSearchPrevious} disabled={!searchMatchCount}>
+              <ArrowUp size={13} />
+            </button>
+            <button className="search-nav-button" type="button" title={"\u4e0b\u4e00\u4e2a\u5339\u914d"} onClick={onSearchNext} disabled={!searchMatchCount}>
+              <ArrowDown size={13} />
+            </button>
+            <button className="search-nav-button" type="button" title={"\u6e05\u9664\u641c\u7d22"} onClick={onSearchClear}>
+              <X size={13} />
+            </button>
+          </>
+        ) : (
+          <kbd>Ctrl K</kbd>
+        )}
       </div>
       <nav className="top-actions">
         <button className="top-action" onClick={() => onLegacy("history")}>
@@ -438,6 +486,50 @@ function TopBar({
   );
 }
 
+function formatPresenceDuration(totalSeconds: number | null): string {
+  if (totalSeconds === null) return "今日陪伴暂不可用";
+  const minutes = Math.max(0, Math.floor(totalSeconds / 60));
+  if (minutes < 60) return `今日陪伴 ${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `今日陪伴 ${hours}小时${remainder ? ` ${remainder}分钟` : ""}`;
+}
+
+function PresenceSummary() {
+  const [now, setNow] = useState(() => new Date());
+  const [todaySeconds, setTodaySeconds] = useState<number | null>(null);
+
+  const refresh = useCallback(() => {
+    void lianxinApi
+      .dataTideState()
+      .then((state) => setTodaySeconds(Number(state.metrics?.today_seconds ?? 0)))
+      .catch(() => setTodaySeconds(null));
+  }, []);
+
+  useEffect(() => {
+    const clock = window.setInterval(() => setNow(new Date()), 1000);
+    const stats = window.setInterval(refresh, 60000);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(clock);
+      window.clearInterval(stats);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [refresh]);
+
+  return (
+    <div className="presence-summary" aria-label="莲心陪伴信息">
+      <strong className="presence-time">
+        {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}
+      </strong>
+      <span className="presence-date">
+        {now.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })}
+      </span>
+      <span className="presence-duration">{formatPresenceDuration(todaySeconds)}</span>
+    </div>
+  );
+}
 function SideNavigation({
   activeWorkspace,
   onWorkspaceChange,
@@ -513,14 +605,7 @@ function SideNavigation({
         )}
       </div>
       <div className="profile-strip">
-        <MessageAvatar role="assistant" compact avatar={avatar} />
-        <div className="profile-copy">
-          <strong>莲心</strong>
-          <span>
-            <span className="status-dot" />
-            在线 · 你在我心里
-          </span>
-        </div>
+        <PresenceSummary />
         <Activity size={17} className="profile-activity" />
       </div>
     </aside>
@@ -615,6 +700,7 @@ function MessageItem({
   onQuote,
   onDelete,
   onContextMenu,
+  searchActive = false,
 }: {
   message: Message;
   avatar?: AvatarState;
@@ -626,6 +712,7 @@ function MessageItem({
   onQuote?: (message: Message) => void;
   onDelete?: (message: Message) => void;
   onContextMenu?: (event: MouseEvent<HTMLDivElement>, message: Message) => void;
+  searchActive?: boolean;
 }) {
   if (message.kind === "interaction")
     return (
@@ -671,7 +758,8 @@ function MessageItem({
   if (message.imageUrl)
     return (
       <div
-        className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}
+        data-message-id={String(message.id).split("#")[0]}
+        className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"} ${searchActive ? "search-match is-search-active" : ""}`}
       >
         <MessageAvatar
           role={message.role}
@@ -712,7 +800,8 @@ function MessageItem({
   if (message.kind === "file")
     return (
       <div
-        className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}
+        data-message-id={String(message.id).split("#")[0]}
+        className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"} ${searchActive ? "search-match is-search-active" : ""}`}
       >
         <MessageAvatar
           role={message.role}
@@ -742,7 +831,8 @@ function MessageItem({
     );
   return (
     <div
-      className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"}`}
+      data-message-id={String(message.id).split("#")[0]}
+      className={`message-row ${message.role === "user" ? "user-row" : "assistant-row"} ${searchActive ? "search-match is-search-active" : ""}`}
     >
       <MessageAvatar
         role={message.role}
@@ -857,6 +947,7 @@ function ChatWorkspace({
   onRuntimeApprove,
   onRuntimeStop,
   runtimeDeciding,
+  searchTargetId,
 }: {
   messages: Message[];
   segmentBubblesFor: (message: Message) => string[];
@@ -891,6 +982,7 @@ function ChatWorkspace({
   ) => void;
   onRuntimeStop?: () => void;
   runtimeDeciding?: boolean;
+  searchTargetId?: string;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -950,6 +1042,13 @@ function ChatWorkspace({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
+  useEffect(() => {
+    if (!searchTargetId) return;
+    const target = viewportRef.current?.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(searchTargetId)}"]`,
+    );
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [searchTargetId]);
   const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
     const el = viewportRef.current;
     if (!el) return;
@@ -1086,6 +1185,7 @@ function ChatWorkspace({
                           )
                         }
                         onContextMenu={openContextMenu}
+                         searchActive={String(message.id) === searchTargetId}
                       />
                     ))}
               </Fragment>
@@ -2962,6 +3062,43 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("chat");
   const [managementOpen, setManagementOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>(demoMessages);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchActiveIndex, setSearchActiveIndex] = useState(0);
+  const searchMatches = useMemo(
+    () => {
+      const query = searchQuery.trim().toLocaleLowerCase();
+      if (!query) return [] as string[];
+      return messages
+        .filter((message) => message.content.toLocaleLowerCase().includes(query))
+        .map((message) => String(message.id));
+    },
+    [messages, searchQuery],
+  );
+  useEffect(() => {
+    setSearchActiveIndex((current) => Math.min(current, Math.max(0, searchMatches.length - 1)));
+  }, [searchMatches.length]);
+  const changeSearchQuery = useCallback((value: string) => {
+    setSearchQuery(value);
+    setSearchActiveIndex(0);
+  }, []);
+  const clearSearch = useCallback(() => {
+    setSearchQuery("");
+    setSearchActiveIndex(0);
+  }, []);
+  const moveSearch = useCallback((direction: 1 | -1) => {
+    if (!searchMatches.length) return;
+    setSearchActiveIndex((current) => (current + direction + searchMatches.length) % searchMatches.length);
+  }, [searchMatches.length]);
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>(".search-box input")?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
   const [interactionMessages, setInteractionMessages] = useState<Message[]>([]);
   const [backendOnline, setBackendOnline] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -3945,6 +4082,13 @@ export function App() {
             onMinimize={handleMinimize}
             onMaximize={handleMaximize}
             onClose={handleClose}
+             searchQuery={searchQuery}
+             searchMatchCount={searchMatches.length}
+             searchActiveIndex={searchActiveIndex}
+             onSearchQueryChange={changeSearchQuery}
+             onSearchPrevious={() => moveSearch(-1)}
+             onSearchNext={() => moveSearch(1)}
+             onSearchClear={clearSearch}
           />
           <div className="app-body">
             <SideNavigation
@@ -4009,6 +4153,13 @@ export function App() {
           onMinimize={handleMinimize}
           onMaximize={handleMaximize}
           onClose={handleClose}
+             searchQuery={searchQuery}
+             searchMatchCount={searchMatches.length}
+             searchActiveIndex={searchActiveIndex}
+             onSearchQueryChange={changeSearchQuery}
+             onSearchPrevious={() => moveSearch(-1)}
+             onSearchNext={() => moveSearch(1)}
+             onSearchClear={clearSearch}
         />
         <div className="app-body">
           <SideNavigation
@@ -4052,6 +4203,7 @@ export function App() {
                 }
                 onRuntimeStop={() => void stopRuntime()}
                 runtimeDeciding={runtimeDeciding}
+                 searchTargetId={searchMatches[searchActiveIndex]}
               />
             ) : (
               <Workspace
