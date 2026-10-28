@@ -106,14 +106,6 @@ def build_window(feature: str):
     if feature == "capability":
         from gui.capability_center import CapabilityCenter
         return CapabilityCenter()
-    if feature == "vision":
-        from gui.vision_panel import VisionPanel
-        return VisionPanel()
-    if feature == "camera":
-        # 原版功能中心"摄像头"按钮打开的是视觉感知面板（人脸/手势/OLED 表情），
-        # 拍照 OCR（CameraDialog）走聊天链路，不作为独立功能区入口。
-        from gui.vision_panel import VisionPanel
-        return VisionPanel()
     if feature == "voice-stt":
         from gui.voice_stt_dialog import VoiceSTTDialog
         return VoiceSTTDialog()

@@ -248,6 +248,41 @@ export type LegacyFeature =
   | "qq" | "wechat" | "study-room" | "time-capsule" | "data-tide" | "camera" | "galgame"
   | "video-call";
 
+export type VisionState = {
+  phase: "idle" | "loading" | "running" | "error";
+  running: boolean;
+  loading: boolean;
+  error: string;
+  features: { face: boolean; gesture: boolean; companion: boolean };
+  device: string;
+  cooldown: number;
+  camera: string;
+  fps: number;
+  provider: string;
+  face: string;
+  faceCount: number;
+  gesture: string;
+  gestureConfidence: number;
+  companion: string;
+  videoDuration: number;
+  todayPresence: number;
+  frameAt: number;
+  tracking: {
+    active: boolean;
+    simulated: boolean;
+    message: string;
+    status: string;
+    frameAt: number;
+  };
+};
+
+export type VisionEvent = {
+  id: number;
+  type: string;
+  message: string;
+  timestamp: number;
+};
+
 const API_ROOT = "http://127.0.0.1:8766/api";
 
 export class ApiRequestError extends Error {
@@ -368,6 +403,15 @@ export const lianxinApi = {
   saveSettingsPanels: (payload: Partial<{ global: Partial<SettingsPanelState["global"]>; sound: Partial<SettingsPanelState["sound"]> }>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
   avatarAction: (action: "tap" | "headpat") => request<{ action: string; accepted?: boolean; sound?: boolean; response?: string; counterAction?: string; message?: string }>(`/avatar/action?action=${action}`),
   openLegacy: (feature: LegacyFeature) => request<{ feature: string; pid: number; mode: string }>("/legacy/open", { method: "POST", body: JSON.stringify({ feature }) }),
+  visionState: () => request<VisionState>("/vision/state"),
+  visionStart: () => request<VisionState>("/vision/start", { method: "POST", body: "{}" }),
+  visionStop: () => request<VisionState>("/vision/stop", { method: "POST", body: "{}" }),
+  visionFeature: (name: "face" | "gesture" | "companion", enabled: boolean) => request<VisionState>("/vision/features", { method: "POST", body: JSON.stringify({ name, enabled }) }),
+  visionDevice: (device: string) => request<VisionState>("/vision/device", { method: "POST", body: JSON.stringify({ device }) }),
+  visionCooldown: (seconds: number) => request<VisionState>("/vision/cooldown", { method: "POST", body: JSON.stringify({ seconds }) }),
+  visionEnroll: (name: string) => request<{ ok: boolean; name: string }>("/vision/enroll", { method: "POST", body: JSON.stringify({ name }) }),
+  visionEvents: (after: number) => request<{ items: VisionEvent[]; latest: number }>(`/vision/events?after=${after}`),
+  visionTracking: (mode: "esp32" | "simulate" | "off") => request<VisionState>("/vision/tracking", { method: "POST", body: JSON.stringify({ mode }) }),
   qqStatus: () => request<{ running: boolean; connected: boolean; state: string; url: string; error?: string; disconnectReason?: string; fastReplyEnabled: boolean }>("/qq/status"),
   startQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/start", { method: "POST", body: "{}" }),
   stopQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/stop", { method: "POST", body: "{}" }),

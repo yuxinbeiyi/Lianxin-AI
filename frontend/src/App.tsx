@@ -81,6 +81,8 @@ import { TimeCapsuleWorkspace } from "./components/TimeCapsuleWorkspace";
 import { MusicWorkspace } from "./components/MusicWorkspace";
 import { VideoCallPanel } from "./components/VideoCallPanel";
 import { BilibiliMessageLine } from "./components/BilibiliMessageLine";
+import { VisionPanel } from "./components/VisionPanel";
+import { openVisionWindow } from "./utils/visionWindow";
 
 type PanelId =
   | "none"
@@ -97,7 +99,8 @@ type PanelId =
   | "persona"
   | "data-tide"
   | "study-room"
-  | "time-capsule";
+  | "time-capsule"
+  | "vision";
 type Session = {
   id: number;
   title?: string;
@@ -2655,6 +2658,7 @@ function ManagementPanel({
             "data-tide",
             "study-room",
             "time-capsule",
+            "vision",
           ].includes(module.id);
           return (
             <button
@@ -3854,6 +3858,13 @@ export function App() {
     void lianxinApi.saveSettingsPanels({ global: { silentMode: next }, sound: { silentMode: next } }).catch(() => setSilentMode(!next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "vision" || feature === "camera") {
+      setPanel("none");
+      void openVisionWindow().then((opened) => {
+        if (!opened) setPanel("vision");
+      });
+      return;
+    }
     if (feature === "video-call") {
       setPanel("video-call");
       return;
@@ -4261,6 +4272,11 @@ export function App() {
       )}
       {panel === "time-capsule" && (
         <TimeCapsulePanel onClose={() => setPanel("none")} />
+      )}
+      {panel === "vision" && (
+        <Overlay onClose={() => setPanel("none")}>
+          <VisionPanel />
+        </Overlay>
       )}
       {panel === "management" && (
         <ManagementPanel

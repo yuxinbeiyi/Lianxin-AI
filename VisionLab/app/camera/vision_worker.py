@@ -1,3 +1,4 @@
+import queue
 import time
 
 import cv2
@@ -34,6 +35,9 @@ class VisionWorker(QObject):
         self.database = VisionDatabase(Path(__file__).resolve().parents[2] / "data" / "vision.db")
         self._stop = False
         self._video_started_at = None
+        # 控制器（api_server / 界面）与阻塞的采集循环不在同一线程，
+        # 重操作通过命令队列交给循环执行，避免并发操作模型和摄像头。
+        self._commands = queue.Queue()
 
     @pyqtSlot()
     def run(self):
@@ -62,6 +66,7 @@ class VisionWorker(QObject):
         print("[VisionWorker] camera loop started", flush=True)
         consecutive_errors = 0
         while not self._stop:
+            self._drain_commands()
             try:
                 started = time.monotonic()
                 frame = self.camera.read()
@@ -178,6 +183,21 @@ class VisionWorker(QObject):
                 print(f"[VisionWorker] {name} cleanup failed: {exc}", flush=True)
         print("[VisionWorker] resources stopped", flush=True)
         self.stopped.emit()
+
+    def submit_command(self, name, *args):
+        """线程安全地把控制命令排给采集循环执行。"""
+        self._commands.put((name, args))
+
+    def _drain_commands(self):
+        while True:
+            try:
+                name, args = self._commands.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                getattr(self, name)(*args)
+            except Exception as exc:
+                self.event_ready.emit(f"视觉命令执行失败：{exc}")
 
     @pyqtSlot()
     def stop(self):

@@ -449,8 +449,6 @@ class FaceTrackingWindow(QDialog):
 
 
 class FaceTrackingController(QObject):
-    start_requested = pyqtSignal()
-    stop_requested = pyqtSignal()
     state_changed = pyqtSignal(bool, bool, str)
     debug_message = pyqtSignal(str)
 
@@ -458,37 +456,44 @@ class FaceTrackingController(QObject):
         super().__init__()
         self.worker = None
         self.window = None
-        self.start_requested.connect(self._start)
-        self.stop_requested.connect(self._stop)
+        self._requested_simulated = False
+        self._requested_device = "CPU"
+        self._requested_headless = False
 
-    def request_start(self, simulated=False, device="CPU"):
+    def request_start(self, simulated=False, device="CPU", headless=False):
         if self.worker is not None and self.worker.isRunning():
             return False
         self._requested_simulated = simulated
         self._requested_device = device
-        self.start_requested.emit()
+        self._requested_headless = headless
+        # 直接调用而不是发信号：api_server 里没有 Qt 事件循环，
+        # 排队的槽函数不会执行。
+        self._start()
         return True
 
     def request_stop(self):
-        self.stop_requested.emit()
+        self._stop()
         return True
 
     @pyqtSlot()
     def _start(self):
         if self.worker is not None and self.worker.isRunning():
             return
+        headless = self._requested_headless
         self.worker = FaceTrackingWorker(
-            device=getattr(self, "_requested_device", "CPU"),
-            simulated=getattr(self, "_requested_simulated", False),
+            device=self._requested_device,
+            simulated=self._requested_simulated,
         )
-        self.window = FaceTrackingWindow(self.worker)
-        self.worker.command_debug.connect(self._on_command_debug)
-        self.worker.failed.connect(self._on_failed)
-        self.worker.finished_reason.connect(self._on_finished)
-        self.worker.finished.connect(self._on_thread_finished)
-        self.window.show()
+        conn = Qt.DirectConnection if headless else Qt.AutoConnection
+        self.worker.command_debug.connect(self._on_command_debug, conn)
+        self.worker.failed.connect(self._on_failed, conn)
+        self.worker.finished_reason.connect(self._on_finished, conn)
+        self.worker.finished.connect(self._on_thread_finished, conn)
+        if not headless:
+            self.window = FaceTrackingWindow(self.worker)
+            self.window.show()
         self.worker.start()
-        self.state_changed.emit(True, self.worker.simulated, "人脸追踪窗口已启动")
+        self.state_changed.emit(True, self.worker.simulated, "人脸追踪已启动" if headless else "人脸追踪窗口已启动")
 
     @pyqtSlot()
     def _stop(self):

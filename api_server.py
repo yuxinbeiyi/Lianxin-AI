@@ -152,8 +152,8 @@ def _image_flow_log_poll(message: str) -> None:
 LEGACY_FEATURES = {
     "ripple", "persona", "memory-constellation", "prism-memory",
     "history", "note", "workflow", "duty", "proactive", "alarm", "reminder",
-    "settings", "api", "network", "capability", "vision", "voice-stt", "sound",
-    "qq", "wechat", "study-room", "time-capsule", "data-tide", "camera", "galgame",
+    "settings", "api", "network", "capability", "voice-stt", "sound",
+    "qq", "wechat", "study-room", "time-capsule", "data-tide", "galgame",
     "video-call",
 }
 WEBENGINE_FEATURES = {"ripple", "memory-constellation", "study-room", "time-capsule", "data-tide"}
@@ -756,6 +756,7 @@ class LianxinBridge:
         self._voice_input = None
         self._proactive = None
         self._proactive_runtime = None
+        self._vision_reactions = None
         self._avatar_lock = threading.RLock()
         self._avatar_last_trigger = 0.0
         self._avatar_busy = False
@@ -832,6 +833,61 @@ class LianxinBridge:
             "busy": self._busy,
             "source": "python-core",
         }
+
+    # ── 视觉感知（新版界面直接控制常驻运行时）─────────────────
+
+    def vision_runtime(self):
+        from brain.vision_reactions import VisionReactions
+        from brain.vision_runtime import get_vision_runtime
+        if self._vision_reactions is None:
+            self._vision_reactions = VisionReactions(self)
+        return get_vision_runtime(on_event=self._vision_reactions.handle)
+
+    def vision_state(self) -> dict:
+        return self.vision_runtime().state()
+
+    def vision_start(self) -> dict:
+        return self.vision_runtime().start()
+
+    def vision_stop(self) -> dict:
+        return self.vision_runtime().stop()
+
+    def vision_set_feature(self, name: str, enabled: bool) -> dict:
+        return self.vision_runtime().set_feature(name, bool(enabled))
+
+    def vision_set_device(self, device: str) -> dict:
+        return self.vision_runtime().set_device(device)
+
+    def vision_set_cooldown(self, seconds) -> dict:
+        return self.vision_runtime().set_cooldown(seconds)
+
+    def vision_enroll(self, name: str) -> dict:
+        return self.vision_runtime().enroll(name)
+
+    def vision_events(self, after: int = 0) -> dict:
+        from brain.vision_runtime import peek_vision_runtime
+        runtime = peek_vision_runtime()
+        if runtime is None:
+            return {"items": [], "latest": int(after)}
+        return runtime.events_after(after)
+
+    @staticmethod
+    def vision_frame() -> bytes:
+        from brain.vision_runtime import peek_vision_runtime
+        runtime = peek_vision_runtime()
+        return runtime.latest_jpeg() if runtime is not None else b""
+
+    def vision_tracking(self, mode: str) -> dict:
+        return self.vision_runtime().start_tracking(mode)
+
+    def vision_stop_tracking(self) -> dict:
+        return self.vision_runtime().stop_tracking()
+
+    @staticmethod
+    def vision_tracking_frame() -> bytes:
+        from brain.vision_runtime import peek_vision_runtime
+        runtime = peek_vision_runtime()
+        return runtime.tracking_jpeg() if runtime is not None else b""
 
     def cancel_chat(self) -> dict:
         agent = self.agent()
@@ -3967,6 +4023,44 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def _stream_vision(self):
+        """把运行时缓存的 JPEG 以 MJPEG 流推给 WebView，前端用 <img> 直接显示。"""
+        return self._stream_jpeg(bridge.vision_frame, "视觉感知尚未就绪")
+
+    def _stream_tracking(self):
+        return self._stream_jpeg(bridge.vision_tracking_frame, "人脸追踪尚未启动")
+
+    def _stream_jpeg(self, fetch, error):
+        jpeg = fetch()
+        deadline = time.time() + 5
+        while not jpeg and time.time() < deadline:
+            time.sleep(0.1)
+            jpeg = fetch()
+        if not jpeg:
+            return self._send({"error": error}, 503)
+        boundary = "lianxin-vision-frame"
+        self.send_response(200)
+        self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            while True:
+                if jpeg:
+                    header = (
+                        f"--{boundary}\r\nContent-Type: image/jpeg\r\n"
+                        f"Content-Length: {len(jpeg)}\r\n\r\n"
+                    ).encode("ascii")
+                    self.wfile.write(header)
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                time.sleep(0.06)
+                jpeg = fetch()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return
+
     def _memory_constellation_page(self):
         asset_dir = Path(__file__).resolve().parent / "assets" / "memory_constellation"
         try:
@@ -4215,6 +4309,46 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             if path == "/api/qq/status":
                 return self._send(bridge.qq_status())
+            if path == "/api/vision/state":
+                return self._send(bridge.vision_state())
+            if path == "/api/vision/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.vision_events(int((query.get("after") or ["0"])[0] or 0)))
+            if path == "/api/vision/frame":
+                return self._stream_vision()
+            if path == "/api/vision/tracking/frame":
+                return self._stream_tracking()
+            if path == "/api/vision/oled/emotions":
+                from brain.oled_service import list_emotions
+                return self._send({"items": list_emotions()})
+            if path == "/api/vision/oled/preview":
+                from brain.oled_service import preview_png
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    value = int((query.get("value") or ["1"])[0])
+                except (TypeError, ValueError):
+                    value = 1
+                png = preview_png(value)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(png)
+                return
+            if path == "/api/vision/snapshot":
+                jpeg = bridge.vision_frame()
+                if not jpeg:
+                    return self._send({"error": "视觉感知尚未就绪"}, 503)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpeg)))
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(jpeg)
+                return
             if path == "/api/attachments":
                 query = parse_qs(urlparse(self.path).query)
                 target = Path((query.get("path") or [""])[0]).expanduser().resolve()
@@ -4446,6 +4580,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.chat(str(body.get("message", ""))))
             if path == "/api/chat/cancel":
                 return self._send(bridge.cancel_chat())
+            if path == "/api/vision/start":
+                return self._send(bridge.vision_start())
+            if path == "/api/vision/stop":
+                return self._send(bridge.vision_stop())
+            if path == "/api/vision/features":
+                return self._send(bridge.vision_set_feature(
+                    str(body.get("name", "")), bool(body.get("enabled")),
+                ))
+            if path == "/api/vision/device":
+                return self._send(bridge.vision_set_device(str(body.get("device", "CPU"))))
+            if path == "/api/vision/cooldown":
+                return self._send(bridge.vision_set_cooldown(body.get("seconds", 7)))
+            if path == "/api/vision/enroll":
+                return self._send(bridge.vision_enroll(str(body.get("name", ""))))
+            if path == "/api/vision/tracking":
+                return self._send(bridge.vision_tracking(str(body.get("mode", "off"))))
+            if path == "/api/vision/oled":
+                from brain.oled_service import run_action
+                return self._send(run_action(str(body.get("action", "")), body.get("value")))
             if path == "/api/runtime/start":
                 try:
                     runtime_turn = int(body.get("turn") or 0)
@@ -4855,7 +5008,8 @@ def main():
     finally:
         server.server_close()
         for stop in (bridge.stop_proactive_runtime, bridge.cancel_chat, bridge.stop_voice_input,
-                     bridge.stop_voice, bridge.stop_call_sound):
+                     bridge.stop_voice, bridge.stop_call_sound, bridge.vision_stop,
+                     bridge.vision_stop_tracking):
             try:
                 stop()
             except Exception:

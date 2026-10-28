@@ -125,11 +125,18 @@ def capture_camera(camera_index: int = 0, wait_seconds: int = 5) -> Optional[str
 
 
 def _grab_vision_panel_frame():
-    """查找运行中的视觉感知面板，返回 (是否找到面板, 当前帧副本)。
+    """查找运行中的视觉感知运行时/面板，返回 (是否找到, 当前帧副本)。
 
-    面板未启动或未找到返回 (False, None)；找到但暂无画面返回 (True, None)。
-    复用面板缓存的当前帧，避免在面板已占用摄像头时二次打开设备。
+    新版界面由 api_server 常驻运行时持有摄像头；旧 Qt 面板路径保留给
+    原版界面。运行中但没有画面时返回 (True, None)，避免二次打开摄像头。
     """
+    try:
+        from brain.vision_runtime import peek_vision_runtime
+        runtime = peek_vision_runtime()
+        if runtime is not None and runtime.is_active():
+            return True, runtime.latest_frame()
+    except Exception as exc:
+        print(f"[观察] 从视觉运行时获取帧失败: {exc}")
     try:
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
