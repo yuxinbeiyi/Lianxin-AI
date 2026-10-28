@@ -61,6 +61,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def _netease_state_candidates() -> list:
     return [
         get_user_data_dir() / "netease" / ".listening-state.json",
+        _PROJECT_ROOT / "参考项目" / "功能" / "netease-music-mcp-main" / ".listening-state.json",
+        _PROJECT_ROOT / "参考项目" / "功能" / "netease-music-mcp-main" / "listening-state.json",
         _PROJECT_ROOT / "参考项目" / "netease-music-mcp-main" / ".listening-state.json",
         _PROJECT_ROOT / "参考项目" / "netease-music-mcp-main" / "listening-state.json",
     ]

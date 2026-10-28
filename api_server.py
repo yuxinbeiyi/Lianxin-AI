@@ -2093,7 +2093,7 @@ class LianxinBridge:
         try:
             server_js = (
                 Path(__file__).resolve().parent
-                / "参考项目" / "netease-music-mcp-main" / "src" / "server.js"
+                / "参考项目" / "功能" / "netease-music-mcp-main" / "src" / "server.js"
             )
             cwd = server_js.parent.parent
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

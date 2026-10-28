@@ -79,7 +79,7 @@ def clear_netease_state_files() -> list:
     except Exception:
         candidates = [
             Path(__file__).resolve().parent.parent
-            / "参考项目" / "netease-music-mcp-main" / ".listening-state.json"
+            / "参考项目" / "功能" / "netease-music-mcp-main" / ".listening-state.json"
         ]
     for path in candidates:
         try:

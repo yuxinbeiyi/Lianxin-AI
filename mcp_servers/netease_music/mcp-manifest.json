@@ -9,7 +9,7 @@
   "connection": {
     "command": [
       "node",
-      "{project_root}\\参考项目\\netease-music-mcp-main\\src\\server.js"
+      "{project_root}\\参考项目\\功能\\netease-music-mcp-main\\src\\server.js"
     ],
     "env": {}
   },
