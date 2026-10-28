@@ -31,6 +31,7 @@ from brain.runtime import events as runtime_events
 from brain.runtime.backend import (
     APPROVAL_ON_REQUEST,
     BackendStatus,
+    ControlResult,
     DECISION_DECLINE,
     SANDBOX_READ_ONLY,
     SessionHandle,
@@ -60,6 +61,26 @@ _SKIP_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning"}
 
 # 内部哨兵：反向请求先不回执，等调用方通过 approve() 决定
 _NO_REPLY = object()
+
+
+class CodexRpcError(RuntimeError):
+    def __init__(self, method: str, error: dict) -> None:
+        self.method = method
+        self.code = error.get("code")
+        super().__init__("%s: %s" % (method, _short(error.get("message") or error)))
+
+
+class CodexOutcomeUnknown(TimeoutError):
+    pass
+
+
+def _checked_result(method: str, response: dict) -> dict:
+    if response.get("error") is not None:
+        raise CodexRpcError(method, response["error"])
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise CodexOutcomeUnknown("%s 未返回可确认的结果，不自动重试" % method)
+    return result
 
 
 def _snake(name: str) -> str:
@@ -206,6 +227,7 @@ class CodexAppServerClient:
         self.stderr_lines: list = []
         self._next_id = 1
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._waiters: dict = {}
         self._results: dict = {}
         self._alive = False
@@ -249,18 +271,56 @@ class CodexAppServerClient:
 
     def terminate(self) -> None:
         self._alive = False
+        self._fail_pending()
         proc = self.proc
         self.proc = None
         if proc is None:
             return
+        children = []
+        try:
+            import psutil
+
+            if proc.poll() is None:
+                children = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            pass
         try:
             proc.terminate()
             proc.wait(timeout=8)
         except Exception:
             try:
                 proc.kill()
+                proc.wait(timeout=3)
             except Exception:
                 pass
+        if children:
+            for child in children:
+                try:
+                    child.terminate()
+                except Exception:
+                    pass
+            try:
+                _, survivors = psutil.wait_procs(children, timeout=2)
+                for child in survivors:
+                    try:
+                        child.kill()
+                    except Exception:
+                        pass
+                psutil.wait_procs(survivors, timeout=2)
+            except Exception:
+                pass
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
+
+    def _fail_pending(self) -> None:
+        with self._lock:
+            for mid, waiter in self._waiters.items():
+                self._results.setdefault(mid, {"transportClosed": True})
+                waiter.set()
 
     # ── IO 泵 ────────────────────────────────────────────────
     def _pump_stdout(self) -> None:
@@ -285,10 +345,12 @@ class CodexAppServerClient:
             elif "id" in msg:
                 mid = msg["id"]
                 with self._lock:
-                    self._results[mid] = msg
-                    waiter = self._waiters.pop(mid, None)
-                if waiter is not None:
-                    waiter.set()
+                    waiter = self._waiters.get(mid)
+                    if waiter is not None:
+                        self._results[mid] = msg
+                        waiter.set()
+        self._alive = False
+        self._fail_pending()
 
     def _pump_stderr(self) -> None:
         proc = self.proc
@@ -329,8 +391,9 @@ class CodexAppServerClient:
         proc = self.proc
         if proc is None or proc.stdin is None:
             raise RuntimeError("codex app-server 未启动")
-        proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        proc.stdin.flush()
+        with self._write_lock:
+            proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
 
     def notify(self, method: str, params=None) -> None:
         self._write({"jsonrpc": "2.0", "method": method, "params": params or {}})
@@ -341,13 +404,22 @@ class CodexAppServerClient:
             self._next_id += 1
             waiter = threading.Event()
             self._waiters[mid] = waiter
-        self._write({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}})
-        if not waiter.wait(timeout):
-            raise TimeoutError("等待 %s 响应超时(%ss)" % (method, timeout))
-        with self._lock:
-            return self._results.pop(mid, {})
+        try:
+            self._write({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}})
+            if not waiter.wait(timeout):
+                raise CodexOutcomeUnknown("等待 %s 响应超时(%ss)，结果不确定，不自动重试" % (method, timeout))
+            with self._lock:
+                response = self._results.pop(mid, {})
+            if response.get("transportClosed"):
+                raise CodexOutcomeUnknown("%s 连接中断，结果不确定，不自动重试" % method)
+            _checked_result(method, response)
+            return response
+        finally:
+            with self._lock:
+                self._waiters.pop(mid, None)
+                self._results.pop(mid, None)
 
-    def reply(self, req_id, result=None, error=None) -> None:
+    def reply(self, req_id, result=None, error=None) -> bool:
         msg = {"jsonrpc": "2.0", "id": req_id}
         if error is not None:
             msg["error"] = error
@@ -355,8 +427,9 @@ class CodexAppServerClient:
             msg["result"] = result if result is not None else {}
         try:
             self._write(msg)
+            return True
         except Exception:
-            pass
+            return False
 
 
 class CodexExecutionBackend:
@@ -381,6 +454,16 @@ class CodexExecutionBackend:
         self._initialized = False
         self._user_agent = ""
         self._version = ""
+        self._control_lock = threading.RLock()
+        self._scope_lock = threading.RLock()
+        self._generation = 0
+        self._client_generation = 0
+        self._scope_thread = ""
+        self._scope_turn = ""
+        self._active_turn = ""
+        self._starting_turn = False
+        self._finished_turns: set = set()
+        self._turn_ready = threading.Event()
 
     # ── 探测 ─────────────────────────────────────────────────
     def probe(self, force: bool = False) -> BackendStatus:
@@ -475,10 +558,14 @@ class CodexExecutionBackend:
     def _ensure_client(self) -> CodexAppServerClient:
         if self._client is not None and self._client.alive():
             return self._client
+        if self._client is not None:
+            self._client.terminate()
+        self._client_generation += 1
+        client_generation = self._client_generation
         client = CodexAppServerClient(
             self._exe,
-            on_notification=self._on_notification,
-            on_server_request=self._on_server_request,
+            on_notification=lambda msg: self._on_notification(msg, client_generation),
+            on_server_request=lambda msg: self._on_server_request(msg, client_generation),
             log=self._log,
         )
         client.start()
@@ -540,32 +627,62 @@ class CodexExecutionBackend:
         return ok
 
     def start(self, spec: TaskSpec) -> SessionHandle:
+        with self._control_lock:
+            with self._scope_lock:
+                self._generation = spec.generation or self._generation + 1
+                self._scope_thread = self._scope_turn = self._active_turn = ""
+                self._starting_turn = False
+                self._finished_turns.clear()
+                self._turn_ready.clear()
+                self._item_tools.clear()
+                self._item_changes.clear()
+            for request_id, pending in list(self._pending_approvals.items()):
+                if self._client is not None:
+                    self._client.reply(request_id, self._decision_payload(pending["method"], DECISION_DECLINE))
+            self._pending_approvals.clear()
+            self.events(0)
+            try:
+                return self._start(spec)
+            except Exception:
+                self.shutdown()
+                raise
+
+    def _start(self, spec: TaskSpec) -> SessionHandle:
+        self.set_context(spec.session_id, spec.turn)
         if not self._exe or not os.path.exists(self._exe):
             raise RuntimeError(codex_missing_hint())
         client, init_error = self._ensure_initialized()
         if init_error:
             raise RuntimeError("执行引擎未就绪：%s" % init_error)
         resume_id = str(getattr(spec, "resume_thread_id", "") or "").strip()
+        config = dict(spec.config or {})
+        config["features.goals"] = False
         if resume_id:
             # 接着上次的线程跑：先解档（app-server 退出会自动归档），再恢复上下文。
             self.unarchive(resume_id)
             resumed = client.request(
                 "thread/resume",
-                {"threadId": resume_id, "excludeTurns": True},
+                {"threadId": resume_id, "excludeTurns": False, "cwd": spec.cwd,
+                 "sandbox": spec.sandbox, "approvalPolicy": spec.approval_policy,
+                 "config": config},
                 timeout=120,
             )
             if resumed.get("error"):
                 raise RuntimeError("thread/resume 失败：%s" % _short(resumed["error"]))
-            result = resumed.get("result") or {}
+            result = _checked_result("thread/resume", resumed)
             thread_id = str((result.get("thread") or {}).get("id") or resume_id)
             if not thread_id:
                 raise RuntimeError("thread/resume 未返回 threadId")
             # 上个进程可能是被硬杀的，rollout 里还留着「进行中」的 turn。
             # 先收掉它，否则紧接着的 turn/start 会撞上 "turn already in progress"。
-            try:
-                client.request("turn/interrupt", {"threadId": thread_id}, timeout=30)
-            except Exception:
-                pass
+            for old_turn in (result.get("thread") or {}).get("turns") or []:
+                old_id = str(old_turn.get("id") or "")
+                if old_turn.get("status") == "inProgress" and old_id:
+                    _checked_result("turn/interrupt", client.request(
+                        "turn/interrupt", {"threadId": thread_id, "turnId": old_id}, timeout=30))
+                    self._wait_turn_idle(client, thread_id, old_id)
+                if old_id:
+                    self._finished_turns.add(old_id)
         else:
             started = client.request(
                 "thread/start",
@@ -574,17 +691,20 @@ class CodexExecutionBackend:
                     "sandbox": spec.sandbox or SANDBOX_READ_ONLY,
                     "approvalPolicy": spec.approval_policy or APPROVAL_ON_REQUEST,
                     "ephemeral": False,
-                    "config": dict(spec.config or {}) or None,
+                    "config": config,
                 },
                 timeout=120,
             )
             if started.get("error"):
                 raise RuntimeError("thread/start 失败：%s" % _short(started["error"]))
-            result = started.get("result") or {}
+            result = _checked_result("thread/start", started)
             thread_id = str((result.get("thread") or {}).get("id") or "")
             if not thread_id:
                 raise RuntimeError("thread/start 未返回 threadId")
 
+        with self._scope_lock:
+            self._scope_thread = thread_id
+            self._starting_turn = True
         turn = client.request(
             "turn/start",
             {"threadId": thread_id, "input": [{"type": "text", "text": spec.goal}]},
@@ -592,44 +712,108 @@ class CodexExecutionBackend:
         )
         if turn.get("error"):
             raise RuntimeError("turn/start 失败：%s" % _short(turn["error"]))
-        turn_id = str(((turn.get("result") or {}).get("turn") or {}).get("id") or "")
+        turn_result = _checked_result("turn/start", turn)
+        turn_id = str((turn_result.get("turn") or {}).get("id") or "")
+        if not turn_id:
+            raise CodexOutcomeUnknown("turn/start 未返回 turnId，不自动重试")
+        with self._scope_lock:
+            if self._scope_turn and self._scope_turn != turn_id:
+                raise CodexOutcomeUnknown("turn/start 响应与通知的 turnId 不一致")
+            self._scope_turn = turn_id
+            self._starting_turn = False
 
-        handle = SessionHandle(thread_id=thread_id, turn_id=turn_id, backend=self.name)
+        handle = SessionHandle(thread_id=thread_id, turn_id=turn_id, backend=self.name,
+                               generation=self._generation)
         runtime_events.publish(
             runtime_events.TASK_PROGRESS, thread_id=thread_id, turn_id=turn_id,
             message="会话已建立", model=result.get("model"), sandbox=spec.sandbox,
         )
         return handle
 
-    def steer(self, handle: SessionHandle, text: str) -> None:
+    @staticmethod
+    def _wait_turn_idle(client, thread_id: str, turn_id: str) -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            result = _checked_result("thread/read", client.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=10))
+            turns = (result.get("thread") or {}).get("turns") or []
+            if not any(turn.get("id") == turn_id and turn.get("status") == "inProgress" for turn in turns):
+                return
+            time.sleep(0.1)
+        raise CodexOutcomeUnknown("旧 turn 尚未确认停止，不启动新 turn")
+
+    def _control(self, method: str, handle: SessionHandle, text: str = "") -> ControlResult:
+        with self._control_lock:
+            with self._scope_lock:
+                matching = (handle.generation == self._generation and handle.thread_id == self._scope_thread
+                            and handle.turn_id == self._scope_turn)
+                waiting = (matching and self._client is not None and not self._active_turn
+                           and handle.turn_id not in self._finished_turns)
+            if waiting:
+                self._turn_ready.wait(5)
+            with self._scope_lock:
+                if (handle.generation != self._generation or handle.thread_id != self._scope_thread
+                        or handle.turn_id != self._scope_turn):
+                    return ControlResult("stale", handle.thread_id, handle.turn_id, "任务或 turn 已切换")
+                client = self._client
+                active = bool(self._active_turn)
+                finished = handle.turn_id in self._finished_turns
+            if not active or client is None:
+                if not finished and client is not None:
+                    if method == "turn/interrupt":
+                        self.shutdown()
+                        return ControlResult("uncertain", handle.thread_id, handle.turn_id,
+                                             "turn 启动尚未确认，已关闭本次后端以取消排队工作")
+                    return ControlResult("not_ready", handle.thread_id, handle.turn_id,
+                                         "turn 启动尚未确认，未发送补充请求")
+                return ControlResult("not_running", handle.thread_id, handle.turn_id, "当前 turn 已结束或连接不可用")
+            params = {"threadId": handle.thread_id}
+            if method == "turn/steer":
+                if not text.strip():
+                    return ControlResult("rejected", handle.thread_id, handle.turn_id, "补充内容为空")
+                params.update(expectedTurnId=handle.turn_id, input=[{"type": "text", "text": text}])
+            else:
+                params["turnId"] = handle.turn_id
+            try:
+                result = _checked_result(method, client.request(method, params, timeout=30))
+                if method == "turn/steer" and result.get("turnId") != handle.turn_id:
+                    raise CodexOutcomeUnknown("steer 未确认目标 turn，不自动重试")
+                return ControlResult("accepted", handle.thread_id, handle.turn_id, "控制请求已确认")
+            except CodexRpcError as exc:
+                return ControlResult("rejected", handle.thread_id, handle.turn_id, str(exc))
+            except Exception as exc:
+                if method == "turn/interrupt":
+                    self.shutdown()
+                return ControlResult("uncertain", handle.thread_id, handle.turn_id, str(exc))
+
+    def steer(self, handle: SessionHandle, text: str) -> ControlResult:
+        return self._control("turn/steer", handle, text)
+
+    def interrupt(self, handle: SessionHandle) -> ControlResult:
+        result = self._control("turn/interrupt", handle)
+        if result.status == "rejected":
+            with self._control_lock:
+                if handle.generation == self._generation:
+                    self.shutdown()
+        return result
+
+    def approve(self, handle: SessionHandle, request_id, decision: str) -> bool:
         client = self._client
         if client is None:
-            return
-        client.request("turn/steer", {"threadId": handle.thread_id, "input": [{"type": "text", "text": text}]},
-                       timeout=60)
-
-    def interrupt(self, handle: SessionHandle) -> None:
-        client = self._client
-        if client is None or not handle.thread_id:
-            return
-        try:
-            client.request("turn/interrupt", {"threadId": handle.thread_id}, timeout=30)
-        except Exception as exc:
-            self._log("codex-interrupt", str(exc))
-
-    def approve(self, handle: SessionHandle, request_id, decision: str) -> None:
-        client = self._client
-        if client is None:
-            return
-        pending = self._pending_approvals.pop(request_id, None)
-        if pending is None:
-            return
-        client.reply(request_id, self._decision_payload(pending.get("method", ""), decision))
+            return False
+        with self._scope_lock:
+            if (handle.generation != self._generation or handle.thread_id != self._scope_thread
+                    or handle.turn_id != self._scope_turn or not self._active_turn):
+                return False
+            pending = self._pending_approvals.pop(request_id, None)
+            if pending is None:
+                return False
+            return client.reply(request_id, self._decision_payload(pending.get("method", ""), decision)) is True
 
     @staticmethod
     def _decision_payload(method: str, decision: str) -> dict:
         if method in _LEGACY_APPROVAL_METHODS:
-            return {"decision": "approved" if decision == "accept" else "denied"}
+            return {"decision": "approved" if decision in ("accept", "acceptForSession") else "denied"}
         if method == "item/permissions/requestApproval":
             return {"permissions": {}}
         return {"decision": decision}
@@ -685,6 +869,11 @@ class CodexExecutionBackend:
         self.interrupt(handle)
 
     def shutdown(self) -> None:
+        with self._scope_lock:
+            self._client_generation += 1
+            self._scope_thread = self._scope_turn = self._active_turn = ""
+            self._starting_turn = False
+            self._turn_ready.set()
         if self._client is not None:
             self._client.terminate()
             self._client = None
@@ -696,7 +885,13 @@ class CodexExecutionBackend:
         self._pending_approvals.clear()
 
     # ── 反向请求（审批 / 时间） ──────────────────────────────
-    def _on_server_request(self, msg: dict):
+    def _on_server_request(self, msg: dict, client_generation=None):
+        with self._scope_lock:
+            if client_generation is not None and client_generation != self._client_generation:
+                return None, {"code": -32600, "message": "stale execution connection"}
+            return self._on_scoped_server_request(msg)
+
+    def _on_scoped_server_request(self, msg: dict):
         method = str(msg.get("method") or "")
         params = msg.get("params") or {}
         req_id = msg.get("id")
@@ -705,13 +900,17 @@ class CodexExecutionBackend:
             return {"currentTimeAt": int(time.time())}, None
 
         if method in _APPROVAL_REQUEST_METHODS:
+            if not self._accept_scope(params):
+                return self._decision_payload(method, DECISION_DECLINE), None
             # 审批卡片统一由 TaskRuntime 发（带 diff 与计数），这里只登记原始请求
             self._pending_approvals[req_id] = {"method": method, "params": params}
             if self._approval_decider is None:
                 self._pending_approvals.pop(req_id, None)
                 return self._decision_payload(method, DECISION_DECLINE), None
             try:
-                decision = self._approval_decider(None, method, params, req_id)
+                decision = self._approval_decider(
+                    SessionHandle(self._scope_thread, self._scope_turn, generation=self._generation),
+                    method, params, req_id)
             except Exception as exc:
                 self._log("codex-approval-decider", str(exc))
                 decision = DECISION_DECLINE
@@ -727,9 +926,43 @@ class CodexExecutionBackend:
         return None, {"code": -32601, "message": "lianxin-runtime: unsupported method %s" % method}
 
     # ── 通知 -> 事件 ─────────────────────────────────────────
-    def _on_notification(self, msg: dict) -> None:
+    def _accept_scope(self, params: dict, method: str = "") -> bool:
+        thread_id = str(params.get("threadId") or "")
+        turn_id = str(params.get("turnId") or (params.get("turn") or {}).get("id") or "")
+        with self._scope_lock:
+            if not self._scope_thread or thread_id != self._scope_thread:
+                return False
+            if turn_id:
+                if self._scope_turn and turn_id != self._scope_turn:
+                    return False
+                if not self._scope_turn:
+                    if not self._starting_turn or turn_id in self._finished_turns:
+                        return False
+                    self._scope_turn = turn_id
+                if turn_id in self._finished_turns:
+                    return False
+                if method == "turn/started":
+                    self._active_turn = turn_id
+                    self._turn_ready.set()
+                elif method == "turn/completed":
+                    self._finished_turns.add(turn_id)
+                    self._active_turn = ""
+                    self._turn_ready.set()
+            elif method not in ("error", "warning", "guardianWarning"):
+                return False
+            return True
+
+    def _on_notification(self, msg: dict, client_generation=None) -> None:
+        with self._scope_lock:
+            if client_generation is not None and client_generation != self._client_generation:
+                return
+            self._on_scoped_notification(msg)
+
+    def _on_scoped_notification(self, msg: dict) -> None:
         method = str(msg.get("method") or "")
         params = msg.get("params") or {}
+        if not self._accept_scope(params, method):
+            return
         thread_id = str(params.get("threadId") or "")
 
         if method == "item/started":
@@ -780,11 +1013,13 @@ class CodexExecutionBackend:
             return
 
         if method == "turn/plan/updated":
-            self._emit(runtime_events.PLAN_UPDATED, thread_id, params.get("turnId"), plan=params.get("plan"))
+            self._emit(runtime_events.PLAN_UPDATED, thread_id, params.get("turnId"),
+                       plan=params.get("plan"), explanation=params.get("explanation"))
             return
 
         if method == "thread/tokenUsage/updated":
-            self._emit(runtime_events.TOKEN_USAGE, thread_id, "", usage=params.get("usage") or params)
+            self._emit(runtime_events.TOKEN_USAGE, thread_id, params.get("turnId"),
+                       usage=params.get("tokenUsage") or params.get("usage") or {})
             return
 
         if method == "item/agentMessage/delta":
@@ -807,7 +1042,8 @@ class CodexExecutionBackend:
 
     def _emit(self, kind: str, thread_id: str, turn_id, **payload) -> None:
         try:
-            self._queue.put(RuntimeEventLite(kind, thread_id or "", turn_id or "", payload))
+            self._queue.put(RuntimeEventLite(kind, thread_id or "", turn_id or "", payload,
+                                             generation=self._generation))
         except Exception:
             pass
 
@@ -815,14 +1051,15 @@ class CodexExecutionBackend:
 class RuntimeEventLite:
     """轻量事件包装，避免在热路径上构造 dataclass 的开销。"""
 
-    __slots__ = ("kind", "thread_id", "turn_id", "payload", "ts")
+    __slots__ = ("kind", "thread_id", "turn_id", "payload", "ts", "generation")
 
-    def __init__(self, kind: str, thread_id: str, turn_id: str, payload: dict) -> None:
+    def __init__(self, kind: str, thread_id: str, turn_id: str, payload: dict, generation: int = 0) -> None:
         self.kind = kind
         self.thread_id = thread_id
         self.turn_id = turn_id
         self.payload = payload
         self.ts = time.time()
+        self.generation = generation
 
     def to_dict(self) -> dict:
         return {
@@ -830,5 +1067,6 @@ class RuntimeEventLite:
             "ts": self.ts,
             "threadId": self.thread_id,
             "turnId": self.turn_id,
+            "generation": self.generation,
             "payload": self.payload,
         }

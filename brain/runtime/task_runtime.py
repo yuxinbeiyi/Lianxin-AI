@@ -20,12 +20,14 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import hashlib
 import json
 import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -242,6 +244,7 @@ class TaskRuntime:
         self._last_result: Optional[dict] = None
         self._stop_requested = False
         self._stop_reason = ""
+        self._interrupt_key = None
         self._declines = 0
         self._rounds = 0
         self._stale = 0
@@ -350,18 +353,19 @@ class TaskRuntime:
     def state(self) -> dict:
         with self._lock:
             thread = self._thread
-            running = bool(thread is not None and thread.is_alive())
-            task = dict(self._task) if self._task else None
+            running = bool(thread is not None and thread.is_alive()
+                           and self._task.get("state") != "idle")
+            task = copy.deepcopy(self._task) if self._task else None
             if task is not None:
                 task["elapsedSeconds"] = round(time.time() - float(task.get("startedAt") or time.time()), 1)
                 task["rounds"] = self._rounds
                 task["staleRounds"] = self._stale
                 task["declines"] = self._declines
-            last = dict(self._last_result) if self._last_result else None
+            last = copy.deepcopy(self._last_result) if self._last_result else None
             status = self._probe_status.to_dict() if self._probe_status is not None else None
             backend = self._backend
             closed = self._closed
-            pending = [dict(card) for card in self._pending.values()]
+            pending = copy.deepcopy(list(self._pending.values()))
             approval_mode = self._approval_mode
             sandbox_value = self._sandbox
             network = self._network_access
@@ -457,7 +461,8 @@ class TaskRuntime:
     def start(self, goal: str, *, session_id=None, turn: int = 0,
               sandbox: str = "", cwd: str = "", wait: bool = False,
               wait_timeout: float = 180.0, network_access: bool = False,
-              approval_mode: str = "", resume_thread_id: str = "") -> dict:
+              approval_mode: str = "", resume_thread_id: str = "",
+              _continuation: Optional[dict] = None) -> dict:
         goal = str(goal or "").strip()
         if not goal:
             return {"ok": False, "error": "任务目标为空"}
@@ -485,10 +490,12 @@ class TaskRuntime:
                          else SANDBOX_READ_ONLY)
         network = bool(network_access) or bool(cfg.get("network_access"))
         resume_id = str(resume_thread_id or "").strip()
-        if resume_id:
+        if resume_id and _continuation is None:
             # 防呆：只有「被中断/被停止」的任务才值得接着做。过期卡片不能把
             # 已经完成的旧 thread 再拉起来重跑一遍。
             meta = session_store.read_meta(resume_id)
+            if not meta or int(meta.get("lianxinSessionId") or 0) != int(session_id or 0):
+                return {"ok": False, "error": "找不到属于当前会话的任务记录"}
             if meta:
                 meta_status = str(meta.get("status") or "")
                 if meta_status not in ("interrupted", "stopped"):
@@ -504,10 +511,21 @@ class TaskRuntime:
             if self._thread is not None and self._thread.is_alive():
                 return {"ok": False, "error": "已有任务在执行中，请先停止它或等它结束",
                         "state": self.state()}
+            if _continuation is not None:
+                meta = session_store.read_meta(resume_id)
+                error = self._continuation_error(meta, _continuation)
+                if error:
+                    return {"ok": False, "error": error}
+                goal = str(meta.get("goal") or "")
+                instruction = str(_continuation.get("text") or "").strip()
+                if instruction:
+                    goal += "\n\n本次追加要求：" + instruction
+                cwd = str(meta.get("cwd") or "")
             self._generation += 1
             generation = self._generation
             self._stop_requested = False
             self._stop_reason = ""
+            self._interrupt_key = None
             self._declines = 0
             self._rounds = 0
             self._stale = 0
@@ -524,7 +542,7 @@ class TaskRuntime:
             self._sandbox = sandbox_value
             self._network_access = network
             self._task = {
-                "taskId": "t%d" % generation,
+                "taskId": "t-" + uuid.uuid4().hex,
                 "goal": goal,
                 # 终态投递方式：sync=本轮对话同步带回，sink=由回灌通道送会话。
                 "delivery": "sync" if wait else "sink",
@@ -538,13 +556,17 @@ class TaskRuntime:
                 "cwd": _resolve_cwd(cwd, workspace),
                 "workspace": workspace,
                 "state": "starting",
+                "plan": [],
+                "currentStep": "",
+                "planExplanation": "",
+                "continuationMode": str((_continuation or {}).get("mode") or ""),
                 # 非空 = 接着这个 codex thread 继续，不再新建会话。
                 "resumeThreadId": resume_id,
             }
             thread = threading.Thread(target=self._run, args=(generation,),
                                       name="lianxin-task-runtime", daemon=True)
             self._thread = thread
-        thread.start()
+            thread.start()
         self._log("执行引擎", "任务已受理: %s" % goal[:80])
         if wait:
             thread.join(timeout=max(1.0, float(wait_timeout)))
@@ -556,17 +578,94 @@ class TaskRuntime:
                         self._task["delivery"] = "sink"
         return {"ok": True, "state": self.state()}
 
-    def stop(self, reason: str = "user") -> dict:
+    @staticmethod
+    def _continuation_error(meta: dict, request: dict) -> str:
+        if not meta or int(meta.get("lianxinSessionId") or 0) != request.get("session_id"):
+            return "找不到属于当前会话的任务记录"
+        if (not meta.get("taskId") or meta.get("taskId") != request.get("task_id")
+                or str(meta.get("lastTurnId") or "") != request.get("turn_id")):
+            return "这张任务卡片已过期，请使用最新的任务卡片"
+        allowed = {"resume": ("interrupted", "stopped"), "revise": ("completed",), "retry": ("failed",)}
+        mode = request.get("mode")
+        if str(meta.get("status") or "") not in allowed.get(mode, ()):
+            return "任务状态已改变，不能执行这项后续操作"
+        if mode in ("revise", "retry") and not str(request.get("text") or "").strip():
+            return "请先填写本次修改要求或重试条件"
+        return ""
+
+    def continue_task(self, *, session_id, task_id: str, thread_id: str,
+                      turn_id: str, mode: str, text: str = "") -> dict:
+        request = {"session_id": session_id, "task_id": task_id, "turn_id": turn_id,
+                   "mode": mode, "text": str(text or "").strip()}
+        if not session_id or not task_id or not thread_id:
+            return {"ok": False, "error": "缺少原任务身份，不能继续执行"}
+        if len(request["text"]) > 12000:
+            return {"ok": False, "error": "追加要求过长，请精简后重试"}
+        meta = session_store.read_meta(thread_id)
+        error = self._continuation_error(meta, request)
+        if error:
+            return {"ok": False, "error": error}
+        return self.start(str(meta.get("goal") or "继续原任务"), session_id=session_id,
+                          turn=int(meta.get("lianxinTurn") or 0), resume_thread_id=thread_id,
+                          _continuation=request)
+
+    def _scope_error(self, scope: Optional[dict], ready: bool = False) -> str:
+        if scope is None:
+            return ""
+        task = self._task
+        if (not scope.get("session_id") or not scope.get("task_id")
+                or any(scope.get(key) != task.get(field, "") for key, field in
+                       (("session_id", "sessionId"), ("task_id", "taskId"),
+                        ("thread_id", "threadId"), ("turn_id", "turnId")))):
+            return "任务身份已改变，请刷新执行面板后再操作"
+        if (task.get("state") == "idle" or self._stop_requested or self._thread is None
+                or not self._thread.is_alive()):
+            return "任务已结束或正在停止，不能再追加操作"
+        if ready and (self._handle is None or not task.get("turnId")):
+            return "任务仍在启动，请稍后再补充要求"
+        return ""
+
+    def steer(self, text: str, *, scope: dict) -> dict:
+        text = str(text or "").strip()
+        if not text or len(text) > 12000:
+            return {"ok": False, "error": "请填写不超过 12000 字的补充要求"}
         with self._lock:
-            running = bool(self._thread is not None and self._thread.is_alive())
-        if not running:
-            return {"ok": True, "stopped": False, "state": self.state()}
-        self._request_stop(reason or "user")
+            error = self._scope_error(scope, ready=True)
+            if error:
+                return {"ok": False, "error": error}
+            handle = self._handle
+            task_id = self._task.get("taskId")
+        try:
+            result = self._ensure_backend().steer(handle, text)
+            response = result.to_dict()
+        except Exception as exc:
+            response = {"ok": False, "status": "uncertain", "message": str(exc)}
+        if not response.get("ok"):
+            response["error"] = response.get("message") or "补充要求未被当前执行轮确认，请勿自动重发"
+        with self._lock:
+            if task_id == self._task.get("taskId"):
+                self._task["lastControl"] = {"status": response.get("status"),
+                                             "message": response.get("message", ""), "at": time.time()}
+        return response
+
+    def stop(self, reason: str = "user", *, scope: Optional[dict] = None) -> dict:
+        with self._lock:
+            error = self._scope_error(scope)
+            if error:
+                return {"ok": False, "error": error}
+            running = bool(self._thread is not None and self._thread.is_alive()
+                           and self._task.get("state") != "idle")
+            if not running:
+                return {"ok": True, "stopped": False, "state": self.state()}
+            task_id = self._task.get("taskId")
+        self._request_stop(reason or "user", expected_task_id=task_id)
         return {"ok": True, "stopped": True, "state": self.state()}
 
     def shutdown(self) -> None:
         with self._lock:
             self._closed = True
+            self._stop_requested = True
+            self._stop_reason = self._stop_reason or "运行时关闭"
             handle = self._handle
             backend = self._backend
         if handle is not None and backend is not None:
@@ -584,6 +683,15 @@ class TaskRuntime:
     # ── 审批与中断 ────────────────────────────────────────
     def _decide(self, handle, method: str, params: dict, request_id=None) -> Optional[str]:
         """审批裁决。返回 None 表示挂起，等 approve() 回执（先预览再落盘）。"""
+        with self._lock:
+            if (handle is None or handle.generation != self._generation or self._closed
+                    or self._stop_requested or self._task.get("state") == "idle"
+                    or handle.thread_id != str(params.get("threadId") or "")
+                    or handle.turn_id != str(params.get("turnId") or "")):
+                return DECISION_DECLINE
+            return self._decide_scoped(handle, method, params, request_id)
+
+    def _decide_scoped(self, handle, method: str, params: dict, request_id=None) -> Optional[str]:
         mode = self._approval_mode
         if mode in (APPROVAL_MODE_DECLINE, APPROVAL_MODE_ACCEPT) or \
                 str(method) in self._session_grants:
@@ -591,7 +699,7 @@ class TaskRuntime:
                            or str(method) in self._session_grants)
             with self._lock:
                 self._card_seq += 1
-                card_id = "ap%d" % self._card_seq
+                card_id = "%s-ap%d" % (self._task.get("taskId"), self._card_seq)
             card = self._build_card(request_id, method, params)
             card["requestId"] = card_id
             card["rawRequestId"] = request_id
@@ -620,7 +728,7 @@ class TaskRuntime:
 
         with self._lock:
             self._card_seq += 1
-            card_id = "ap%d" % self._card_seq
+            card_id = "%s-ap%d" % (self._task.get("taskId"), self._card_seq)
         card = self._build_card(request_id, method, params)
         card["requestId"] = card_id
         card["rawRequestId"] = request_id
@@ -639,11 +747,16 @@ class TaskRuntime:
             **card,
         )
 
-    def _request_stop(self, reason: str) -> None:
+    def _request_stop(self, reason: str, expected_task_id: Optional[str] = None) -> None:
         with self._lock:
+            if expected_task_id is not None and (expected_task_id != self._task.get("taskId")
+                                                 or self._task.get("state") == "idle"):
+                return
             self._stop_requested = True
             if not self._stop_reason:
                 self._stop_reason = str(reason or "任务已停止")
+            self._task["state"] = "stopping"
+            self._task["stopReason"] = self._stop_reason
             handle = self._handle
         self._decline_pending("任务停止")
         if handle is not None:
@@ -651,9 +764,19 @@ class TaskRuntime:
 
     def _interrupt_async(self, handle) -> None:
         """必须异步：调用方可能在 stdout 泵线程上，同步请求会死锁。"""
+        with self._lock:
+            key = (handle.generation, handle.thread_id, handle.turn_id)
+            if self._interrupt_key == key:
+                return
+            self._interrupt_key = key
+            backend = self._backend
+
         def _worker():
             try:
-                self._ensure_backend().interrupt(handle)
+                if backend is not None:
+                    result = backend.interrupt(handle)
+                    if result is not None and not result.ok:
+                        self._log("执行引擎", "中断确认: %s %s" % (result.status, result.message))
             except Exception as exc:
                 self._log("执行引擎", "中断失败: %s" % exc)
 
@@ -691,6 +814,10 @@ class TaskRuntime:
             title = "莲心在请求确认"
         return {
             "requestId": request_id,
+            "taskId": self._task.get("taskId"),
+            "sessionId": self._task.get("sessionId"),
+            "threadId": str(params.get("threadId") or ""),
+            "turnId": str(params.get("turnId") or ""),
             "rawRequestId": request_id,
             "method": method,
             "approvalKind": kind,
@@ -707,11 +834,15 @@ class TaskRuntime:
             "decisions": [DECISION_ACCEPT, DECISION_ACCEPT_FOR_SESSION, DECISION_DECLINE, "cancel"],
         }
 
-    def approve(self, request_id, decision: str = DECISION_ACCEPT, remember: bool = False) -> dict:
+    def approve(self, request_id, decision: str = DECISION_ACCEPT, remember: bool = False,
+                *, scope: Optional[dict] = None, reason: str = "") -> dict:
         """回执一次挂起的审批；remember=True 等价于"本轮都允许"（acceptForSession）。"""
         declines = 0
         limit = self._limits()["max_declines"]
         with self._lock:
+            error = self._scope_error(scope, ready=True)
+            if error:
+                return {"ok": False, "error": error}
             card = self._pending.pop(str(request_id), None)
             if card is None:
                 return {"ok": False, "error": "审批请求不存在或已处理"}
@@ -723,34 +854,45 @@ class TaskRuntime:
                 decision = DECISION_DECLINE
             if remember and decision == DECISION_ACCEPT:
                 decision = DECISION_ACCEPT_FOR_SESSION
-            if decision in (DECISION_ACCEPT, DECISION_ACCEPT_FOR_SESSION):
-                if decision == DECISION_ACCEPT_FOR_SESSION:
-                    self._session_grants.add(str(card.get("method") or ""))
-                self._declines = 0
-                declines = 0
-            else:
-                self._declines += 1
-                declines = self._declines
+            task_id = self._task.get("taskId")
             thread_id = str(self._task.get("threadId") or "")
             turn_id = str(self._task.get("turnId") or "")
         emitted = False
         try:
             if handle is not None:
-                self._ensure_backend().approve(handle, raw_request_id, decision)
-                emitted = True
+                emitted = self._ensure_backend().approve(handle, raw_request_id, decision) is True
         except Exception as exc:
             self._log("执行引擎", "审批回执失败: %s" % exc)
+        with self._lock:
+            if task_id != self._task.get("taskId"):
+                return {"ok": False, "error": "审批所属任务已改变"}
+            self._task["lastApproval"] = {
+                "requestId": str(request_id), "decision": decision,
+                "reason": reason or ("" if emitted else "审批回执未确认，任务已停止"),
+                "emitted": emitted, "at": time.time(),
+            }
+            if emitted and decision in (DECISION_ACCEPT, DECISION_ACCEPT_FOR_SESSION):
+                if decision == DECISION_ACCEPT_FOR_SESSION:
+                    self._session_grants.add(str(card.get("method") or ""))
+                self._declines = 0
+            elif emitted:
+                self._declines += 1
+            declines = self._declines
         runtime_events.publish(
             runtime_events.APPROVAL_RESOLVED, thread_id=thread_id, turn_id=turn_id,
             requestId=card.get("requestId"), rawRequestId=raw_request_id,
             decision=decision, itemId=card.get("itemId"),
             paths=[str(item.get("path") or "") for item in (card.get("files") or [])],
-            auto=False,
+            auto=False, emitted=emitted, reason=reason,
         )
+        if not emitted:
+            self._request_stop("审批回执未确认，已停止任务；请核对结果后再操作", expected_task_id=task_id)
+            return {"ok": False, "decision": decision, "emitted": False,
+                    "error": "审批回执未确认，已停止任务，请勿重复授权"}
         if decision == "cancel":
-            self._request_stop("用户取消了这一步")
+            self._request_stop("用户取消了这一步", expected_task_id=task_id)
         elif decision == DECISION_DECLINE and declines >= limit:
-            self._request_stop("连续 %d 次审批被拒，任务已放弃" % declines)
+            self._request_stop("连续 %d 次审批被拒，任务已放弃" % declines, expected_task_id=task_id)
         return {"ok": True, "decision": decision, "emitted": emitted}
 
     def _expire_approvals(self) -> list:
@@ -763,17 +905,26 @@ class TaskRuntime:
             self._log("执行引擎", "审批超时 %.0fs 未响应，自动拒绝: %s" % (timeout, rid))
             runtime_events.publish(runtime_events.APPROVAL_TIMEOUT, requestId=rid,
                                    timeoutSeconds=timeout)
-            self.approve(rid, DECISION_DECLINE)
+            self.approve(rid, DECISION_DECLINE, reason="审批等待超时，已自动拒绝")
         return expired
 
     def _decline_pending(self, reason: str) -> None:
         with self._lock:
-            pending = list(self._pending.keys())
+            pending = list(self._pending.values())
+            self._pending.clear()
+            handle = self._handle
+            if pending:
+                self._task["lastApproval"] = {"decision": DECISION_DECLINE,
+                                             "reason": reason, "at": time.time()}
         if not pending:
             return
         self._log("执行引擎", "清理 %d 个未决审批（%s）" % (len(pending), reason))
-        for rid in pending:
-            self.approve(rid, DECISION_DECLINE)
+        for card in pending:
+            try:
+                if handle is not None:
+                    self._ensure_backend().approve(handle, card.get("rawRequestId"), DECISION_DECLINE)
+            except Exception as exc:
+                self._log("执行引擎", "清理审批回执失败: %s" % exc)
 
     # ── 工作线程 ──────────────────────────────────────────
     def _run(self, generation: int) -> None:
@@ -791,7 +942,13 @@ class TaskRuntime:
             config=self._model_config(str(task.get("sandbox") or ""),
                                       bool(task.get("networkAccess"))),
             resume_thread_id=str(task.get("resumeThreadId") or ""),
+            generation=generation,
         )
+        with self._lock:
+            stopped = self._stop_requested or self._closed
+        if stopped:
+            self._finish(generation, status="stopped", reason=self._stop_reason or "任务已停止")
+            return
         try:
             handle = backend.start(spec)
         except Exception as exc:
@@ -820,7 +977,7 @@ class TaskRuntime:
                 reason = self._stop_reason or "任务已停止"
                 break
             for event in backend.events(0.5):
-                self._consume(event)
+                self._consume(event, generation)
             if self._stop_requested:
                 reason = self._stop_reason or "任务已停止"
                 break
@@ -845,7 +1002,10 @@ class TaskRuntime:
                 break
 
         final_status = str(self._final.get("finalStatus") or "")
-        if final_status == "completed":
+        if self._stop_requested:
+            status = "stopped"
+            reason = self._stop_reason or "任务已停止"
+        elif final_status == "completed":
             status = "completed"
         elif final_status == "interrupted":
             status = "interrupted"
@@ -858,7 +1018,20 @@ class TaskRuntime:
             self._interrupt_async(handle)
         self._finish(generation, status=status, reason=reason)
 
-    def _consume(self, event) -> None:
+    def _consume(self, event, generation: Optional[int] = None) -> None:
+        with self._lock:
+            handle = self._handle
+            if (handle is None or self._stop_requested or self._final
+                    or (generation is not None and generation != self._generation)):
+                return
+            if str(getattr(event, "thread_id", "") or "") != handle.thread_id:
+                return
+            if int(getattr(event, "generation", 0)) != handle.generation:
+                return
+            event_turn = str(getattr(event, "turn_id", "") or "")
+            if event_turn != handle.turn_id:
+                if event_turn or str(getattr(event, "kind", "")) != runtime_events.NOTE:
+                    return
         kind = str(getattr(event, "kind", "") or "")
         payload = dict(getattr(event, "payload", None) or {})
         if not kind:
@@ -909,6 +1082,25 @@ class TaskRuntime:
                 self._rounds += 1
             elif kind == runtime_events.PLAN_UPDATED:
                 self._stale = 0
+                raw_plan = published.get("plan")
+                plan = []
+                for item in (raw_plan[:40] if isinstance(raw_plan, list) else []):
+                    if not isinstance(item, dict):
+                        continue
+                    step = str(item.get("step") or "").strip()[:500]
+                    status = str(item.get("status") or "pending")
+                    status = "in_progress" if status in ("inProgress", "in_progress") else status
+                    if step and status in ("pending", "in_progress", "completed"):
+                        plan.append({"step": step, "status": status})
+                self._task["plan"] = plan
+                self._task["currentStep"] = next(
+                    (item["step"] for item in plan if item["status"] == "in_progress"), "")
+                self._task["planExplanation"] = str(published.get("explanation") or "")[:1500]
+                self._task["planUpdatedAt"] = time.time()
+                session_store.update_meta(handle.thread_id, {
+                    "plan": copy.deepcopy(plan), "currentStep": self._task["currentStep"],
+                    "planExplanation": self._task["planExplanation"],
+                })
         runtime_events.publish(kind, thread_id=getattr(event, "thread_id", "") or "",
                                turn_id=getattr(event, "turn_id", "") or "", **published)
 
@@ -916,6 +1108,9 @@ class TaskRuntime:
         with self._lock:
             if generation != self._generation:
                 return
+            if self._stop_requested:
+                status = "stopped"
+                reason = self._stop_reason or "任务已停止"
             task = dict(self._task)
             result = {
                 "status": status,
@@ -933,11 +1128,13 @@ class TaskRuntime:
                 "elapsedSeconds": round(time.time() - float(task.get("startedAt") or time.time()), 1),
                 "finishedAt": time.time(),
                 "summary": self._agent_summary(),
+                "plan": copy.deepcopy(task.get("plan") or []),
+                "currentStep": str(task.get("currentStep") or ""),
+                "lastApproval": copy.deepcopy(task.get("lastApproval")),
             }
             self._last_result = result
             self._task["state"] = "idle"
             self._handle = None
-            self._thread = None
         self._decline_pending("任务收尾")
         self._clear_pid()
         self._update_meta(result)
@@ -980,6 +1177,7 @@ class TaskRuntime:
             return
         try:
             session_store.write_meta(thread_id, {
+                "taskId": str(task.get("taskId") or ""),
                 "lianxinSessionId": int(task.get("sessionId") or 0),
                 "lianxinTurn": int(task.get("turn") or 0),
                 "goal": str(task.get("goal") or ""),
@@ -1003,7 +1201,11 @@ class TaskRuntime:
         status = str(result.get("status") or "")
         try:
             session_store.update_meta(thread_id, {
+                "taskId": str(result.get("taskId") or ""),
                 "status": status,
+                "plan": copy.deepcopy(result.get("plan") or []),
+                "currentStep": str(result.get("currentStep") or ""),
+                "lastApproval": copy.deepcopy(result.get("lastApproval")),
                 "rounds": int(result.get("rounds") or 0),
                 "elapsedSeconds": result.get("elapsedSeconds") or 0,
                 "reason": str(result.get("reason") or ""),
@@ -1066,7 +1268,7 @@ class TaskRuntime:
                 "status": target_status,
                 "reason": reason,
                 "goal": str(meta.get("goal") or ""),
-                "taskId": "recover-%s" % hashlib.sha1(thread_id.encode("utf-8")).hexdigest()[:10],
+                "taskId": str(meta.get("taskId") or "recover-%s" % hashlib.sha1(thread_id.encode("utf-8")).hexdigest()[:10]),
                 "delivery": "sink",
                 "sessionId": int(_num(meta.get("lianxinSessionId"))),
                 "turn": int(_num(meta.get("lianxinTurn"))),
@@ -1078,11 +1280,13 @@ class TaskRuntime:
                 "elapsedSeconds": round(elapsed, 1),
                 "finishedAt": _num(meta.get("finishedAt"), now),
                 "summary": str(meta.get("summary") or ""),
+                "lastApproval": copy.deepcopy(meta.get("lastApproval")),
                 "recovered": bool(resumable),
                 "skipNarration": True,
             }
             try:
                 session_store.update_meta(thread_id, {
+                    "taskId": result["taskId"],
                     "status": target_status,
                     "interrupted": bool(resumable),
                     "reason": reason,

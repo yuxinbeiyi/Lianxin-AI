@@ -1,3 +1,15 @@
+export type ExecutionNotice = {
+  id: number;
+  timestamp: number;
+  message: string;
+  code: string;
+  source: string;
+  sessionId?: number | null;
+  requestId: string;
+  state: "running" | "completed" | "failed" | "cancelled" | "skipped";
+  level: "info" | "warning" | "error";
+};
+
 export type ApiMessage = {
   role: "user" | "assistant";
   content: string;
@@ -8,11 +20,13 @@ export type ApiMessage = {
   kind?: string;
   executionTaskId?: string;
   executionThreadId?: string;
+  executionTurnId?: string;
   executionStatus?: string;
   executionGoal?: string;
   executionRounds?: number;
   executionElapsed?: number;
   executionReason?: string;
+  executionApprovalReason?: string;
   executionSummary?: string;
   executionNarrated?: boolean;
 };
@@ -70,6 +84,8 @@ export type ExecutionApproval = {
   askedAt?: number;
   auto?: boolean;
 };
+export type ExecutionScope = { sessionId: number; taskId: string; threadId: string; turnId: string };
+export type ExecutionPlanStep = { step: string; status: "pending" | "in_progress" | "completed" };
 export type ExecutionTaskState = {
   enabled: boolean;
   closed?: boolean;
@@ -87,6 +103,15 @@ export type ExecutionTaskState = {
     approval_timeout_seconds: number;
   };
   task: null | {
+    taskId?: string;
+    sessionId?: number;
+    turnId?: string;
+    plan?: ExecutionPlanStep[];
+    currentStep?: string;
+    planExplanation?: string;
+    lastControl?: { status?: string; message?: string; at?: number };
+    lastApproval?: { decision?: string; reason?: string; at?: number };
+    stopReason?: string;
     goal: string;
     cwd?: string;
     sandbox?: string;
@@ -227,6 +252,7 @@ export type DataTideState = {
   user_name?: string;
 };
 export const lianxinApi = {
+  executionNotices: (after: number, sessionId?: number) => request<{ items: ExecutionNotice[]; latest: number }>(`/execution-status/events?after=${after}${sessionId ? `&sessionId=${sessionId}` : ""}`),
   status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
   dataTideState: () => request<DataTideState>("/data-tide/state"),
   cancelChat: () => request<{ cancelled: boolean }>("/chat/cancel", { method: "POST", body: "{}" }),
@@ -271,9 +297,13 @@ export const lianxinApi = {
   runtimeEvents: (after: number) => request<{ items: Array<{ id: number; kind: string; ts: number; threadId?: string; turnId?: string; payload: Record<string, unknown> }>; latest: number; running?: boolean }>(`/runtime/events?after=${after}`),
   runtimeStart: (goal: string, options: { sessionId?: number; turn?: number; cwd?: string; sandbox?: string; networkAccess?: boolean; wait?: boolean; resumeThreadId?: string } = {}) =>
     request<{ ok: boolean; error?: string; state: ExecutionTaskState }>("/runtime/start", { method: "POST", body: JSON.stringify({ goal, ...options }) }),
-  runtimeStop: (reason = "user") => request<{ ok: boolean; stopped: boolean; state: ExecutionTaskState }>("/runtime/stop", { method: "POST", body: JSON.stringify({ reason }) }),
-  runtimeApprove: (requestId: string, decision: "accept" | "acceptForSession" | "decline" | "cancel" = "accept", remember = false) =>
-    request<{ ok: boolean; decision?: string; error?: string }>("/runtime/approve", { method: "POST", body: JSON.stringify({ requestId, decision, remember }) }),
+  runtimeSteer: (text: string, scope: ExecutionScope) =>
+    request<{ ok: boolean; status?: string; error?: string }>("/runtime/steer", { method: "POST", body: JSON.stringify({ text, ...scope }) }),
+  runtimeContinue: (scope: ExecutionScope, mode: "resume" | "revise" | "retry", text = "") =>
+    request<{ ok: boolean; error?: string; state?: ExecutionTaskState }>("/runtime/continue", { method: "POST", body: JSON.stringify({ ...scope, mode, text }) }),
+  runtimeStop: (scope: ExecutionScope, reason = "user") => request<{ ok: boolean; error?: string; stopped: boolean; state?: ExecutionTaskState }>("/runtime/stop", { method: "POST", body: JSON.stringify({ reason, ...scope }) }),
+  runtimeApprove: (scope: ExecutionScope, requestId: string, decision: "accept" | "acceptForSession" | "decline" | "cancel" = "accept", remember = false) =>
+    request<{ ok: boolean; decision?: string; error?: string }>("/runtime/approve", { method: "POST", body: JSON.stringify({ requestId, decision, remember, ...scope }) }),
   voiceEvents: (after: number) => request<{ items: Array<{ id: number; type: string; state?: string; content?: string; error?: string }>; latest: number }>(`/voice/events?after=${after}`),
   startVoiceInput: () => request<{ active: boolean }>("/voice/input/start", { method: "POST", body: "{}" }),
   stopVoiceInput: () => request<{ active: boolean }>("/voice/input/stop", { method: "POST", body: "{}" }),

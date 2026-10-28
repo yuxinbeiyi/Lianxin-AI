@@ -641,6 +641,9 @@ class ProactiveDuty(Duty):
                 bilibili_mode=True,
                 bilibili_ignore_cooldown=bool(kwargs.get("ignore_cooldowns", False)),
             )
+            import uuid
+            worker._execution_status_session_id = state.session_id or None
+            worker._execution_status_request_id = uuid.uuid4().hex
         elif behavior == "slack":
             from workers.slack_worker import SlackWorker
             action = kwargs.get("force_action", "") or ps.should_slack()
@@ -740,7 +743,10 @@ class ProactiveDuty(Duty):
         if behavior == "observe" and not self._observation_succeeded:
             text = ""
         if not text:
-            self.status.last_result = "skipped"
+            outcome = getattr(self._worker, "_execution_status_outcome", "skipped") if behavior == "bilibili" else "skipped"
+            self.status.last_result = outcome if outcome in {"failed", "skipped"} else "skipped"
+            if self.status.last_result == "failed":
+                self.status.fail_count += 1
             if self._try_fallback():
                 return
             return

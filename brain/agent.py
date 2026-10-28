@@ -572,7 +572,8 @@ class AgentCore:
         if session_id is not None:
             # ── 指定了 session_id：加载该会话（用于 QQ 桥接等多会话场景）
             self._session_id = session_id
-            raw_msgs = self._history_mgr.get_messages(session_id)
+            raw_msgs = self._history_mgr.get_messages_with_ids(session_id)
+            self._cancelled_requests = [m["content"][:500] for m in raw_msgs if m.get("request_cancelled")][-8:]
             self.history = [
                 {"role": m["role"], "content": _clean_history_content(m["content"])}
                 for m in raw_msgs
@@ -599,7 +600,8 @@ class AgentCore:
                 )
                 if last_id is not None:
                     self._session_id = last_id
-                    raw_msgs = self._history_mgr.get_messages(last_id)
+                    raw_msgs = self._history_mgr.get_messages_with_ids(last_id)
+                    self._cancelled_requests = [m["content"][:500] for m in raw_msgs if m.get("request_cancelled")][-8:]
                     self.history = [
                         {"role": m["role"], "content": _clean_history_content(m["content"])}
                         for m in raw_msgs
@@ -706,11 +708,22 @@ class AgentCore:
             "[系统取消] 上一条用户请求在完成前已被取消（%s）。"
             "不得在后续对话中补答、执行或声称已完成；除非用户重新明确提出。"
         ) % str(reason or "用户中断")[:120]
-        self.history.append({"role": "assistant", "content": marker})
-        try:
-            self._history_mgr.save_message(self._session_id, "assistant", marker)
-        except Exception as exc:
-            logger.warning("保存任务取消边界失败: %s", exc)
+        if getattr(self, "_execution_status_enabled", False):
+            cancelled = getattr(self, "_cancelled_requests", [])
+            self._cancelled_requests = (cancelled + [str(self.history[-1]["content"])[:500]])[-8:]
+            try:
+                self._history_mgr.mark_request_cancelled(
+                    self._session_id, getattr(self, "_execution_request_id", ""), str(reason)[:120],
+                )
+            except Exception as exc:
+                logger.warning("保存任务取消边界失败: %s", exc)
+            self._execution_notice("request_cancelled", "已停止本次请求。", state="cancelled")
+        else:
+            self.history.append({"role": "assistant", "content": marker})
+            try:
+                self._history_mgr.save_message(self._session_id, "assistant", marker)
+            except Exception as exc:
+                logger.warning("保存任务取消边界失败: %s", exc)
 
         state = getattr(self, "_tool_session_state", None)
         if state is not None:
@@ -721,6 +734,41 @@ class AgentCore:
             state.last_intent = ""
         print("[任务取消] 已记录未完成请求的取消边界", flush=True)
         return True
+
+    def _execution_notice(self, code: str, message: str, *, state="failed",
+                          detail="", fallback=None) -> str:
+        if not getattr(self, "_execution_status_enabled", False):
+            return fallback if fallback is not None else message
+        from utils.execution_status import get_execution_status_bus
+        self._last_execution_notice = get_execution_status_bus().publish(
+            message, code=code, session_id=getattr(self, "_session_id", None),
+            request_id=getattr(self, "_execution_request_id", ""), state=state,
+            level="info" if state in {"cancelled", "completed", "running"} else "warning",
+        )
+        logger.warning("[ExecutionStatus] code=%s state=%s session=%s detail=%s",
+                       code, state, getattr(self, "_session_id", None), detail)
+        return ""
+
+    def _finish_status_turn(self, workflow_store, workflow_run_id, trace_id, trace_started):
+        notice = self._last_execution_notice
+        state = "cancelled" if notice["state"] == "cancelled" else "failed"
+        if workflow_store and workflow_run_id:
+            try:
+                workflow_store.finish_run(workflow_run_id, status=state, error=notice["code"],
+                                          result_summary=notice["message"])
+            except Exception as exc:
+                logger.warning("记录执行状态失败: %s", exc)
+        if trace_id:
+            try:
+                from brain.memory_diagnostics import finish_memory_trace
+                finish_memory_trace(trace_id, status=state, duration_ms=(time.perf_counter()-trace_started)*1000)
+            except Exception:
+                pass
+        self._last_emotion = None
+        self._last_raw_response = None
+        self._active_memory_trace_id = ""
+        self._active_workflow_run_id = 0
+        self._prepared_document_context = ""
 
     @_track_main_request
     def chat(self, user_message: str,
@@ -752,6 +800,7 @@ class AgentCore:
         # AgentCore 会在桌面端跨请求复用。中途插话的“停止”只应作用于
         # 当前请求，不能把取消事件带到下一轮对话。
         self._cancel_event.clear()
+        self._last_execution_notice = None
         request_context = parse_request_context(user_message)
         active_request_text = request_context.routing_text
         if request_context.is_quote_ack:
@@ -839,6 +888,7 @@ class AgentCore:
         user_message_id = self._history_mgr.save_message(
             self._session_id, "user", user_message
         )
+        self._execution_request_id = str(user_message_id)
 
         # 在首次模型调用之前，将用户明确引用的文档批量转换为 Markdown。
         try:
@@ -954,6 +1004,9 @@ class AgentCore:
             self._prepared_document_context = ""
             raise
 
+        if getattr(self, "_last_execution_notice", None) and not response_text:
+            self._finish_status_turn(workflow_store, workflow_run_id, trace_id, trace_started)
+            return ""
 
         # ── 剥离情绪标签：只存/显示干净文本，情绪通过属性传递 ──
         from utils.emotion_manager import parse_emotion_tag, infer_emotion_from_text
@@ -1112,6 +1165,8 @@ class AgentCore:
     def clear_history(self):
         """清除当次会话的内存历史（数据库记录保留）。"""
         self.history = []
+        self._cancelled_requests = []
+        self._last_execution_notice = None
         self._conversation_summary = ""
         self._summarized_history_idx = 0
         self._last_input_tokens = 0
@@ -1137,6 +1192,9 @@ class AgentCore:
         previous_session_id = self._session_id
         self._clear_session_attachments(previous_session_id)
         self.history = []
+        self._cancelled_requests = []
+        self._last_execution_notice = None
+        self._execution_request_id = ""
         self._session_id = self._history_mgr.new_session(
             channel=self._source_channel,
             participant_id=self._participant_id,
@@ -2922,13 +2980,11 @@ class AgentCore:
             try:
                 from brain.skill_manager import is_skill_active
                 if not is_skill_active("自我认知功能"):
-                    return (
-                        "我知道这些能力已经登记，但“自我认知功能”当前未激活，"
+                    return self._execution_notice('capability_disabled', '该能力尚未启用，可到能力中枢查看。', state='failed', fallback="我知道这些能力已经登记，但“自我认知功能”当前未激活，"
                         "所以不能访问详细的功能、架构和实时状态说明。"
-                        "请到“能力中枢”手动启用“自我认知功能”，启用后我再依据真实资料为你介绍。"
-                    )
+                        "请到“能力中枢”手动启用“自我认知功能”，启用后我再依据真实资料为你介绍。")
             except Exception:
-                return "自我认知功能当前不可用，暂时不能读取详细的能力说明。"
+                return self._execution_notice('capability_unavailable', '能力说明暂时无法读取。', state='failed', fallback="自我认知功能当前不可用，暂时不能读取详细的能力说明。")
         self._tool_session_state.begin(route, self._current_request_text)
         self._request_route = route
         from brain.browser_task import BrowserTaskState
@@ -3406,6 +3462,12 @@ class AgentCore:
 
         # ── 对话历史：云端模式滑动窗口 + 摘要压缩 ──────
         # 必须在所有 system 注入之后，确保用户消息是最后一条非 system 消息
+        cancelled_requests = getattr(self, "_cancelled_requests", [])
+        if cancelled_requests:
+            messages.append({"role": "system", "content":
+                "以下历史请求已被用户取消，不得补答、继续执行或声称已完成；除非用户重新明确提出：\n"
+                + "\n".join(cancelled_requests[-8:])})
+
         def _history_for_prompt(items):
             rendered = []
             current_index = -1
@@ -3886,14 +3948,17 @@ class AgentCore:
                                 ),
                             })
                             continue
-                        return "（刚才那句没生成好，我咽回去了。你再说一遍？）"
+                        return self._execution_notice('reply_invalid', '回复生成异常，自动恢复未成功。', state='failed', fallback="（刚才那句没生成好，我咽回去了。你再说一遍？）")
                     self._last_reasoning = reasoning if reasoning else None
                     try:
                         from brain.text_hygiene import strip_parenthetical_asides
-                        return strip_parenthetical_asides(content or "") or \
-                            "刚才的回复在生成时被截断了，请再发一次，我会继续处理。"
+                        return strip_parenthetical_asides(content or "") or self._execution_notice(
+                            "reply_empty", "本次没有生成有效回复，自动恢复未成功。",
+                            fallback="刚才的回复在生成时被截断了，请再发一次，我会继续处理。")
                     except Exception:
-                        return content or "刚才的回复在生成时被截断了，请再发一次，我会继续处理。"
+                        return content or self._execution_notice(
+                            "reply_empty", "本次没有生成有效回复，自动恢复未成功。",
+                            fallback="刚才的回复在生成时被截断了，请再发一次，我会继续处理。")
                 except Exception as e:
                     if locals().get("_plain_model_step"):
                         try:
@@ -3908,7 +3973,7 @@ class AgentCore:
                         _time.sleep(1.5)
                         continue
                     print(f"[模型调用失败] {e}", flush=True)
-                    return "（我这边的服务暂时没连上，稍后再说一次就好。）"
+                    return self._execution_notice('model_connection_failed', '模型服务暂时无法连接，请稍后重试。', state='failed', fallback="（我这边的服务暂时没连上，稍后再说一次就好。）")
 
 
         MAX_ITERATIONS = 20          # 绝对安全上限，正常不会触发
@@ -3954,10 +4019,8 @@ class AgentCore:
                     "_module": "recall_contract",
                 })
             else:
-                return (
-                    "我目前无法核对这段历史聊天记录，因为聊天记录检索工具没有可用。"
-                    "因此我不会给你一个未经验证的具体时间或原话。"
-                )
+                return self._execution_notice('memory_lookup_unavailable', '聊天记录检索暂不可用，本次未完成核对。', state='failed', fallback="我目前无法核对这段历史聊天记录，因为聊天记录检索工具没有可用。"
+                    "因此我不会给你一个未经验证的具体时间或原话。")
         if required_tool == "navigate_to_marker" and not any(
             token in _msg_for_match.lower() for token in ("标记", "前往", "到达", "去")
         ):
@@ -4048,12 +4111,16 @@ class AgentCore:
             if self._browser_task_state:
                 self._browser_task_state.begin_round()
                 if self._browser_task_state.status != "running":
-                    return self._browser_task_state.stop_message()
+                    return self._execution_notice(
+                        "browser_task_stopped", "浏览器任务已停止，详情可在任务记录中查看。",
+                        state="cancelled" if self._browser_task_state.status == "cancelled" else "failed",
+                        detail=self._browser_task_state.stop_message(),
+                        fallback=self._browser_task_state.stop_message())
 
             if self._cancel_event.is_set():
                 print("  [循环终止] 收到取消信号", flush=True)
                 self._cancel_event.clear()
-                return "（任务已被取消）"
+                return self._execution_notice('request_cancelled', '已停止本次回复。', state='cancelled', fallback="（任务已被取消）")
 
             self._activity_round = int(iteration or 0)
             if on_round_start:
@@ -4233,10 +4300,8 @@ class AgentCore:
                     "out of quota", "no quota", "quota exceeded",
                 ))
                 if is_balance_error:
-                    return (
-                        "（API 账户余额不足或额度已用完，暂时无法调用模型。"
-                        "请充值后再试；使用中转站的话请检查套餐余额与额度。）"
-                    )
+                    return self._execution_notice('model_quota_exhausted', '模型接口余额或额度不足，请检查接口设置。', state='failed', fallback="（API 账户余额不足或额度已用完，暂时无法调用模型。"
+                        "请充值后再试；使用中转站的话请检查套餐余额与额度。）")
                 is_retryable = any(kw in error_msg for kw in [
                     "timeout", "connection", "getaddrinfo", "name or service not known",
                     "rate limit", "server", "500", "502", "503", "504",
@@ -4246,16 +4311,17 @@ class AgentCore:
                     if self._cancel_event.is_set():
                         print(f"[API重试] 第{iteration}轮收到取消信号，终止重试", flush=True)
                         self._cancel_event.clear()
-                        return "（响应超时，任务已取消。请重新发送消息。）"
+                        return self._execution_notice('request_cancelled', '已停止本次回复。', state='cancelled', fallback="（响应超时，任务已取消。请重新发送消息。）")
                     import time as _time
                     delay = 1.5 * (iteration + 1)
                     print(f"[API重试] 第{iteration}轮失败，{delay:.1f}秒后重试: {e}", flush=True)
                     _time.sleep(delay)
                     continue
-                return f"（API 调用失败：{e}）"
+                return self._execution_notice('model_request_failed', '模型请求失败，请稍后重试。',
+                                              detail=str(e), fallback=f"（API 调用失败：{e}）")
 
             if finish == "error":
-                return "（莲心的网络好像不太稳定，稍等一下再试试吧~）"
+                return self._execution_notice('model_connection_failed', '模型服务暂时无法连接，请稍后重试。', state='failed', fallback="（莲心的网络好像不太稳定，稍等一下再试试吧~）")
 
             if reasoning:
                 self._last_reasoning = reasoning
@@ -4307,7 +4373,9 @@ class AgentCore:
                                 "content": web_research_task.next_prompt(),
                             })
                             continue
-                        return web_research_task.stop_message()
+                        return self._execution_notice(
+                            "web_research_incomplete", "网页任务未完成，已停止继续尝试。",
+                            detail=web_research_task.stop_message(), fallback=web_research_task.stop_message())
                 # 浏览器导航已经返回页面快照时，打开网页这一类复合任务
                 # 可以安全收尾；后续浏览器动作仍由浏览器任务状态机负责。
                 if web_research_task and web_research_task.phase == "browser":
@@ -4377,7 +4445,7 @@ class AgentCore:
                         })
                         continue
                     print(f"[工具契约] {required_tool} 未能成功执行", flush=True)
-                    return "这一步我还没查完，不能装作已经完成。再给我一轮，我重新处理一遍。"
+                    return self._execution_notice('tool_contract_incomplete', '本次操作未完成，自动补试未成功。', state='failed', fallback="这一步我还没查完，不能装作已经完成。再给我一轮，我重新处理一遍。")
 
                 # 用户要求核验正文时，搜索摘要不能被当作正文证据。
                 if (requires_verified_web_content(_msg_for_match)
@@ -4388,12 +4456,21 @@ class AgentCore:
                             if event.get("name") in NETWORK_READ_TOOLS:
                                 candidate_urls.extend(extract_urls(event.get("result", "")))
                     candidate_urls = list(dict.fromkeys(candidate_urls))
+                    if (getattr(self, "_execution_status_enabled", False) and candidate_urls
+                            and not any(t.get("function", {}).get("name") == "fetch_webpage" for t in all_tools)
+                            and "fetch_webpage" not in runtime_disabled_names):
+                        definition = next((item for item in TOOL_DEFINITIONS
+                                           if item.get("function", {}).get("name") == "fetch_webpage"), None)
+                        if definition:
+                            all_tools.append(definition)
+                            print("[正文补读] 已补充正文读取工具", flush=True)
                     fetch_available = any(
                         t.get("function", {}).get("name") == "fetch_webpage" for t in all_tools
                     )
                     if candidate_urls and fetch_available and _web_verification_retry_count < 1:
                         _web_verification_retry_count += 1
                         forced_tool = "fetch_webpage"
+                        _force_text_response = False
                         messages.append({
                             "role": "system",
                             "content": (
@@ -4402,12 +4479,12 @@ class AgentCore:
                             ),
                         })
                         continue
-                    return "我目前只取得了搜索摘要，没有成功读取原始正文，因此不能声称已经完成正文核实。"
+                    return self._execution_notice('web_content_unverified', '已取得搜索摘要，但原始资料尚未核实。', state='failed', fallback="我目前只取得了搜索摘要，没有成功读取原始正文，因此不能声称已经完成正文核实。")
 
                 # 配置修改是有副作用的操作，未成功时禁止用自然语言宣称已经生效。
                 if (network_change_requested(_msg_for_match)
                         and not has_successful_network_change(request_audit)):
-                    return "联网工具配置没有修改成功，因此我没有把它当成已停用或已调整；本轮后续搜索也已停止。"
+                    return self._execution_notice('network_settings_failed', '联网设置未修改成功，本次后续搜索已停止。', state='failed', fallback="联网工具配置没有修改成功，因此我没有把它当成已停用或已调整；本轮后续搜索也已停止。")
 
                 if contains_textual_tool_protocol(content, has_real_tool_result=_has_real_tool_result):
                     # 先剥离伪协议、尽量保留实质回答：工具结果往往已经拿到，
@@ -4462,15 +4539,13 @@ class AgentCore:
                                 "改用“已完成+请确认”模板兜底。",
                                 flush=True,
                             )
-                            return (
-                                "（这轮操作已经执行完了，只是我没把结果说清楚。"
-                                "你让我复述一遍就行。）"
-                            )
+                            return self._execution_notice('reply_delivery_failed', '已取得工具结果，但回复整理失败；请先核对任务结果，避免重复执行。', state='failed', fallback="（这轮操作已经执行完了，只是我没把结果说清楚。"
+                                "你让我复述一遍就行。）")
                         print(
                             "[协议防泄漏] 最终回复两次被丢弃且本轮无工具结果，改用通用模板兜底。",
                             flush=True,
                         )
-                        return "（刚才没接住你的消息，再说一次我接着处理。）"
+                        return self._execution_notice('reply_invalid', '回复生成异常，自动恢复未成功。', state='failed', fallback="（刚才没接住你的消息，再说一次我接着处理。）")
                 # 工具激活重试：只补充当前语义类别或模型明确点名的工具。
                 if (not self._use_local and not _full_tools_injected
                         and not any(t.get("function", {}).get("name") == "request_tools" for t in all_tools)
@@ -4556,7 +4631,7 @@ class AgentCore:
                     if len(all_tools) > _tool_count_before_activation:
                         continue
                 if finish == "length" and not str(content or "").strip():
-                    return "刚才的回复在生成时被截断了，我还没有拿到完整结果。请再发送一次，我会继续处理。"
+                    return self._execution_notice('reply_truncated', '回复未完整生成，自动恢复未成功。', state='failed', fallback="刚才的回复在生成时被截断了，我还没有拿到完整结果。请再发送一次，我会继续处理。")
                 if request_context.is_quote_ack and looks_like_repeated_response(
                     content or "", request_context, self.history[:-1]
                 ):
@@ -4575,7 +4650,11 @@ class AgentCore:
                     print("[重复回答防护] 二次重试后仍接近旧回复，使用安全短回复", flush=True)
                     final_content = "嗯，你之前已经看过了，我就不重复推荐啦。"
                 else:
-                    final_content = content or "刚才没有生成出可显示的内容，请再发送一次。"
+                    if not content:
+                        return self._execution_notice(
+                            "reply_empty", "本次没有生成有效回复，自动恢复未成功。",
+                            fallback="刚才没有生成出可显示的内容，请再发送一次。")
+                    final_content = content
 
                 # ── 回忆优先守卫：未查证就断言“没有”必须先查证再重答（见设计文档 L5）──
                 if (_recall_deny_retry_count < 1
@@ -4607,10 +4686,16 @@ class AgentCore:
                     if source_urls and not extract_urls(final_content):
                         final_content += "\n来源：" + "\n".join(source_urls)
                 from brain.execution_guard import validate_execution_claims
+                unguarded_content = final_content
                 final_content = validate_execution_claims(
                     final_content, _msg_for_match, request_audit,
                     capabilities=route.capabilities, mode=route.mode.value,
                 )
+                if final_content != unguarded_content and getattr(self, "_execution_status_enabled", False):
+                    return self._execution_notice(
+                        "execution_unverified", "本次操作未取得可验证结果，暂不能确认已完成。",
+                        detail=final_content, fallback=final_content,
+                    )
                 # 主人点名了执行引擎，但本轮确实没有走引擎（模型改用普通工具
                 # 自己硬做）：如实补一句，避免点名的能力被静默绕过（P0-2）。
                 if (is_explicit_execution_request(_msg_for_match)
@@ -4953,12 +5038,12 @@ class AgentCore:
                         on_progress(reply)
                         if "[终止]" in reply:
                             self._cancel_event.clear()
-                            return "（任务已取消）"
+                            return self._execution_notice('request_cancelled', '已停止本次回复。', state='cancelled', fallback="（任务已取消）")
                         self._cancel_event.clear() 
             else:
-                return f"（意外停止: {finish}）"
+                return self._execution_notice('model_unexpected_finish', '回复意外中止，请稍后重试。', state='failed', fallback=f"（意外停止: {finish}）")
 
-        return "（任务过于复杂，已达到工具调用上限。请尝试拆分为更小的任务分步完成。）"
+        return self._execution_notice('task_limit_reached', '本次任务达到执行上限，已停止继续调用工具。', state='failed', fallback="（任务过于复杂，已达到工具调用上限。请尝试拆分为更小的任务分步完成。）")
         
 
     def _call_api_with_retry(self, messages, max_retries=3, initial_delay=1.0):

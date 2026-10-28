@@ -744,3 +744,17 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
     opacity: .55;
   }
 }
+.exec-plan { list-style: none; margin: 8px 0; padding: 0; max-height: 140px; overflow-y: auto; font-size: 12px; }
+.exec-plan li { display: flex; gap: 8px; padding: 3px 0; color: var(--lx-text-muted); }
+.exec-plan li[data-status="in_progress"], .exec-current { color: var(--lx-accent); }
+.exec-plan li[data-status="completed"] { opacity: .68; }
+.exec-current, .exec-control-status { font-size: 12px; margin: 6px 0; }
+.exec-control-status { color: var(--lx-text-muted); }
+.exec-supplement { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.exec-supplement input, .exec-card-resume textarea { min-width: 0; flex: 1; border: 1px solid rgba(111, 201, 174, .3); border-radius: 8px; padding: 7px 9px; background: rgba(111, 201, 174, .06); color: inherit; font: inherit; font-size: 12px; }
+.exec-supplement input:focus, .exec-card-resume textarea:focus { outline: 1px solid #71c9af; }
+.exec-supplement button { border: 1px solid rgba(111, 201, 174, .3); border-radius: 8px; padding: 6px 10px; background: rgba(111, 201, 174, .1); color: inherit; font-size: 12px; cursor: pointer; }
+.exec-supplement small { flex-basis: 100%; opacity: .65; font-size: 11px; }
+.exec-supplement button:disabled, .exec-stop:disabled { opacity: .45; cursor: default; }
+.exec-card-resume { flex-wrap: wrap; }
+.exec-card-resume textarea { flex-basis: 100%; min-height: 64px; resize: vertical; }

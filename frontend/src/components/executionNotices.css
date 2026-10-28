@@ -1,0 +1,31 @@
+.execution-notices {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.execution-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(90%, 640px);
+  padding: 7px 12px;
+  border: 1px solid rgba(134, 198, 179, 0.2);
+  border-radius: 12px;
+  background: rgba(134, 198, 179, 0.07);
+  color: var(--text-secondary, #8a9c97);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.execution-notice button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}

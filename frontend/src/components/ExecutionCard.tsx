@@ -2,6 +2,8 @@ import { useState } from "react";
 import { CheckCircle2, Clock3, Play, Wrench, XCircle } from "lucide-react";
 import { lianxinApi } from "../services/lianxinApi";
 import type { ExecutionCardData } from "../types/ui";
+import { continuationMode } from "../utils/executionControls";
+import { showExecutionNotice } from "../utils/executionNotices";
 
 const STATUS_LABEL: Record<string, string> = {
   completed: "已完成",
@@ -33,36 +35,40 @@ export function ExecutionCard({
 }) {
   const [open, setOpen] = useState(false);
   const [resuming, setResuming] = useState(false);
-  const [resumeNotice, setResumeNotice] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [instruction, setInstruction] = useState("");
   const status = String(data?.status ?? "");
   const tone = toneOf(status);
   const label = STATUS_LABEL[status] ?? "已结束";
   const summary = String(data?.summary ?? "").trim();
   const elapsed = Number(data?.elapsed ?? 0);
   const rounds = Number(data?.rounds ?? 0);
-  const canResume = status === "interrupted" && Boolean(data?.threadId);
+  const mode = continuationMode(status);
+  const canResume = Boolean(mode && data?.threadId && data?.taskId && sessionId);
+  const actionLabel = mode === "revise" ? "继续修改" : mode === "retry" ? "补充条件后再试" : "接着做";
 
   async function handleResume() {
-    if (!canResume || resuming) return;
+    if (!canResume || !mode || !sessionId || resuming) return;
+    if (mode !== "resume" && (!editing || !instruction.trim())) {
+      setEditing(true);
+      return;
+    }
     setResuming(true);
-    setResumeNotice("");
     try {
-      const result = await lianxinApi.runtimeStart(
-        String(data?.goal || "接着上次没做完的任务继续"),
-        {
-          sessionId,
-          resumeThreadId: data?.threadId,
-        },
+      const result = await lianxinApi.runtimeContinue(
+        { sessionId, taskId: data!.taskId!, threadId: data!.threadId!, turnId: data?.turnId ?? "" },
+        mode, instruction.trim(),
       );
-      setResumeNotice(
-        result.ok
-          ? "已经接着上次的进度继续跑了，进度在执行面板里。"
-          : `没能继续：${result.error || "未知原因"}`,
-      );
+      if (result.ok) {
+        setEditing(false);
+        setInstruction("");
+        window.dispatchEvent(new Event("lianxin-runtime-changed"));
+      }
+      showExecutionNotice(result.ok ? "后续任务已受理，进度显示在执行面板。" : result.error || "未能继续执行。",
+        "runtime_continue", sessionId, data?.taskId, result.ok ? "info" : "warning");
     } catch (error) {
-      setResumeNotice(
-        `没能继续：${error instanceof Error ? error.message : String(error)}`,
-      );
+      showExecutionNotice(`请求结果未确认，请先核对任务状态，勿重复提交：${error instanceof Error ? error.message : String(error)}`,
+        "runtime_continue", sessionId, data?.taskId);
     } finally {
       setResuming(false);
     }
@@ -89,14 +95,19 @@ export function ExecutionCard({
         <span>动作 {rounds}</span>
         {data?.reason ? <span className="exec-card-reason">{data.reason}</span> : null}
       </div>
+      {data?.approvalReason ? <p className="exec-control-status" role="status">审批记录：{data.approvalReason}</p> : null}
       {content ? <p className="exec-card-speech">{content}</p> : null}
       {canResume ? (
         <div className="exec-card-resume">
           <button type="button" onClick={() => void handleResume()} disabled={resuming}>
             <Play size={12} />
-            {resuming ? "正在接着做…" : "接着做"}
+            {resuming ? "正在受理…" : editing ? "确认执行" : actionLabel}
           </button>
-          {resumeNotice ? <span>{resumeNotice}</span> : null}
+          {editing ? <>
+            <textarea aria-label="后续执行要求" placeholder={mode === "retry" ? "请补充重试条件或修复线索" : "请描述本次需要修改的内容"}
+              value={instruction} maxLength={12000} disabled={resuming} onChange={(event) => setInstruction(event.target.value)} />
+            <button type="button" disabled={resuming} onClick={() => setEditing(false)}>取消</button>
+          </> : null}
         </div>
       ) : null}
       {summary ? (

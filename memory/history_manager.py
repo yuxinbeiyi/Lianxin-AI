@@ -225,12 +225,45 @@ class HistoryManager:
             self._conn().commit()
             return bool(cur.rowcount)
 
+    def mark_request_cancelled(self, session_id: int, message_id, reason: str) -> bool:
+        with self._write_lock:
+            conn = self._conn()
+            row = conn.execute(
+                "SELECT id, metadata_json FROM messages WHERE session_id=? AND role='user' AND id=?",
+                (int(session_id), int(message_id or 0)),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.update(request_cancelled=True, cancellation_reason=str(reason))
+            conn.execute("UPDATE messages SET metadata_json=? WHERE id=?",
+                         (json.dumps(metadata, ensure_ascii=False), row["id"]))
+            conn.commit()
+            return True
+
     def update_latest_message_metadata(self, session_id: int, role: str, metadata: dict) -> bool:
         """Attach UI metadata to the newest message without changing legacy content."""
         with self._write_lock:
+            row = self._conn().execute(
+                "SELECT metadata_json FROM messages WHERE session_id=? AND role=? ORDER BY id DESC LIMIT 1",
+                (int(session_id), str(role)),
+            ).fetchone()
+            preserved = {}
+            if row:
+                try:
+                    previous = json.loads(row["metadata_json"] or "{}")
+                    preserved = {key: previous[key] for key in ("request_cancelled", "cancellation_reason")
+                                 if key in previous}
+                except (TypeError, ValueError):
+                    pass
             cur = self._conn().execute(
                 "UPDATE messages SET metadata_json=? WHERE id=(SELECT id FROM messages WHERE session_id=? AND role=? ORDER BY id DESC LIMIT 1)",
-                (json.dumps(metadata or {}, ensure_ascii=False, default=str), int(session_id), str(role)),
+                (json.dumps({**(metadata or {}), **preserved}, ensure_ascii=False, default=str), int(session_id), str(role)),
             )
             self._conn().commit()
             return bool(cur.rowcount)

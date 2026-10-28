@@ -6797,6 +6797,10 @@ def run_execution_task(goal: str, sandbox: str = "", network_access: bool = Fals
         wait_seconds = 0
 
     runtime = get_task_runtime()
+    context = getattr(_tool_context, "cross_session", {}) or {}
+    origin_session = int(context.get("session_id") or 0)
+    if not origin_session:
+        return "执行任务缺少来源会话，未启动；请在当前聊天中重新发起。"
     if wait:
         # 显式要求等结果。单次调用必须留在「单工具 120 秒」预算内，否则上层
         # 会在 120 秒处丢掉结果，而任务还在后台跑（结论两头落空）。
@@ -6805,6 +6809,7 @@ def run_execution_task(goal: str, sandbox: str = "", network_access: bool = Fals
         try:
             started = runtime.start(
                 goal,
+                session_id=origin_session,
                 sandbox=sandbox or "",
                 network_access=bool(network_access),
                 wait=True,
@@ -6829,6 +6834,7 @@ def run_execution_task(goal: str, sandbox: str = "", network_access: bool = Fals
     try:
         started = runtime.start(
             goal,
+            session_id=origin_session,
             sandbox=sandbox or "",
             network_access=bool(network_access),
             wait=False,
@@ -6863,7 +6869,16 @@ def resume_execution_task(thread_id: str = "", goal: str = "") -> str:
     except Exception as exc:
         return "执行引擎不可用：%s" % exc
 
-    meta = session_store.read_meta(thread_id) if str(thread_id or "").strip() else session_store.latest_resumable()
+    context = getattr(_tool_context, "cross_session", {}) or {}
+    origin_session = int(context.get("session_id") or 0)
+    if not origin_session:
+        return "缺少来源会话，不能恢复历史任务。"
+    meta = session_store.read_meta(thread_id) if str(thread_id or "").strip() else next(
+        (item for item in session_store.iter_metas()
+         if int(item.get("lianxinSessionId") or 0) == origin_session
+         and item.get("status") in ("interrupted", "stopped")), {})
+    if meta and int(meta.get("lianxinSessionId") or 0) != origin_session:
+        return "这个执行任务不属于当前聊天，不能恢复。"
     if not meta:
         return "我没有找到可以接着做的任务：要么它已经做完，要么当时没留下执行记录。"
     resumed_id = str(meta.get("threadId") or "")
@@ -6878,12 +6893,10 @@ def resume_execution_task(thread_id: str = "", goal: str = "") -> str:
     if state.get("running"):
         return "执行引擎正在跑别的任务，先等它结束或者让主人停掉它，再接着做这一件。"
     try:
-        started = runtime.start(
-            str(goal or "").strip() or str(meta.get("goal") or ""),
-            session_id=int(meta.get("lianxinSessionId") or 0) or None,
-            turn=int(meta.get("lianxinTurn") or 0),
-            resume_thread_id=resumed_id,
-            wait=False,
+        started = runtime.continue_task(
+            session_id=origin_session, task_id=str(meta.get("taskId") or ""),
+            thread_id=resumed_id, turn_id=str(meta.get("lastTurnId") or ""),
+            mode="resume", text=str(goal or "").strip(),
         )
     except Exception as exc:
         return "执行引擎没能接着做：%s" % exc

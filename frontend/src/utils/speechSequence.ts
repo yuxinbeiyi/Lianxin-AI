@@ -10,6 +10,7 @@ type SpeechSequence = {
   play: (id: string) => Promise<{ played: boolean }>;
   speak: (text: string, generation: number) => Promise<unknown>;
   reveal: (count: number) => void;
+  notify?: () => Promise<unknown>;
   isCurrent: () => boolean;
   beforePlay: () => Promise<void>;
 };
@@ -20,17 +21,25 @@ export async function playSpeechSequence(
   sequence: SpeechSequence,
 ): Promise<void> {
   if (!parts.length || !sequence.isCurrent()) return;
+  let notified = false;
+  const reveal = (count: number) => {
+    sequence.reveal(count);
+    if (!notified && count > 0) {
+      notified = true;
+      void sequence.notify?.().catch(() => undefined);
+    }
+  };
   let prepared = await sequence.prepare(parts[0], generation).catch(() => null);
   for (let index = 0; index < parts.length; index += 1) {
     if (!sequence.isCurrent()) return;
     const preparedId = prepared?.id;
     if (!prepared?.prepared || !preparedId) {
-      sequence.reveal(parts.length);
+      reveal(parts.length);
       if (!prepared?.muted && !prepared?.cancelled)
         await sequence.speak(parts.slice(index).join(" "), generation).catch(() => undefined);
       return;
     }
-    sequence.reveal(index + 1);
+    reveal(index + 1);
     await sequence.beforePlay();
     if (!sequence.isCurrent()) return;
     const playback = sequence.play(preparedId).catch(() => ({ played: false }));
@@ -40,7 +49,7 @@ export async function playSpeechSequence(
     const played = await playback;
     if (!sequence.isCurrent()) return;
     if (!played.played) {
-      sequence.reveal(parts.length);
+      reveal(parts.length);
       return;
     }
     if (index + 1 >= parts.length) return;

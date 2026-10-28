@@ -44,6 +44,7 @@ class TaskSpec:
     config: dict = field(default_factory=dict)
     # 非空表示「接着上次中断的任务」：复用这个 codex thread，不再新建。
     resume_thread_id: str = ""
+    generation: int = 0
 
 
 @dataclass
@@ -53,6 +54,25 @@ class SessionHandle:
     thread_id: str
     turn_id: str = ""
     backend: str = "codex"
+    generation: int = 0
+
+
+@dataclass
+class ControlResult:
+    """accepted confirms RPC receipt, not task completion; uncertain must not be replayed."""
+
+    status: str
+    thread_id: str = ""
+    turn_id: str = ""
+    message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "accepted"
+
+    def to_dict(self) -> dict:
+        return {"ok": self.ok, "status": self.status, "threadId": self.thread_id,
+                "turnId": self.turn_id, "message": self.message}
 
 
 @dataclass
@@ -91,13 +111,13 @@ class ExecutionBackend(Protocol):
     def start(self, spec: TaskSpec) -> SessionHandle:
         """建立会话并发起一轮任务。"""
 
-    def steer(self, handle: SessionHandle, text: str) -> None:
+    def steer(self, handle: SessionHandle, text: str) -> ControlResult:
         """把用户的新信息并入当前任务（阶段 3 使用）。"""
 
-    def interrupt(self, handle: SessionHandle) -> None:
+    def interrupt(self, handle: SessionHandle) -> ControlResult:
         """中断当前任务。"""
 
-    def approve(self, handle: SessionHandle, request_id, decision: str) -> None:
+    def approve(self, handle: SessionHandle, request_id, decision: str) -> bool:
         """回执一次审批（可延后调用，用于"先展示 diff 再确认"）。"""
 
     def events(self, timeout: float = 0.5) -> list:

@@ -803,6 +803,9 @@ class LianxinBridge:
             if self._agent is None:
                 from brain.agent import AgentCore
                 self._agent = AgentCore()
+            self._agent._execution_status_enabled = True
+            from utils.execution_status import get_execution_status_bus
+            get_execution_status_bus().enabled = True
             return self._agent
 
     def qq_status(self) -> dict:
@@ -894,6 +897,7 @@ class LianxinBridge:
         with self._chat_lock:
             from brain.agent import AgentCore
             self._agent = AgentCore(session_id=int(session_id))
+            self._agent._execution_status_enabled = True
             return {"id": self._agent._session_id}
 
     def chat(self, text: str) -> dict:
@@ -2336,19 +2340,40 @@ class LianxinBridge:
 
     def runtime_start(self, goal: str, session_id=None, turn: int = 0,
                       sandbox: str = "", cwd: str = "", wait: bool = False,
-                      resume_thread_id: str = "") -> dict:
+                      resume_thread_id: str = "", network_access: bool = False) -> dict:
+        if resume_thread_id:
+            return {"ok": False, "error": "继续历史任务请使用最新任务卡片，不能绕过任务身份校验"}
         return self.task_runtime().start(
             goal, session_id=session_id, turn=turn, sandbox=sandbox, cwd=cwd, wait=wait,
             resume_thread_id=resume_thread_id,
+            network_access=network_access,
         )
 
-    def runtime_stop(self, reason: str = "user") -> dict:
-        return self.task_runtime().stop(reason)
+    @staticmethod
+    def runtime_scope(body: dict) -> dict:
+        try:
+            session_id = int(body.get("sessionId") or 0)
+        except (TypeError, ValueError):
+            session_id = 0
+        return {"session_id": session_id, "task_id": str(body.get("taskId") or ""),
+                "thread_id": str(body.get("threadId") or ""),
+                "turn_id": str(body.get("turnId") or "")}
+
+    def runtime_steer(self, text: str, scope: dict) -> dict:
+        return self.task_runtime().steer(text, scope=scope)
+
+    def runtime_continue(self, body: dict) -> dict:
+        return self.task_runtime().continue_task(
+            **self.runtime_scope(body), mode=str(body.get("mode") or ""),
+            text=str(body.get("text") or ""))
+
+    def runtime_stop(self, reason: str = "user", scope=None) -> dict:
+        return self.task_runtime().stop(reason, scope=scope)
 
     def runtime_approve(self, request_id, decision: str = "accept",
-                        remember: bool = False) -> dict:
+                        remember: bool = False, scope=None) -> dict:
         """回执一次挂起的审批；remember=True 表示"本轮同类都允许"。"""
-        return self.task_runtime().approve(request_id, decision, remember=remember)
+        return self.task_runtime().approve(request_id, decision, remember=remember, scope=scope)
 
     # ── 执行引擎终态回灌（阶段 3 · 步骤 2）────────────────────
     # 设计见 docs/莲心执行引擎体验对齐方案.md §3.3：
@@ -2364,17 +2389,12 @@ class LianxinBridge:
             return False
 
     def _execution_terminal_session(self, result: dict) -> int:
-        """回灌目标会话：优先任务自己的 sessionId，其次当前桌面会话。"""
+        """仅向任务的来源会话回灌，不把来源缺失的旧任务投到当前聊天。"""
         try:
             session_id = int(result.get("sessionId") or 0)
         except (TypeError, ValueError):
             session_id = 0
-        if session_id:
-            return session_id
-        try:
-            return int(getattr(self.agent(), "_session_id", 0) or 0)
-        except Exception:
-            return 0
+        return session_id
 
     @staticmethod
     def _execution_terminal_fallback(result: dict) -> str:
@@ -2458,11 +2478,13 @@ class LianxinBridge:
             "kind": "execution_task",
             "executionTaskId": str(result.get("taskId") or ""),
             "executionThreadId": str(result.get("threadId") or ""),
+            "executionTurnId": str(result.get("turnId") or ""),
             "executionStatus": str(result.get("status") or ""),
             "executionGoal": str(result.get("goal") or ""),
             "executionRounds": int(result.get("rounds") or 0),
             "executionElapsed": result.get("elapsedSeconds") or 0,
             "executionReason": str(result.get("reason") or ""),
+            "executionApprovalReason": str((result.get("lastApproval") or {}).get("reason") or ""),
             "executionSummary": clean_execution_summary(result.get("summary") or "", limit=1200),
             "executionNarrated": bool(narrated),
         }
@@ -3625,6 +3647,12 @@ class _HeadlessProactiveChatWidget:
         pass
 
     def add_system_tip(self, text):
+        from utils.execution_status import get_execution_status_bus
+        bus = get_execution_status_bus()
+        if bus.enabled:
+            bus.publish("主动任务未完成，可在设置中查看详情。", code="proactive_error",
+                        source="proactive", request_id="proactive",
+                        session_id=getattr(self._bridge.agent(), "_session_id", None))
         bridge_log.log("主动", str(text))
 
     def add_image_message(self, image_path, desc="", full_text="", is_ai=False):
@@ -4166,6 +4194,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/app/status":
                 return self._send(bridge.status())
+            if path == "/api/execution-status/events":
+                from utils.execution_status import get_execution_status_bus
+                query = parse_qs(urlparse(self.path).query)
+                session = int((query.get("sessionId") or ["0"])[0]) or None
+                return self._send(get_execution_status_bus().events(
+                    int((query.get("after") or ["0"])[0]), session_id=session,
+                ))
             if path == "/api/qq/status":
                 return self._send(bridge.qq_status())
             if path == "/api/attachments":
@@ -4412,14 +4447,20 @@ class Handler(BaseHTTPRequestHandler):
                     cwd=str(body.get("cwd") or ""),
                     wait=bool(body.get("wait")),
                     resume_thread_id=str(body.get("resumeThreadId") or ""),
+                    network_access=bool(body.get("networkAccess")),
                 ), 201)
+            if path == "/api/runtime/steer":
+                return self._send(bridge.runtime_steer(str(body.get("text") or ""), bridge.runtime_scope(body)))
+            if path == "/api/runtime/continue":
+                return self._send(bridge.runtime_continue(body))
             if path == "/api/runtime/stop":
-                return self._send(bridge.runtime_stop(str(body.get("reason") or "user")))
+                return self._send(bridge.runtime_stop(str(body.get("reason") or "user"), bridge.runtime_scope(body)))
             if path == "/api/runtime/approve":
                 return self._send(bridge.runtime_approve(
                     str(body.get("requestId") or ""),
                     str(body.get("decision") or "accept"),
                     remember=bool(body.get("remember")),
+                    scope=bridge.runtime_scope(body),
                 ))
             if path == "/api/chat/stream":
                 self.send_response(200)

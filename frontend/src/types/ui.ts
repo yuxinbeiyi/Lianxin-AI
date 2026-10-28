@@ -10,11 +10,13 @@ export type ActivityState = "idle" | "thinking" | "speaking" | "working";
 export type ExecutionCardData = {
   taskId?: string;
   threadId?: string;
+  turnId?: string;
   status?: string;
   goal?: string;
   rounds?: number;
   elapsed?: number;
   reason?: string;
+  approvalReason?: string;
   summary?: string;
   narrated?: boolean;
 };

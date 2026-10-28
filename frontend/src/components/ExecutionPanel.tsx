@@ -19,6 +19,7 @@ type Props = {
   state: ExecutionTaskState | null;
   onApprove: (requestId: string, decision: Decision) => void;
   onStop: () => void;
+  onSteer?: (text: string) => Promise<boolean>;
   deciding?: boolean;
 };
 
@@ -167,7 +168,15 @@ function ApprovalCard({
   );
 }
 
-export function ExecutionPanel({ state, onApprove, onStop, deciding }: Props) {
+export function ExecutionPanel(props: Props) {
+  const task = props.state?.task;
+  const controlKey = JSON.stringify([task?.sessionId, task?.taskId, task?.threadId, task?.turnId]);
+  return <ExecutionPanelContent key={controlKey} {...props} />;
+}
+
+function ExecutionPanelContent({ state, onApprove, onStop, onSteer, deciding }: Props) {
+  const [supplement, setSupplement] = useState("");
+  const [sending, setSending] = useState(false);
   const running = Boolean(state?.running);
   const approvals = state?.pendingApprovals ?? [];
   const task = state?.task ?? null;
@@ -182,6 +191,18 @@ export function ExecutionPanel({ state, onApprove, onStop, deciding }: Props) {
     : task?.elapsedSeconds ?? 0;
   const maxRounds = state.limits?.max_rounds ?? 40;
   const rounds = task?.rounds ?? 0;
+  const stopping = task?.state === "stopping";
+  const ready = running && Boolean(task?.turnId) && !stopping;
+
+  async function submitSupplement() {
+    if (!onSteer || !supplement.trim() || sending || !ready) return;
+    setSending(true);
+    try {
+      if (await onSteer(supplement.trim())) setSupplement("");
+    } finally {
+      setSending(false);
+    }
+  }
 
   return (
     <div className={`exec-panel${approvals.length ? " awaiting" : ""}`}>
@@ -192,10 +213,10 @@ export function ExecutionPanel({ state, onApprove, onStop, deciding }: Props) {
         </span>
         <span className="exec-head-right">
           <span className={`exec-chip ${running ? "live" : "idle"}`}>
-            {approvals.length ? "等待你确认" : "进行中"}
+            {stopping ? "正在停止" : approvals.length ? "等待你确认" : ready ? "进行中" : "正在启动"}
           </span>
           {running ? (
-            <button type="button" className="exec-stop" onClick={onStop}>
+            <button type="button" className="exec-stop" onClick={onStop} disabled={stopping || deciding}>
               <Square size={12} />
               停止
             </button>
@@ -217,6 +238,25 @@ export function ExecutionPanel({ state, onApprove, onStop, deciding }: Props) {
           {state.networkAccess ? <span className="exec-tag warn">已放行网络</span> : null}
         </div>
         {task?.cwd ? <p className="exec-path">{task.cwd}</p> : null}
+        {task?.currentStep ? <p className="exec-current">当前：{task.currentStep}</p> : null}
+        {task?.plan?.length ? <ol className="exec-plan" aria-label="任务计划">
+          {task.plan.map((item, index) => <li key={`${index}-${item.step}`} data-status={item.status}>
+            <span aria-label={item.status === "completed" ? "已完成" : item.status === "in_progress" ? "进行中" : "待处理"}>
+              {item.status === "completed" ? "✓" : item.status === "in_progress" ? "◉" : "○"}
+            </span>{item.step}
+          </li>)}
+        </ol> : null}
+        {task?.lastApproval?.reason ? <p className="exec-control-status" role="status">{task.lastApproval.reason}</p> : null}
+        {task?.stopReason ? <p className="exec-control-status" role="status">停止原因：{task.stopReason}</p> : null}
+        {onSteer && running ? <form className="exec-supplement" onSubmit={(event) => {
+          event.preventDefault();
+          void submitSupplement();
+        }}>
+          <input aria-label="补充当前任务要求" placeholder="补充要求（仅影响当前执行任务）" value={supplement}
+            maxLength={12000} disabled={!ready || sending} onChange={(event) => setSupplement(event.target.value)} />
+          <button type="submit" disabled={!ready || sending || !supplement.trim()}>{sending ? "正在提交…" : "补充要求"}</button>
+          <small>下方聊天仍是普通对话；停止任务请点右上角「停止」。</small>
+        </form> : null}
       </div>
 
       {approvals.map((approval) => (

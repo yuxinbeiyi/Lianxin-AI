@@ -803,6 +803,24 @@ class ProactiveWorker(QThread):
 
     # ── B站冲浪 ──────────────────────────────────────────────
 
+    def _report_bilibili_outcome(self, reason):
+        from utils.bilibili_surf_policy import REASON_MESSAGES, SKIP_REASONS
+        from utils.execution_status import get_execution_status_bus
+        bus = get_execution_status_bus()
+        if not bus.enabled:
+            self.response_ready.emit(REASON_MESSAGES.get(reason, REASON_MESSAGES["run_error"]))
+            return
+        quiet = SKIP_REASONS | {"duplicate_only", "empty_results", "cooldown"}
+        self._execution_status_outcome = "skipped" if reason in quiet else "failed"
+        if getattr(self, "_bilibili_ignore_cooldown", False) or reason not in quiet:
+            bus.publish(REASON_MESSAGES.get(reason, REASON_MESSAGES["run_error"]),
+                        code="bilibili_" + reason, source="bilibili",
+                        session_id=getattr(self, "_execution_status_session_id", None),
+                        request_id=getattr(self, "_execution_status_request_id", "bilibili"),
+                        state=self._execution_status_outcome,
+                        level="info" if reason in quiet else "warning")
+        self.response_ready.emit("")
+
     def _run_bilibili(self):
         from utils.bilibili_surf_policy import SurfDiagnostics, REASON_MESSAGES, normalize_search_query, rank_candidates
         diagnostics = {"selection_status": "skipped", "reason": "cooldown", "send_status": "not_attempted",
@@ -818,7 +836,7 @@ class ProactiveWorker(QThread):
                 f"ignore_search_cooldown={debug} tag_cooldown=disabled")
             if not bmgr.can_search() and not self._bilibili_ignore_cooldown:
                 print("[B站冲浪] 冷却拦截 scope=search mode=automatic")
-                self.response_ready.emit(REASON_MESSAGES["cooldown"])
+                self._report_bilibili_outcome("cooldown")
                 return
             keyword = bmgr.select_search_tag()
             interest_available = bool(keyword)
@@ -826,7 +844,7 @@ class ProactiveWorker(QThread):
                 diagnostics["reason"] = "tags_paused"
                 print(f"[B站冲浪] 标签不可用 reason={diagnostics['reason']} "
                     f"mode={'debug' if debug else 'automatic'}")
-                self.response_ready.emit(REASON_MESSAGES[diagnostics["reason"]])
+                self._report_bilibili_outcome(diagnostics["reason"])
                 return
             if not keyword:
                 extracted = self._extract_keywords_from_memory()
@@ -870,7 +888,7 @@ class ProactiveWorker(QThread):
             diagnostics["fresh_count"] = len(fresh)
             if not fresh:
                 diagnostics["reason"] = "duplicate_only" if results else "empty_results"
-                self.response_ready.emit(REASON_MESSAGES[diagnostics["reason"]])
+                self._report_bilibili_outcome(diagnostics["reason"])
                 return
             ranked = rank_candidates(fresh)
             self.data_source_called.emit("bilibili_rank", "按播放量选定 1 个视频，再读取资料；同播放量时参考可用点赞量", False, 0)
@@ -903,7 +921,7 @@ class ProactiveWorker(QThread):
             diagnostics["stage_ms"]["material"] = int((time.monotonic() - stage_started) * 1000)
             if not enriched:
                 diagnostics.update(reason="material_error", selection_status="failed")
-                self.response_ready.emit(REASON_MESSAGES["material_error"])
+                self._report_bilibili_outcome("material_error")
                 return
             failure_reason = "model_error"
             stage_started = time.monotonic()
@@ -921,7 +939,7 @@ class ProactiveWorker(QThread):
             diagnostics.update(reason=getattr(self, "_last_bilibili_selection_reason", "selected" if selected else "low_value"),
                                selection_status=getattr(self, "_last_bilibili_selection_status", "selected" if selected else "skipped"))
             if selected is None:
-                self.response_ready.emit(REASON_MESSAGES[diagnostics["reason"]])
+                self._report_bilibili_outcome(diagnostics["reason"])
                 return
             failure_reason = "run_error"
             best_videos = [selected]
@@ -963,8 +981,10 @@ class ProactiveWorker(QThread):
             self.response_ready.emit(message)
         except Exception as error:
             diagnostics.update(reason=failure_reason, selection_status="failed", error_type=type(error).__name__)
-            self.response_ready.emit(REASON_MESSAGES[failure_reason])
-            self.error_occurred.emit(type(error).__name__)
+            self._report_bilibili_outcome(failure_reason)
+            from utils.execution_status import get_execution_status_bus
+            if not get_execution_status_bus().enabled:
+                self.error_occurred.emit(type(error).__name__)
         finally:
             diagnostics["model_errors"] = list(getattr(self, "_bilibili_model_errors", []))[-4:]
             if diagnostics["model_errors"]:

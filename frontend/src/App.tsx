@@ -58,6 +58,9 @@ import {
 } from "./utils/textSegmentation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { playSpeechSequence } from "./utils/speechSequence";
+import { ExecutionNotices } from "./components/ExecutionNotices";
+import { showExecutionNotice } from "./utils/executionNotices";
+import { executionScope, executionSignature } from "./utils/executionControls";
 import {
   lianxinApi,
   type AvatarState,
@@ -170,11 +173,13 @@ function restoreMessage(
     kind?: string;
     executionTaskId?: string;
     executionThreadId?: string;
+    executionTurnId?: string;
     executionStatus?: string;
     executionGoal?: string;
     executionRounds?: number;
     executionElapsed?: number;
     executionReason?: string;
+    executionApprovalReason?: string;
     executionSummary?: string;
     executionNarrated?: boolean;
   },
@@ -192,11 +197,13 @@ function restoreMessage(
           execution: {
             taskId: item.executionTaskId,
             threadId: item.executionThreadId,
+            turnId: item.executionTurnId,
             status: item.executionStatus,
             goal: item.executionGoal,
             rounds: item.executionRounds,
             elapsed: item.executionElapsed,
             reason: item.executionReason,
+            approvalReason: item.executionApprovalReason,
             summary: item.executionSummary,
             narrated: item.executionNarrated,
           },
@@ -922,6 +929,7 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
 function ChatWorkspace({
   messages,
   segmentBubblesFor,
+  backendOnline,
   toolRounds,
   avatar,
   sessionId,
@@ -946,11 +954,13 @@ function ChatWorkspace({
   runtimeTask,
   onRuntimeApprove,
   onRuntimeStop,
+  onRuntimeSteer,
   runtimeDeciding,
   searchTargetId,
 }: {
   messages: Message[];
   segmentBubblesFor: (message: Message) => string[];
+  backendOnline: boolean;
   toolRounds: ToolRoundState[];
   avatar?: AvatarState;
   sessionId?: number;
@@ -981,6 +991,7 @@ function ChatWorkspace({
     decision: "accept" | "acceptForSession" | "decline",
   ) => void;
   onRuntimeStop?: () => void;
+  onRuntimeSteer?: (text: string) => Promise<boolean>;
   runtimeDeciding?: boolean;
   searchTargetId?: string;
 }) {
@@ -1042,6 +1053,13 @@ function ChatWorkspace({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
+  const handleExecutionNoticesChange = useCallback(() => {
+    if (!nearBottomRef.current) return;
+    requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+    });
+  }, []);
   useEffect(() => {
     if (!searchTargetId) return;
     const target = viewportRef.current?.querySelector<HTMLElement>(
@@ -1198,6 +1216,7 @@ function ChatWorkspace({
             </div>
           )}
           <ToolRounds rounds={trailingToolBlocks} />
+          <ExecutionNotices sessionId={sessionId} online={backendOnline} onChange={handleExecutionNoticesChange} />
           {ttsNotice && (
             <div className="tts-failure-notice">
               <span className="tts-failure-dot" />
@@ -1226,9 +1245,11 @@ function ChatWorkspace({
       </div>
       {runtimeTask ? (
         <ExecutionPanel
+          key={runtimeTask.task?.taskId}
           state={runtimeTask}
           onApprove={onRuntimeApprove ?? (() => undefined)}
           onStop={onRuntimeStop ?? (() => undefined)}
+          onSteer={onRuntimeSteer}
           deciding={runtimeDeciding}
         />
       ) : null}
@@ -3397,13 +3418,7 @@ export function App() {
       try {
         const state = await lianxinApi.runtimeState();
         if (disposed) return;
-        const signature = JSON.stringify([
-          state.running,
-          state.task?.rounds ?? 0,
-          state.pendingApprovals.map((item) => item.requestId).join(","),
-          state.lastResult?.finishedAt ?? 0,
-          state.lastResult?.status ?? "",
-        ]);
+        const signature = executionSignature(state);
         if (signature === runtimeSigRef.current) return;
         runtimeSigRef.current = signature;
         setRuntimeTask(state);
@@ -3413,9 +3428,11 @@ export function App() {
     };
     void poll();
     const timer = window.setInterval(() => void poll(), 1500);
+    window.addEventListener("lianxin-runtime-changed", poll);
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      window.removeEventListener("lianxin-runtime-changed", poll);
     };
   }, [backendOnline]);
   const approveRuntime = useCallback(
@@ -3424,32 +3441,59 @@ export function App() {
       decision: "accept" | "acceptForSession" | "decline",
     ) => {
       if (!requestId) return;
+      const scope = executionScope(runtimeTask, sessionIdRef.current);
+      if (!scope) return;
       setRuntimeDeciding(true);
       try {
-        await lianxinApi.runtimeApprove(
+        const result = await lianxinApi.runtimeApprove(
+          scope,
           requestId,
           decision,
           decision === "acceptForSession",
         );
+        if (!result.ok) showExecutionNotice(result.error || "审批未被确认，请核对任务状态。",
+          "runtime_approve", scope.sessionId, scope.taskId);
         runtimeSigRef.current = "";
         setRuntimeTask(await lianxinApi.runtimeState());
       } catch {
-        /* 审批失败保持安静，下一轮轮询会重新拉状态 */
+        showExecutionNotice("审批回执未确认，请先核对任务状态，勿重复授权。", "runtime_approve", scope.sessionId, scope.taskId);
       } finally {
         setRuntimeDeciding(false);
       }
     },
-    [],
+    [runtimeTask],
   );
   const stopRuntime = useCallback(async () => {
+    const scope = executionScope(runtimeTask, sessionIdRef.current);
+    if (!scope) return;
+    setRuntimeDeciding(true);
     try {
-      await lianxinApi.runtimeStop("user");
+      const result = await lianxinApi.runtimeStop(scope, "用户停止任务");
+      if (!result.ok) showExecutionNotice(result.error || "未能确认停止，请核对任务状态。",
+        "runtime_stop", scope.sessionId, scope.taskId);
       runtimeSigRef.current = "";
       setRuntimeTask(await lianxinApi.runtimeState());
     } catch {
-      /* 忽略 */
+      showExecutionNotice("停止请求未确认，请核对执行面板。", "runtime_stop", scope.sessionId, scope.taskId);
+    } finally {
+      setRuntimeDeciding(false);
     }
-  }, []);
+  }, [runtimeTask]);
+  const steerRuntime = useCallback(async (text: string): Promise<boolean> => {
+    const scope = executionScope(runtimeTask, sessionIdRef.current);
+    if (!scope) return false;
+    try {
+      const result = await lianxinApi.runtimeSteer(text, scope);
+      showExecutionNotice(result.ok ? "补充要求已提交到当前执行轮。" : result.error || "补充要求未被确认。",
+        "runtime_steer", scope.sessionId, scope.taskId, result.ok ? "info" : "warning");
+      window.dispatchEvent(new Event("lianxin-runtime-changed"));
+      return result.ok;
+    } catch {
+      showExecutionNotice("补充要求的接收结果未确认，请先核对任务进度，勿重复提交。",
+        "runtime_steer", scope.sessionId, scope.taskId);
+      return false;
+    }
+  }, [runtimeTask]);
   useEffect(() => {
     document.documentElement.style.setProperty(
       "--lx-chat-mask",
@@ -3567,6 +3611,7 @@ export function App() {
       play: lianxinApi.playPreparedSpeech,
       speak: lianxinApi.speak,
       reveal: (count) => setSegmentShown((current) => ({ ...current, [plan.key]: count })),
+      notify: () => lianxinApi.playSound("lianxinSend.mp3"),
       isCurrent: () => token === segmentTokenRef.current,
       beforePlay: () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
     });
@@ -3602,6 +3647,7 @@ export function App() {
     quote?: { role: "user" | "assistant"; content: string },
     turnGeneration = turnGenerationRef.current,
   ) => {
+    const requestSessionId = sessionIdRef.current;
     const messageTime = "现在";
     const imageIds = attachments.map(
       (_, index) => `image-${Date.now()}-${index}`,
@@ -3637,7 +3683,11 @@ export function App() {
             },
       ),
     ]);
-    if (!backendOnline) return;
+    if (!backendOnline) {
+      showExecutionNotice("后端尚未连接，本条消息未发送。", "backend_offline",
+                          requestSessionId ?? undefined, `chat-${turnGeneration}`);
+      return;
+    }
     try {
       let reply = "";
       for await (const event of lianxinApi.streamChat(
@@ -3668,6 +3718,7 @@ export function App() {
         if (event.type === "error")
           throw new Error(event.error || "聊天请求失败");
       }
+      if (!reply.trim() || sessionIdRef.current !== requestSessionId) return;
       setMessages((current) => [
         ...current,
         {
@@ -3682,24 +3733,20 @@ export function App() {
         if (plan) {
           setSegmentPlans((current) => ({ ...current, [plan.key]: plan.parts }));
           setSegmentShown((current) => ({ ...current, [plan.key]: 0 }));
-        }
+        } else void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
         const generation = await speechStopRef.current;
         if (turnGeneration !== turnGenerationRef.current) return;
-        void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
         if (plan && generation !== null) void revealSegments(plan, generation);
         else if (generation !== null) void lianxinApi.speak(reply, generation).catch(() => undefined);
-        else if (plan) setSegmentShown((current) => ({ ...current, [plan.key]: plan.parts.length }));
+        else if (plan) {
+          setSegmentShown((current) => ({ ...current, [plan.key]: plan.parts.length }));
+          void lianxinApi.playSound("lianxinSend.mp3").catch(() => undefined);
+        }
       }
     } catch (error) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: `error-${Date.now()}`,
-          role: "assistant",
-          content: `后端连接失败：${String(error)}`,
-          time: "现在",
-        },
-      ]);
+      console.warn("[CHAT_REQUEST] failed", error);
+      showExecutionNotice("本次请求未能完成，请检查服务连接；如涉及发送或修改操作，请先核对结果。",
+                          "chat_request_failed", requestSessionId ?? undefined, `chat-${turnGeneration}`);
     }
   };
   const handleSend = (
@@ -4117,6 +4164,7 @@ export function App() {
               <ChatWorkspace
                 messages={messages}
                 segmentBubblesFor={segmentBubblesFor}
+                backendOnline={backendOnline}
                 toolRounds={toolBlocks}
                 avatar={avatar}
                 sessionId={sessionIdRef.current ?? undefined}
@@ -4134,11 +4182,12 @@ export function App() {
                 silentMode={silentMode}
                 onToggleMute={toggleMute}
                 onOpenNote={() => openLegacy("note")}
-                runtimeTask={runtimeTask}
+                runtimeTask={runtimeTask?.task?.sessionId === sessionIdRef.current ? runtimeTask : null}
                 onRuntimeApprove={(requestId, decision) =>
                   void approveRuntime(requestId, decision)
                 }
                 onRuntimeStop={() => void stopRuntime()}
+                onRuntimeSteer={steerRuntime}
                 runtimeDeciding={runtimeDeciding}
                  searchTargetId={searchMatches[searchActiveIndex]}
               />
