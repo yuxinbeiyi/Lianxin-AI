@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Protocol, runtime_checkable
 
+from .goals import GoalContract, GoalContractError
+
 # 沙箱档位（与 Codex 的 SandboxMode 枚举同名，便于直接透传）
 SANDBOX_READ_ONLY = "read-only"
 SANDBOX_WORKSPACE_WRITE = "workspace-write"
@@ -45,6 +47,11 @@ class TaskSpec:
     # 非空表示「接着上次中断的任务」：复用这个 codex thread，不再新建。
     resume_thread_id: str = ""
     generation: int = 0
+    goal_contract: Optional[GoalContract] = None
+
+    def __post_init__(self) -> None:
+        if self.goal_contract is not None and not isinstance(self.goal_contract, GoalContract):
+            raise GoalContractError("TaskSpec.goal_contract 必须是已校验的目标契约")
 
 
 @dataclass

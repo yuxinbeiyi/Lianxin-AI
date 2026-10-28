@@ -33,6 +33,7 @@ from typing import Optional
 
 from brain.runtime import events as runtime_events
 from brain.runtime import session_store
+from brain.runtime.goals import GoalContract, GoalContractError, goal_mode_status
 from brain.runtime.backend import (
     APPROVAL_ON_REQUEST,
     DECISION_ACCEPT,
@@ -384,6 +385,7 @@ class TaskRuntime:
             "running": running,
             "backend": str(getattr(backend, "name", "codex") or "codex"),
             "backendStatus": status,
+            "goalMode": goal_mode_status(),
             "task": task,
             "lastResult": last,
             "limits": self._limits(),
@@ -462,10 +464,21 @@ class TaskRuntime:
               sandbox: str = "", cwd: str = "", wait: bool = False,
               wait_timeout: float = 180.0, network_access: bool = False,
               approval_mode: str = "", resume_thread_id: str = "",
+              goal_contract=None,
               _continuation: Optional[dict] = None) -> dict:
         goal = str(goal or "").strip()
         if not goal:
             return {"ok": False, "error": "任务目标为空"}
+        if goal_contract is not None:
+            try:
+                if not isinstance(goal_contract, GoalContract):
+                    GoalContract.from_dict(goal_contract)
+            except GoalContractError as exc:
+                return {"ok": False, "code": "goal_contract_invalid", "error": str(exc),
+                        "goalMode": goal_mode_status()}
+            capability = goal_mode_status()
+            return {"ok": False, "code": "goal_mode_not_ready",
+                    "error": capability["reason"], "goalMode": capability}
         cfg = self._runtime_config()
         workspace = str(cfg.get("workspace") or "")
         if not workspace:

@@ -24,6 +24,7 @@ from .backend import (
     TaskSpec,
 )
 from .events import RuntimeEvent
+from .goals import GoalContract, GoalContractError, GoalProgress, VerificationEvidence
 from .task_runtime import TaskRuntime, get_task_runtime
 
 __all__ = [
@@ -34,6 +35,10 @@ __all__ = [
     "SessionHandle",
     "BackendStatus",
     "RuntimeEvent",
+    "GoalContract",
+    "GoalContractError",
+    "GoalProgress",
+    "VerificationEvidence",
     "events",
     "SANDBOX_READ_ONLY",
     "SANDBOX_WORKSPACE_WRITE",

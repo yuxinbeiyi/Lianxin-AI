@@ -86,11 +86,21 @@ export type ExecutionApproval = {
 };
 export type ExecutionScope = { sessionId: number; taskId: string; threadId: string; turnId: string };
 export type ExecutionPlanStep = { step: string; status: "pending" | "in_progress" | "completed" };
+export type ExecutionGoalContract = {
+  objective: string;
+  acceptanceCriteria: string[];
+  maxTurns?: number;
+  maxTokens?: number;
+  maxElapsedSeconds?: number;
+  driver?: "native";
+};
+export type ExecutionGoalMode = { available: boolean; driver: "native"; code: string; reason: string };
 export type ExecutionTaskState = {
   enabled: boolean;
   closed?: boolean;
   running: boolean;
   backend: string;
+  goalMode?: ExecutionGoalMode;
   sandbox: string;
   approvalMode: string;
   networkAccess: boolean;
@@ -295,8 +305,8 @@ export const lianxinApi = {
   toolEvents: (after: number) => request<{ items: ToolActivityEvent[]; latest: number }>(`/tools/events?after=${after}`),
   runtimeState: () => request<ExecutionTaskState>("/runtime/state"),
   runtimeEvents: (after: number) => request<{ items: Array<{ id: number; kind: string; ts: number; threadId?: string; turnId?: string; payload: Record<string, unknown> }>; latest: number; running?: boolean }>(`/runtime/events?after=${after}`),
-  runtimeStart: (goal: string, options: { sessionId?: number; turn?: number; cwd?: string; sandbox?: string; networkAccess?: boolean; wait?: boolean; resumeThreadId?: string } = {}) =>
-    request<{ ok: boolean; error?: string; state: ExecutionTaskState }>("/runtime/start", { method: "POST", body: JSON.stringify({ goal, ...options }) }),
+  runtimeStart: (goal: string, options: { sessionId?: number; turn?: number; cwd?: string; sandbox?: string; networkAccess?: boolean; wait?: boolean; resumeThreadId?: string; goalContract?: ExecutionGoalContract } = {}) =>
+    request<{ ok: boolean; error?: string; code?: string; goalMode?: ExecutionGoalMode; state?: ExecutionTaskState }>("/runtime/start", { method: "POST", body: JSON.stringify({ goal, ...options }) }),
   runtimeSteer: (text: string, scope: ExecutionScope) =>
     request<{ ok: boolean; status?: string; error?: string }>("/runtime/steer", { method: "POST", body: JSON.stringify({ text, ...scope }) }),
   runtimeContinue: (scope: ExecutionScope, mode: "resume" | "revise" | "retry", text = "") =>

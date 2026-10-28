@@ -2340,13 +2340,15 @@ class LianxinBridge:
 
     def runtime_start(self, goal: str, session_id=None, turn: int = 0,
                       sandbox: str = "", cwd: str = "", wait: bool = False,
-                      resume_thread_id: str = "", network_access: bool = False) -> dict:
+                      resume_thread_id: str = "", network_access: bool = False,
+                      goal_contract=None) -> dict:
         if resume_thread_id:
             return {"ok": False, "error": "继续历史任务请使用最新任务卡片，不能绕过任务身份校验"}
         return self.task_runtime().start(
             goal, session_id=session_id, turn=turn, sandbox=sandbox, cwd=cwd, wait=wait,
             resume_thread_id=resume_thread_id,
             network_access=network_access,
+            goal_contract=goal_contract,
         )
 
     @staticmethod
@@ -4448,6 +4450,7 @@ class Handler(BaseHTTPRequestHandler):
                     wait=bool(body.get("wait")),
                     resume_thread_id=str(body.get("resumeThreadId") or ""),
                     network_access=bool(body.get("networkAccess")),
+                    goal_contract=body.get("goalContract"),
                 ), 201)
             if path == "/api/runtime/steer":
                 return self._send(bridge.runtime_steer(str(body.get("text") or ""), bridge.runtime_scope(body)))
