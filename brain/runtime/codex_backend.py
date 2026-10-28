@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from brain.runtime import events as runtime_events
-from brain.runtime.goals import goal_mode_status
 from brain.runtime.backend import (
     APPROVAL_ON_REQUEST,
     BackendStatus,
@@ -629,7 +628,7 @@ class CodexExecutionBackend:
 
     def start(self, spec: TaskSpec) -> SessionHandle:
         if spec.goal_contract is not None:
-            raise RuntimeError(goal_mode_status()["reason"])
+            raise RuntimeError("普通执行后端不支持目标契约；请使用原生目标适配层")
         with self._control_lock:
             with self._scope_lock:
                 self._generation = spec.generation or self._generation + 1

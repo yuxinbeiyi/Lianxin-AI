@@ -238,6 +238,11 @@ function ExecutionPanelContent({ state, onApprove, onStop, onSteer, deciding }: 
           {state.networkAccess ? <span className="exec-tag warn">已放行网络</span> : null}
         </div>
         {task?.cwd ? <p className="exec-path">{task.cwd}</p> : null}
+        {task?.goalProgress ? <p className="exec-control-status" role="status">
+          目标进度：{task.goalProgress.turnsCompleted}/{task.goalProgress.contract.maxTurns ?? 8} 轮
+          {` · 已观察 token ${task.goalProgress.tokensUsed}/${task.goalProgress.contract.maxTokens ?? 40000}`}
+          {` · 验收 ${task.goalProgress.evidence.filter((entry) => entry.status === "passed").length}/${task.goalProgress.contract.acceptanceCriteria.length}`}
+        </p> : null}
         {task?.currentStep ? <p className="exec-current">当前：{task.currentStep}</p> : null}
         {task?.plan?.length ? <ol className="exec-plan" aria-label="任务计划">
           {task.plan.map((item, index) => <li key={`${index}-${item.step}`} data-status={item.status}>

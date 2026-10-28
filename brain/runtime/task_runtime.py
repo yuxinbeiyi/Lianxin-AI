@@ -33,7 +33,7 @@ from typing import Optional
 
 from brain.runtime import events as runtime_events
 from brain.runtime import session_store
-from brain.runtime.goals import GoalContract, GoalContractError, goal_mode_status
+from brain.runtime.goals import GoalContract, GoalContractError, GoalProgress, goal_mode_status
 from brain.runtime.backend import (
     APPROVAL_ON_REQUEST,
     DECISION_ACCEPT,
@@ -235,9 +235,11 @@ def _resolve_workspace(workspace: str):
 class TaskRuntime:
     """单例任务运行时：串行、可熔断、可审批、可中断。"""
 
-    def __init__(self, backend=None, log=None) -> None:
+    def __init__(self, backend=None, log=None, goal_backend=None) -> None:
         self._lock = threading.RLock()
         self._backend = backend
+        self._ordinary_backend = backend
+        self._goal_backend = goal_backend
         self._log = log or _default_log
         self._thread: Optional[threading.Thread] = None
         self._handle = None
@@ -344,11 +346,35 @@ class TaskRuntime:
         with self._lock:
             if self._backend is None:
                 self._backend = backend
+                self._ordinary_backend = backend
             return self._backend
 
     def backend_name(self) -> str:
         with self._lock:
             return str(getattr(self._backend, "name", "codex") or "codex")
+
+    def _select_backend(self, goal_contract, checkpoint=None):
+        from brain.runtime.codex_backend import CodexExecutionBackend
+        from brain.runtime.native_goal_backend import NativeGoalBackend
+
+        attribute = "_goal_backend" if goal_contract else "_ordinary_backend"
+        with self._lock:
+            backend = getattr(self, attribute)
+            previous = self._backend
+        if backend is None:
+            cfg = self._runtime_config()
+            backend = (NativeGoalBackend if goal_contract else CodexExecutionBackend)(
+                exe=str(cfg.get("codex_bin") or ""), pinned_version=str(cfg.get("codex_version") or ""),
+                log=lambda tag, msg: self._log("执行引擎/%s" % tag, msg))
+        if goal_contract:
+            backend.set_checkpoint(checkpoint)
+        backend.set_approval_decider(self._decide)
+        if previous is not None and previous is not backend:
+            previous.shutdown()
+        with self._lock:
+            setattr(self, attribute, backend)
+            self._backend = backend
+        return backend
 
     # ── 对外状态 ──────────────────────────────────────────
     def state(self) -> dict:
@@ -472,13 +498,32 @@ class TaskRuntime:
         if goal_contract is not None:
             try:
                 if not isinstance(goal_contract, GoalContract):
-                    GoalContract.from_dict(goal_contract)
+                    goal_contract = GoalContract.from_dict(goal_contract)
             except GoalContractError as exc:
                 return {"ok": False, "code": "goal_contract_invalid", "error": str(exc),
                         "goalMode": goal_mode_status()}
-            capability = goal_mode_status()
-            return {"ok": False, "code": "goal_mode_not_ready",
-                    "error": capability["reason"], "goalMode": capability}
+        resume_id = str(resume_thread_id or "").strip()
+        resume_meta = session_store.read_meta(resume_id) if resume_id else {}
+        resume_progress = None
+        if resume_meta.get("goalContract"):
+            try:
+                original = GoalContract.from_dict(resume_meta["goalContract"])
+                if goal_contract is not None and goal_contract != original:
+                    raise GoalContractError("恢复不能更换原目标契约或扩大预算")
+                if _continuation and (_continuation.get("mode") != "resume" or _continuation.get("text")):
+                    raise GoalContractError("目标恢复仅继续原任务；修改目标请显式建立新的目标契约")
+                resume_progress = resume_meta.get("goalProgress")
+                GoalProgress.restore_for_resume(original, resume_progress)
+                goal_contract = original
+            except GoalContractError as exc:
+                return {"ok": False, "code": "goal_resume_invalid", "error": str(exc)}
+            goal = str(resume_meta.get("goal") or goal)
+            cwd = str(resume_meta.get("cwd") or "")
+            sandbox = str(resume_meta.get("sandbox") or SANDBOX_READ_ONLY)
+            approval_mode = str(resume_meta.get("approvalMode") or APPROVAL_MODE_DECLINE)
+            network_access = bool(resume_meta.get("networkAccess"))
+        elif resume_id and goal_contract:
+            return {"ok": False, "code": "goal_resume_invalid", "error": "普通线程不能升级成原生目标"}
         cfg = self._runtime_config()
         workspace = str(cfg.get("workspace") or "")
         if not workspace:
@@ -501,7 +546,7 @@ class TaskRuntime:
         sandbox_value = (SANDBOX_WORKSPACE_WRITE if requested in
                          (SANDBOX_WORKSPACE_WRITE, "write", "workspace", "trusted")
                          else SANDBOX_READ_ONLY)
-        network = bool(network_access) or bool(cfg.get("network_access"))
+        network = bool(network_access) if resume_progress else bool(network_access) or bool(cfg.get("network_access"))
         resume_id = str(resume_thread_id or "").strip()
         if resume_id and _continuation is None:
             # 防呆：只有「被中断/被停止」的任务才值得接着做。过期卡片不能把
@@ -540,7 +585,7 @@ class TaskRuntime:
             self._stop_reason = ""
             self._interrupt_key = None
             self._declines = 0
-            self._rounds = 0
+            self._rounds = int(resume_meta.get("rounds") or 0) if resume_progress else 0
             self._stale = 0
             self._final = {}
             self._agent_text = []
@@ -575,6 +620,11 @@ class TaskRuntime:
                 "continuationMode": str((_continuation or {}).get("mode") or ""),
                 # 非空 = 接着这个 codex thread 继续，不再新建会话。
                 "resumeThreadId": resume_id,
+                "goalContract": goal_contract.to_dict() if goal_contract else None,
+                "goalProgress": copy.deepcopy(resume_progress),
+                "goalContext": (str(resume_meta.get("goalContext") or "") if resume_progress else "")
+                               or self._goal_text(goal, mode),
+                "resumeTaskId": str(resume_meta.get("taskId") or ""),
             }
             thread = threading.Thread(target=self._run, args=(generation,),
                                       name="lianxin-task-runtime", daemon=True)
@@ -941,12 +991,17 @@ class TaskRuntime:
 
     # ── 工作线程 ──────────────────────────────────────────
     def _run(self, generation: int) -> None:
-        backend = self._ensure_backend()
         with self._lock:
             task = dict(self._task)
             limits = self._limits()
+        contract = GoalContract.from_dict(task["goalContract"]) if task.get("goalContract") else None
+        try:
+            backend = self._select_backend(contract, lambda snapshot: self._checkpoint_goal(snapshot, task, generation))
+        except Exception as exc:
+            self._finish(generation, status="failed", reason="执行引擎准备失败：%s" % exc)
+            return
         spec = TaskSpec(
-            goal=self._goal_text(task.get("goal") or "", str(task.get("approvalMode") or "")),
+            goal=task.get("goalContext") or self._goal_text(task.get("goal") or "", str(task.get("approvalMode") or "")),
             cwd=str(task.get("cwd") or ""),
             session_id=int(task.get("sessionId") or 0) or None,
             turn=int(task.get("turn") or 0),
@@ -956,6 +1011,7 @@ class TaskRuntime:
                                       bool(task.get("networkAccess"))),
             resume_thread_id=str(task.get("resumeThreadId") or ""),
             generation=generation,
+            goal_contract=contract,
         )
         with self._lock:
             stopped = self._stop_requested or self._closed
@@ -963,8 +1019,14 @@ class TaskRuntime:
             self._finish(generation, status="stopped", reason=self._stop_reason or "任务已停止")
             return
         try:
-            handle = backend.start(spec)
+            handle = (backend.start(spec, resume_progress=task.get("goalProgress")) if contract
+                      else backend.start(spec))
         except Exception as exc:
+            if contract:
+                snapshot = backend.progress_snapshot() or {}
+                with self._lock:
+                    self._task["goalProgress"] = copy.deepcopy(snapshot)
+                    self._task["threadId"] = str(snapshot.get("threadId") or self._task.get("threadId") or "")
             self._finish(generation, status="failed", reason="执行引擎启动失败：%s" % exc)
             return
         with self._lock:
@@ -979,7 +1041,7 @@ class TaskRuntime:
         runtime_events.publish(
             runtime_events.TASK_STARTED, thread_id=handle.thread_id, turn_id=handle.turn_id,
             goal=str(task.get("goal") or ""), cwd=str(task.get("cwd") or ""),
-            sandbox=SANDBOX_READ_ONLY, model=self._backend_model(),
+            sandbox=spec.sandbox, model=self._backend_model(),
         )
         self._log("执行引擎", "任务开始: thread=%s cwd=%s" % (handle.thread_id, task.get("cwd")))
 
@@ -1014,6 +1076,20 @@ class TaskRuntime:
                 reason = "执行引擎进程已退出"
                 break
 
+        if contract:
+            if reason or self._stop_requested:
+                result = backend.interrupt(self._handle or handle)
+                if result is not None and not result.ok:
+                    reason = (reason + "；" if reason else "") + "原生停止未确认：" + result.message
+            snapshot = backend.progress_snapshot() or {}
+            with self._lock:
+                self._task["goalProgress"] = copy.deepcopy(snapshot)
+            status = str(snapshot.get("state") or "failed")
+            if status == "active":
+                status = "failed"
+            self._finish(generation, status=status, reason=reason or str(snapshot.get("endReason") or ""))
+            return
+
         final_status = str(self._final.get("finalStatus") or "")
         if self._stop_requested:
             status = "stopped"
@@ -1042,6 +1118,27 @@ class TaskRuntime:
             if int(getattr(event, "generation", 0)) != handle.generation:
                 return
             event_turn = str(getattr(event, "turn_id", "") or "")
+            if self._task.get("goalContract") and getattr(event, "kind", "") == "goal_updated":
+                snapshot = dict((getattr(event, "payload", None) or {}).get("goal") or {})
+                previous = self._task.get("goalProgress") or {}
+                if (snapshot.get("threadId") != handle.thread_id or
+                        snapshot.get("generation") != handle.generation or
+                        snapshot.get("contract") != self._task["goalContract"] or
+                        (previous.get("goalId") and snapshot.get("goalId") != previous["goalId"]) or
+                        snapshot.get("turnsStarted", 0) < previous.get("turnsStarted", 0) or
+                        snapshot.get("tokensUsed", 0) < previous.get("tokensUsed", 0) or
+                        snapshot.get("elapsedSeconds", 0) < previous.get("elapsedSeconds", 0)):
+                    return
+                self._task["goalProgress"] = copy.deepcopy(snapshot)
+                started = snapshot.get("startedTurnIds") or []
+                current = str(snapshot.get("currentTurnId") or (started[-1] if started else ""))
+                handle.turn_id = current
+                self._task["turnId"] = current
+                if snapshot.get("state") != "active":
+                    self._final = {"finalStatus": snapshot.get("state")}
+                runtime_events.publish(runtime_events.TASK_PROGRESS, thread_id=handle.thread_id,
+                                       turn_id=current, goalProgress=copy.deepcopy(snapshot))
+                return
             if event_turn != handle.turn_id:
                 if event_turn or str(getattr(event, "kind", "")) != runtime_events.NOTE:
                     return
@@ -1052,7 +1149,8 @@ class TaskRuntime:
         if kind == runtime_events.TURN_FINISHED:
             # 内部事件：只用于判定任务结束，不进入界面事件流
             with self._lock:
-                self._final = payload
+                if not self._task.get("goalContract"):
+                    self._final = payload
             return
 
         if kind == runtime_events.APPROVAL_REQUESTED:
@@ -1086,7 +1184,9 @@ class TaskRuntime:
             if kind == runtime_events.TOOL_STARTED:
                 # "无进展"= 同一个动作反复重来（换着法重试不算），而不是"这轮失败了"
                 sig = "%s|%s" % (published.get("tool"), str(published.get("detail") or "")[:160])
-                if sig in self._seen_sigs:
+                if self._task.get("goalContract"):
+                    self._stale = 0
+                elif sig in self._seen_sigs:
                     self._stale += 1
                 else:
                     self._seen_sigs.add(sig)
@@ -1121,7 +1221,9 @@ class TaskRuntime:
         with self._lock:
             if generation != self._generation:
                 return
-            if self._stop_requested:
+            if self._task.get("state") == "idle" and (self._last_result or {}).get("taskId") == self._task.get("taskId"):
+                return
+            if self._stop_requested and not self._task.get("goalContract"):
                 status = "stopped"
                 reason = self._stop_reason or "任务已停止"
             task = dict(self._task)
@@ -1144,6 +1246,9 @@ class TaskRuntime:
                 "plan": copy.deepcopy(task.get("plan") or []),
                 "currentStep": str(task.get("currentStep") or ""),
                 "lastApproval": copy.deepcopy(task.get("lastApproval")),
+                "goalContract": copy.deepcopy(task.get("goalContract")),
+                "goalProgress": copy.deepcopy(task.get("goalProgress")),
+                "skipNarration": bool(task.get("goalContract") and status != "completed"),
             }
             self._last_result = result
             self._task["state"] = "idle"
@@ -1183,10 +1288,43 @@ class TaskRuntime:
             return True
 
     # ── 持久线程元数据（阶段 3b）──────────────────────────
+    def _checkpoint_goal(self, snapshot: dict, task: dict, generation: int) -> bool:
+        thread_id = str((snapshot or {}).get("threadId") or "")
+        if (not thread_id or snapshot.get("contract") != task.get("goalContract") or
+                snapshot.get("generation") != generation):
+            return False
+        with self._lock:
+            if generation != self._generation or task.get("taskId") != self._task.get("taskId"):
+                return False
+            meta = session_store.read_meta(thread_id)
+            if meta.get("taskId") not in (None, task["taskId"], task.get("resumeTaskId")):
+                return False
+            if meta.get("taskId") == task["taskId"] and meta.get("status") != "running":
+                return meta.get("goalProgress") == snapshot
+            started = snapshot.get("startedTurnIds") or []
+            meta.update(taskId=task["taskId"], lianxinSessionId=task["sessionId"],
+                        lianxinTurn=task["turn"], goal=task["goal"], goalContext=task["goalContext"],
+                        cwd=task["cwd"], workspace=task["workspace"], sandbox=task["sandbox"],
+                        approvalMode=task["approvalMode"], networkAccess=task["networkAccess"],
+                        status="running", startedAt=task["startedAt"], cardSaved=False,
+                        lastTurnId=snapshot.get("currentTurnId") or (started[-1] if started else ""),
+                        rounds=self._rounds, goalContract=copy.deepcopy(task["goalContract"]),
+                        goalProgress=copy.deepcopy(snapshot))
+            persisted = session_store.write_meta(thread_id, meta)
+            if persisted:
+                self._task["threadId"] = thread_id
+                self._task["turnId"] = meta["lastTurnId"]
+                self._task["goalProgress"] = copy.deepcopy(snapshot)
+                if self._handle is not None and self._handle.thread_id == thread_id:
+                    self._handle.turn_id = meta["lastTurnId"]
+            return persisted
+
     def _write_meta(self, handle, task: dict) -> None:
         """任务一开始就落盘 threadId：进程被杀时，下次启动才知道有活没干完。"""
         thread_id = str(getattr(handle, "thread_id", "") or "")
         if not thread_id:
+            return
+        if task.get("goalContract"):
             return
         try:
             session_store.write_meta(thread_id, {
@@ -1226,6 +1364,8 @@ class TaskRuntime:
                 "summary": str(result.get("summary") or "")[:4000],
                 "finishedAt": float(result.get("finishedAt") or time.time()),
                 "interrupted": status in ("interrupted", "stopped", "failed"),
+                "goalContract": copy.deepcopy(result.get("goalContract")),
+                "goalProgress": copy.deepcopy(result.get("goalProgress")),
             })
         except Exception as exc:
             self._log("执行引擎", "更新线程元数据失败: %s" % exc)
@@ -1264,7 +1404,8 @@ class TaskRuntime:
                 pending.append((meta, True, "interrupted",
                                 "莲心上次被关闭时，这个任务还没跑完"))
             elif not meta.get("cardSaved") and status in (
-                    "completed", "failed", "interrupted", "stopped"):
+                    "completed", "failed", "interrupted", "stopped", "awaiting_verification",
+                    "blocked", "budget_limited", "usage_limited"):
                 if status in ("interrupted", "stopped"):
                     pending.append((meta, True, "interrupted",
                                     "上次关闭前这个任务没有正常收尾"))
@@ -1296,6 +1437,8 @@ class TaskRuntime:
                 "lastApproval": copy.deepcopy(meta.get("lastApproval")),
                 "recovered": bool(resumable),
                 "skipNarration": True,
+                "goalContract": copy.deepcopy(meta.get("goalContract")),
+                "goalProgress": copy.deepcopy(meta.get("goalProgress")),
             }
             try:
                 session_store.update_meta(thread_id, {

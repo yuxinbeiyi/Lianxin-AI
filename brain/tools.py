@@ -6555,6 +6555,26 @@ EXECUTION_TASK_DEFINITION = {
                                    "wait=false 时默认 15 秒，只用来探测任务有没有真的跑起来；"
                                    "wait=true 时默认 100 秒，等不到就转后台、结论稍后自动回到聊天里。",
                 },
+                "goal_contract": {
+                    "type": "object",
+                    "description": "需要持续执行并验收的目标才提供；预算有限，不用于日常单步请求。验收命令只能来自任务授权和实际项目，不得编造检查结果。未配置客观检查的条件保留待核验。",
+                    "properties": {
+                        "objective": {"type": "string"},
+                        "acceptanceCriteria": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 12},
+                        "maxTurns": {"type": "integer", "minimum": 1, "maximum": 16},
+                        "maxTokens": {"type": "integer", "minimum": 1, "maximum": 200000},
+                        "maxElapsedSeconds": {"type": "integer", "minimum": 60, "maximum": 3600},
+                        "verificationChecks": {"type": "array", "maxItems": 12, "items": {
+                            "type": "object", "properties": {
+                                "criterionIndex": {"type": "integer", "minimum": 0, "maximum": 11},
+                                "command": {"type": "string"},
+                                "kind": {"type": "string", "enum": ["test", "build"]},
+                            }, "required": ["criterionIndex", "command"], "additionalProperties": False,
+                        }},
+                    },
+                    "required": ["objective", "acceptanceCriteria"],
+                    "additionalProperties": False,
+                },
             },
             "required": ["goal"],
         },
@@ -6600,6 +6620,10 @@ _EXECUTION_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 _EXECUTION_STATUS_TEXT = {
     "completed": "已完成",
+    "awaiting_verification": "待核验（不是已完成）",
+    "blocked": "遇到阻塞",
+    "budget_limited": "达到预算",
+    "usage_limited": "服务用量受限",
     "interrupted": "被中断",
     "stopped": "已停止",
     "failed": "失败了",
@@ -6761,7 +6785,7 @@ def _mark_execution_delivered(runtime, state: dict) -> None:
 
 
 def run_execution_task(goal: str, sandbox: str = "", network_access: bool = False,
-                       wait: bool = False, wait_seconds: int = 0) -> str:
+                       wait: bool = False, wait_seconds: int = 0, goal_contract=None) -> str:
     """把长任务交给执行引擎：莲心给目标，执行后端自己规划步骤。
 
     默认不等任务跑完（``wait=False``）：受理即返回，绕开「单工具 120 秒」的上限，
@@ -6814,6 +6838,7 @@ def run_execution_task(goal: str, sandbox: str = "", network_access: bool = Fals
                 network_access=bool(network_access),
                 wait=True,
                 wait_timeout=wait_seconds,
+                goal_contract=goal_contract,
             )
         except Exception as exc:
             return "执行引擎受理任务失败：%s" % exc
@@ -6838,6 +6863,7 @@ def run_execution_task(goal: str, sandbox: str = "", network_access: bool = Fals
             sandbox=sandbox or "",
             network_access=bool(network_access),
             wait=False,
+            goal_contract=goal_contract,
         )
     except Exception as exc:
         return "执行引擎受理任务失败：%s" % exc
@@ -6916,6 +6942,7 @@ TOOL_EXECUTORS["run_execution_task"] = lambda inp: run_execution_task(
     network_access=bool(inp.get("network_access", False)),
     wait=bool(inp.get("wait", False)),
     wait_seconds=inp.get("wait_seconds", 0),
+    goal_contract=inp.get("goal_contract"),
 )
 
 TOOL_DEFINITIONS.append(RESUME_EXECUTION_DEFINITION)

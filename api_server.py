@@ -9,6 +9,7 @@ Run with: ``python api_server.py``.
 from __future__ import annotations
 
 import json
+import copy
 import atexit
 import hashlib
 import base64
@@ -2411,6 +2412,10 @@ class LianxinBridge:
             )
         label = {
             "completed": "已经做完了",
+            "awaiting_verification": "已结束执行，但验收证据尚不充分",
+            "blocked": "遇到阻塞，需要补充条件",
+            "budget_limited": "达到本次预算，已停止推进",
+            "usage_limited": "受到服务用量限制，已停止推进",
             "failed": "没能做成功",
             "interrupted": "被停下来了",
             "stopped": "停下来了",
@@ -2457,6 +2462,10 @@ class LianxinBridge:
         """同步路径的卡片正文：只陈述事实，不重复莲心刚在对话里说过的话。"""
         label = {
             "completed": "做完了",
+            "awaiting_verification": "待核验，不能确认完成",
+            "blocked": "遇到阻塞",
+            "budget_limited": "已达到预算",
+            "usage_limited": "已受到服务用量限制",
             "failed": "没做成",
             "interrupted": "被停下来了",
             "stopped": "停下来了",
@@ -2489,6 +2498,7 @@ class LianxinBridge:
             "executionApprovalReason": str((result.get("lastApproval") or {}).get("reason") or ""),
             "executionSummary": clean_execution_summary(result.get("summary") or "", limit=1200),
             "executionNarrated": bool(narrated),
+            "executionGoalProgress": copy.deepcopy(result.get("goalProgress")),
         }
         history = self.agent().get_history_manager()
         message_id = history.save_message(
@@ -2507,7 +2517,7 @@ class LianxinBridge:
 
                 session_store.update_meta(thread_id, {
                     "cardSaved": True, "cardMessageId": int(message_id or 0),
-                })
+                }, expected_task_id=str(result.get("taskId") or ""))
             except Exception:
                 pass
         return message_id

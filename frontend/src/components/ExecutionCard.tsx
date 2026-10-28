@@ -10,6 +10,10 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "没做成",
   interrupted: "被中断",
   stopped: "已停止",
+  awaiting_verification: "待核验",
+  blocked: "遇到阻塞",
+  budget_limited: "达到预算",
+  usage_limited: "用量受限",
 };
 
 type Tone = "ok" | "bad" | "warn";
@@ -43,7 +47,7 @@ export function ExecutionCard({
   const summary = String(data?.summary ?? "").trim();
   const elapsed = Number(data?.elapsed ?? 0);
   const rounds = Number(data?.rounds ?? 0);
-  const mode = continuationMode(status);
+  const mode = data?.goalProgress && status !== "stopped" && status !== "interrupted" ? null : continuationMode(status);
   const canResume = Boolean(mode && data?.threadId && data?.taskId && sessionId);
   const actionLabel = mode === "revise" ? "继续修改" : mode === "retry" ? "补充条件后再试" : "接着做";
 
@@ -96,6 +100,15 @@ export function ExecutionCard({
         {data?.reason ? <span className="exec-card-reason">{data.reason}</span> : null}
       </div>
       {data?.approvalReason ? <p className="exec-control-status" role="status">审批记录：{data.approvalReason}</p> : null}
+      {data?.goalProgress ? <div className="exec-control-status" role="status">
+        <p>目标验收：{data.goalProgress.verificationPassed ? "指定检查已通过" : "尚未确认全部通过"}
+          {` · ${data.goalProgress.turnsCompleted}/${data.goalProgress.turnsStarted} 轮结束`}</p>
+        {data.goalProgress.contract.acceptanceCriteria.map((criterion, index) => {
+          const evidence = data.goalProgress!.evidence.find((entry) => entry.criterionIndex === index);
+          const label = evidence?.status === "passed" ? "通过" : evidence?.status === "failed" ? "未通过" : "待核验";
+          return <p key={`${index}-${criterion}`}>{label}：{criterion}</p>;
+        })}
+      </div> : null}
       {content ? <p className="exec-card-speech">{content}</p> : null}
       {canResume ? (
         <div className="exec-card-resume">

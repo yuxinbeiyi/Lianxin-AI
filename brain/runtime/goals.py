@@ -35,11 +35,33 @@ def _seconds(value) -> float:
 
 def goal_mode_status() -> dict:
     return {
-        "available": False,
+        "available": True,
         "driver": "native",
-        "code": "native_goal_not_validated",
-        "reason": "目标循环尚未启用：需先完成真实界面联调、原生多轮与交付验收",
+        "code": "native_goal_explicit_beta",
+        "reason": "仅显式目标契约启用；普通任务仍单轮，完整桌面验收尚未完成",
     }
+
+
+@dataclass(frozen=True)
+class VerificationCheck:
+    criterion_index: int
+    command: str
+    kind: str = "test"
+
+    def __post_init__(self) -> None:
+        _integer(self.criterion_index, "验收条件序号", 0, 11)
+        object.__setattr__(self, "command", _text(self.command, "验收命令", 2000))
+        if self.kind not in ("test", "build"):
+            raise GoalContractError("自动验收只接受 test 或 build 命令")
+
+    @classmethod
+    def from_dict(cls, data):
+        if not isinstance(data, dict) or set(data) - {"criterionIndex", "command", "kind"}:
+            raise GoalContractError("验收命令必须是仅包含已知字段的对象")
+        return cls(data.get("criterionIndex"), data.get("command"), data.get("kind", "test"))
+
+    def to_dict(self):
+        return {"criterionIndex": self.criterion_index, "command": self.command, "kind": self.kind}
 
 
 @dataclass(frozen=True)
@@ -50,6 +72,7 @@ class GoalContract:
     max_tokens: int = 40_000
     max_elapsed_seconds: int = 900
     driver: str = "native"
+    verification_checks: tuple[VerificationCheck, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "objective", _text(self.objective, "目标", 2000))
@@ -65,13 +88,21 @@ class GoalContract:
         _integer(self.max_elapsed_seconds, "最长执行秒数", 60, 3600)
         if self.driver != "native":
             raise GoalContractError("只允许 native 唯一驱动，不叠加 managed 续跑")
+        if not isinstance(self.verification_checks, (list, tuple)) or len(self.verification_checks) > 12:
+            raise GoalContractError("验收命令最多 12 项")
+        checks = tuple(check if isinstance(check, VerificationCheck) else VerificationCheck.from_dict(check)
+                       for check in self.verification_checks)
+        if (any(check.criterion_index >= len(criteria) for check in checks) or
+                len({check.criterion_index for check in checks}) != len(checks)):
+            raise GoalContractError("每项验收条件最多绑定一个命令，且序号必须存在")
+        object.__setattr__(self, "verification_checks", checks)
 
     @classmethod
     def from_dict(cls, data: dict) -> GoalContract:
         if not isinstance(data, dict):
             raise GoalContractError("目标契约必须是对象")
         allowed = {"objective", "acceptanceCriteria", "maxTurns", "maxTokens",
-                   "maxElapsedSeconds", "driver"}
+                   "maxElapsedSeconds", "driver", "verificationChecks"}
         if set(data) - allowed:
             raise GoalContractError("目标契约包含未知字段")
         return cls(
@@ -81,10 +112,11 @@ class GoalContract:
             max_tokens=data.get("maxTokens", 40_000),
             max_elapsed_seconds=data.get("maxElapsedSeconds", 900),
             driver=data.get("driver", "native"),
+            verification_checks=data.get("verificationChecks", ()),
         )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "objective": self.objective,
             "acceptanceCriteria": list(self.acceptance_criteria),
             "maxTurns": self.max_turns,
@@ -92,6 +124,9 @@ class GoalContract:
             "maxElapsedSeconds": self.max_elapsed_seconds,
             "driver": self.driver,
         }
+        if self.verification_checks:
+            data["verificationChecks"] = [check.to_dict() for check in self.verification_checks]
+        return data
 
 
 @dataclass(frozen=True)
@@ -163,6 +198,36 @@ class GoalProgress:
         self._evidence.clear()
         return True
 
+    @classmethod
+    def restore_for_resume(cls, contract: GoalContract, snapshot: dict):
+        if not isinstance(snapshot, dict) or snapshot.get("contract") != contract.to_dict():
+            raise GoalContractError("持久化进度与目标契约不一致")
+        if snapshot.get("state") not in ("active", "stopped"):
+            raise GoalContractError("只有活动中断或显式停止的目标可恢复")
+        started = snapshot.get("startedTurnIds")
+        completed = snapshot.get("completedTurnIds")
+        if not isinstance(started, list) or not isinstance(completed, list):
+            raise GoalContractError("持久化执行轮列表无效")
+        started = [_text(turn, "turnId", 200) for turn in started]
+        completed = [_text(turn, "turnId", 200) for turn in completed]
+        if (len(set(started)) != len(started) or len(set(completed)) != len(completed)
+                or len(started) > contract.max_turns or not set(completed).issubset(started)):
+            raise GoalContractError("持久化执行轮身份或计数无效")
+        if (snapshot.get("turnsStarted") != len(started) or
+                snapshot.get("turnsCompleted") != len(completed)):
+            raise GoalContractError("持久化执行轮计数不一致")
+        current = snapshot.get("currentTurnId")
+        if current and (not started or current != started[-1] or current in completed):
+            raise GoalContractError("持久化活动轮身份无效")
+        progress = cls(contract)
+        progress.goal_id = _text(snapshot.get("goalId"), "goalId", 200)
+        progress._started_turns = started
+        progress._completed_turns = set(completed)
+        progress.observe_usage(snapshot.get("tokensUsed"), snapshot.get("elapsedSeconds"))
+        if progress.limit_reason():
+            raise GoalContractError("累计预算已耗尽，不能恢复")
+        return progress
+
     def finish_turn(self, turn_id: str) -> bool:
         if turn_id in self._completed_turns:
             return False
@@ -204,6 +269,10 @@ class GoalProgress:
     def verification_passed(self) -> bool:
         return all(index in self._evidence and self._evidence[index].status == "passed"
                    for index in range(len(self.contract.acceptance_criteria)))
+
+    def invalidate_evidence(self) -> None:
+        if self.state not in self.TERMINAL_STATES:
+            self._evidence.clear()
 
     def request_completion(self) -> bool:
         if self.state == "completed":

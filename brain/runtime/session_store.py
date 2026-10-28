@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import os
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
 _RUNTIME_DIR = Path(__file__).resolve().parents[2] / "data" / "codex_runtime"
 _SESSION_DIR = _RUNTIME_DIR / "sessions"
+_META_LOCK = threading.RLock()
 
 
 def _session_dir() -> Path:
@@ -35,6 +37,11 @@ def _meta_path(thread_id: str) -> Optional[Path]:
 
 
 def write_meta(thread_id: str, data: dict) -> bool:
+    with _META_LOCK:
+        return _write_meta(thread_id, data)
+
+
+def _write_meta(thread_id: str, data: dict) -> bool:
     """原子写入一条元数据；thread_id 为空或非法时返回 False。"""
     path = _meta_path(thread_id)
     if path is None:
@@ -46,7 +53,10 @@ def write_meta(thread_id: str, data: dict) -> bool:
     payload["updatedAt"] = now
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(str(tmp), str(path))
         return True
     except Exception:
@@ -69,12 +79,15 @@ def read_meta(thread_id: str) -> dict:
     return dict(data) if isinstance(data, dict) else {}
 
 
-def update_meta(thread_id: str, patch: dict) -> bool:
-    current = read_meta(thread_id)
-    if not current:
-        return False
-    current.update(dict(patch or {}))
-    return write_meta(thread_id, current)
+def update_meta(thread_id: str, patch: dict, *, expected_task_id: Optional[str] = None) -> bool:
+    with _META_LOCK:
+        current = read_meta(thread_id)
+        if not current:
+            return False
+        if expected_task_id is not None and current.get("taskId") != expected_task_id:
+            return False
+        current.update(dict(patch or {}))
+        return write_meta(thread_id, current)
 
 
 def iter_metas() -> list:

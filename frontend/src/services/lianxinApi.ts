@@ -29,6 +29,7 @@ export type ApiMessage = {
   executionApprovalReason?: string;
   executionSummary?: string;
   executionNarrated?: boolean;
+  executionGoalProgress?: ExecutionGoalProgress | null;
 };
 export type ChatStreamEvent = {
   type: "started" | "image_analysis_started" | "image_analysis_result" | "file_attachment_saved" | "tool_round_start" | "tool_call" | "tool_result" | "delta" | "completed" | "error";
@@ -93,6 +94,19 @@ export type ExecutionGoalContract = {
   maxTokens?: number;
   maxElapsedSeconds?: number;
   driver?: "native";
+  verificationChecks?: Array<{ criterionIndex: number; command: string; kind?: "test" | "build" }>;
+};
+export type ExecutionGoalProgress = {
+  goalId: string;
+  state: string;
+  contract: ExecutionGoalContract;
+  turnsStarted: number;
+  turnsCompleted: number;
+  tokensUsed: number;
+  elapsedSeconds: number;
+  verificationPassed: boolean;
+  endReason?: string;
+  evidence: Array<{ criterionIndex: number; kind: string; status: string; summary: string; source: string; turnId: string }>;
 };
 export type ExecutionGoalMode = { available: boolean; driver: "native"; code: string; reason: string };
 export type ExecutionTaskState = {
@@ -123,6 +137,7 @@ export type ExecutionTaskState = {
     lastApproval?: { decision?: string; reason?: string; at?: number };
     stopReason?: string;
     goal: string;
+    goalProgress?: ExecutionGoalProgress | null;
     cwd?: string;
     sandbox?: string;
     approvalMode?: string;
@@ -136,7 +151,10 @@ export type ExecutionTaskState = {
     state?: string;
   };
   lastResult: null | {
+    taskId?: string;
+    sessionId?: number;
     status: string;
+    goalProgress?: ExecutionGoalProgress | null;
     reason?: string;
     goal?: string;
     rounds?: number;

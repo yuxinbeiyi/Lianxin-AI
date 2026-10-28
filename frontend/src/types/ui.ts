@@ -8,6 +8,7 @@ export type WorkspaceId =
 export type ActivityState = "idle" | "thinking" | "speaking" | "working";
 
 export type ExecutionCardData = {
+  goalProgress?: import("../services/lianxinApi").ExecutionGoalProgress | null;
   taskId?: string;
   threadId?: string;
   turnId?: string;

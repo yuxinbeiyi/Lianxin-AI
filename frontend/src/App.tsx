@@ -60,7 +60,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { playSpeechSequence } from "./utils/speechSequence";
 import { ExecutionNotices } from "./components/ExecutionNotices";
 import { showExecutionNotice } from "./utils/executionNotices";
-import { executionScope, executionSignature } from "./utils/executionControls";
+import { executionScope, executionSignature, mergePersistedMessages } from "./utils/executionControls";
 import {
   lianxinApi,
   type AvatarState,
@@ -182,6 +182,7 @@ function restoreMessage(
     executionApprovalReason?: string;
     executionSummary?: string;
     executionNarrated?: boolean;
+    executionGoalProgress?: import("./services/lianxinApi").ExecutionGoalProgress | null;
   },
   index: number,
 ): Message {
@@ -206,6 +207,7 @@ function restoreMessage(
             approvalReason: item.executionApprovalReason,
             summary: item.executionSummary,
             narrated: item.executionNarrated,
+            goalProgress: item.executionGoalProgress,
           },
         }
       : {}),
@@ -3418,6 +3420,20 @@ export function App() {
       try {
         const state = await lianxinApi.runtimeState();
         if (disposed) return;
+        const terminal = state.lastResult;
+        const terminalSession = Number(terminal?.sessionId || 0);
+        const terminalTaskId = String(terminal?.taskId || "");
+        if (terminalSession && terminalTaskId && terminalSession === sessionIdRef.current &&
+            !messagesRef.current.some((message) => message.kind === "execution_task" &&
+              message.execution?.taskId === terminalTaskId)) {
+          const history = await lianxinApi.messages(terminalSession);
+          if (disposed || terminalSession !== sessionIdRef.current) return;
+          const restored = history.items.map(restoreMessage);
+          if (restored.some((message) => message.kind === "execution_task" &&
+              message.execution?.taskId === terminalTaskId)) {
+            setMessages((current) => mergePersistedMessages(current, restored));
+          }
+        }
         const signature = executionSignature(state);
         if (signature === runtimeSigRef.current) return;
         runtimeSigRef.current = signature;
