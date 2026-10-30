@@ -34,7 +34,7 @@ class ToolCallGroup(QWidget):
 
     def add_card(self, tool_name: str, args_json: str) -> ToolCallCard:
         """添加一个 running 状态的工具卡片"""
-        card = ToolCallCard()
+        card = ToolCallCard(variant="decision" if tool_name.startswith("决策模型 · ") else "tool")
         card.set_running(tool_name, args_json)
         card.geometry_changed.connect(self.geometry_changed.emit)
         self._cards.append(card)

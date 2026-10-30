@@ -4010,6 +4010,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if urlparse(self.path).path.startswith("/api/decision/"):
+            self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -4493,6 +4495,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.background_state(include_data=include_data))
             if path == "/api/settings/panels":
                 return self._send(bridge.settings_panel_state())
+            if path == "/api/decision/settings":
+                from brain.decision_settings import settings_state
+                return self._send(settings_state())
             if path == "/api/settings/avatars":
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
@@ -4563,7 +4568,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/decision/"):
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get("Origin", "")):
+                    return self._send({"error": "untrusted_decision_origin"}, 403)
             body = self._body()
+            if path == "/api/decision/settings":
+                from brain.decision_settings import save_settings
+                return self._send(save_settings(body))
+            if path == "/api/decision/test":
+                from brain.decision_settings import test_connection
+                return self._send(test_connection())
+            if path == "/api/decision/local":
+                from brain.decision_settings import local_action
+                return self._send(local_action(str(body.get("action", ""))))
             if path == "/api/app/shutdown":
                 if self.headers.get("X-Lianxin-Shutdown") != "1":
                     return self._send({"ok": False, "error": "desktop_request_required"}, 403)

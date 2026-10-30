@@ -50,7 +50,7 @@ def _next_seq() -> int:
         return _SEQ
 
 
-def _base_event(kind: str, seq: int, name, session_id, round_num, turn) -> dict:
+def _base_event(kind: str, seq: int, name, session_id, round_num, turn, category="tool") -> dict:
     return {
         "kind": kind,
         "seq": seq,
@@ -59,14 +59,15 @@ def _base_event(kind: str, seq: int, name, session_id, round_num, turn) -> dict:
         "turn": int(turn or 0),
         "round": int(round_num or 0),
         "name": str(name or ""),
+        "category": category,
     }
 
 
-def begin_call(name, args=None, session_id=None, round_num=0, turn=0) -> None:
+def begin_call(name, args=None, session_id=None, round_num=0, turn=0, category="tool") -> None:
     """记录一次工具开始执行；与同线程的 finish_call 按工具名配对。"""
     try:
         seq = _next_seq()
-        event = _base_event("call", seq, name, session_id, round_num, turn)
+        event = _base_event("call", seq, name, session_id, round_num, turn, category)
         event["argsPreview"] = _preview(args)
         _append(event)
         pending = getattr(_LOCAL, "pending", None)
@@ -78,7 +79,7 @@ def begin_call(name, args=None, session_id=None, round_num=0, turn=0) -> None:
 
 
 def finish_call(name, result="", is_error=False, elapsed_ms=0.0,
-                session_id=None, round_num=0, turn=0) -> None:
+                session_id=None, round_num=0, turn=0, category="tool") -> None:
     """记录一次工具执行结果；没有配对的 call 时补一条，保证界面完整。"""
     try:
         pending = getattr(_LOCAL, "pending", None) or {}
@@ -86,10 +87,10 @@ def finish_call(name, result="", is_error=False, elapsed_ms=0.0,
         seq = queue.pop(0) if queue else None
         if seq is None:
             seq = _next_seq()
-            event = _base_event("call", seq, name, session_id, round_num, turn)
+            event = _base_event("call", seq, name, session_id, round_num, turn, category)
             event["argsPreview"] = ""
             _append(event)
-        event = _base_event("result", seq, name, session_id, round_num, turn)
+        event = _base_event("result", seq, name, session_id, round_num, turn, category)
         event["status"] = "error" if is_error else "done"
         event["preview"] = _preview(result)
         event["elapsedMs"] = float(elapsed_ms or 0.0)

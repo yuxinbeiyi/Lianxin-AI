@@ -75,6 +75,7 @@ import {
 } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
+import { DecisionPanel } from "./components/DecisionPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ExecutionCard } from "./components/ExecutionCard";
 import { TimeCapsuleWorkspace } from "./components/TimeCapsuleWorkspace";
@@ -94,6 +95,7 @@ type PanelId =
   | "proactive"
   | "management"
   | "tools"
+  | "decision"
   | "constellation"
   | "ripple"
   | "persona"
@@ -148,6 +150,7 @@ type ToolCallState = {
 // 因此卡片位置固定，且只有重启莲心 / 新建会话时才会消失。
 type ToolRoundState = {
   key: string;
+  category?: "tool" | "decision";
   turn: number;
   round: number;
   anchorIndex: number;
@@ -574,6 +577,10 @@ function SideNavigation({
             {item.id === activeWorkspace && <span className="nav-indicator" />}
           </button>
         ))}
+        <button className="nav-item" onClick={() => onPanel("decision")}>
+          <BrainCircuit size={19} strokeWidth={1.8} aria-hidden="true" />
+          <span>决策中枢</span>
+        </button>
         <div className="nav-divider" />
         <button
           className={`nav-item management-trigger ${managementOpen ? "is-open" : ""}`}
@@ -886,8 +893,8 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
         <section className="tool-round" key={round.key}>
           <div className="tool-round-heading">
             <span>
-              <Wrench size={14} />
-              莲心执行工具 · 第 {round.round} 轮
+              {round.category === "decision" ? <BrainCircuit size={14} /> : <Wrench size={14} />}
+              {round.category === "decision" ? "莲心调用决策模型" : `莲心执行工具 · 第 ${round.round} 轮`}
             </span>
             <span>
               {round.calls.every((call) => call.status !== "running")
@@ -913,10 +920,10 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
                 <strong>{call.name}</strong>
                 <span>
                   {call.status === "running"
-                    ? "正在执行…"
+                    ? round.category === "decision" ? "正在请求决策…" : "正在执行…"
                     : call.status === "error"
-                      ? "执行失败"
-                      : `已完成${call.elapsedMs ? ` · ${(call.elapsedMs / 1000).toFixed(1)}s` : ""}`}
+                      ? `${round.category === "decision" ? "调用失败" : "执行失败"}${call.elapsedMs ? ` · ${(call.elapsedMs / 1000).toFixed(1)}s` : ""}`
+                      : `${round.category === "decision" ? "响应已校验" : "已完成"}${call.elapsedMs ? ` · ${(call.elapsedMs / 1000).toFixed(1)}s` : ""}`}
                 </span>
                 {call.status === "running" && call.argsPreview && (
                   <p>{call.argsPreview}</p>
@@ -3362,7 +3369,7 @@ export function App() {
           Number(event.sessionId) !== Number(session)
         )
           continue;
-        const key = `${event.sessionId ?? 0}:${event.turn ?? 0}:${event.round ?? 0}`;
+        const key = `${event.sessionId ?? 0}:${event.turn ?? 0}:${event.round ?? 0}${event.category === "decision" ? `:decision:${event.seq}` : ""}`;
         let index = indexByKey.get(key);
         if (index === undefined) {
           const snapshot = messagesRef.current;
@@ -3375,6 +3382,7 @@ export function App() {
             anchorIndex = snapshot.length - 1;
           blocks.push({
             key,
+            category: event.category,
             turn: Number(event.turn ?? 0),
             round: Number(event.round ?? 0),
             anchorIndex,
@@ -4273,6 +4281,7 @@ export function App() {
         <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} />
       )}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
+      {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
       {panel === "tasks" && <TaskPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (
         <VoicePanel

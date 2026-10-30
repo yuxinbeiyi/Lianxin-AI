@@ -1682,6 +1682,17 @@ class MainWindow(QMainWindow):
 
     def _on_agent_activity(self, stage: str):
         """收到 Worker 的真实执行阶段，延长当前请求的兜底看门狗。"""
+        if str(stage).startswith("decision:"):
+            import json
+            event = json.loads(stage[len("decision:"):])
+            if event["kind"] == "call":
+                self._chat_widget.add_tool_call_card(
+                    event["name"], json.dumps({"model": event["model"], "stage": event["stage"]}, ensure_ascii=False), 0,
+                )
+            else:
+                self._chat_widget.update_tool_call_result(
+                    event["name"], event["preview"], event["is_error"], 0, event["elapsedMs"],
+                )
         worker = getattr(self, "_agent_worker", None)
         if not worker or not worker.isRunning():
             return

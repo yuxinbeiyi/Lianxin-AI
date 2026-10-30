@@ -178,7 +178,7 @@ class ToolCallCard(QWidget):
         """)
 
         # 图标
-        self._icon.setText(c["icon"])
+        self._icon.setText("🧠" if self._variant == "decision" and self._status == "running" else c["icon"])
 
         # 名称
         self._name_label.setText(self._tool_name)
@@ -188,6 +188,10 @@ class ToolCallCard(QWidget):
         if self._variant == "mooyu":
             status_texts = {
                 "running": "获取中…", "success": "已获取", "error": "失败", "unknown": "—"
+            }
+        elif self._variant == "decision":
+            status_texts = {
+                "running": "请求中…", "success": "响应已校验", "error": "调用失败", "unknown": "未确认"
             }
         else:
             status_texts = {

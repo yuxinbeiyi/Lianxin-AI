@@ -1,0 +1,12 @@
+.decision-hub .eyebrow { display: inline-flex; align-items: center; gap: 6px; }
+.decision-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.decision-hub .decision-help { margin: 0 0 10px; color: var(--lx-text-muted); font-size: 12px; line-height: 1.7; }
+.decision-hub .setting-check { line-height: 1.6; }
+.decision-hub .setting-check input { flex: 0 0 auto; }
+.decision-hub .settings-section input[type="radio"] { width: 15px; min-height: 15px; margin: 0; accent-color: var(--lx-accent); }
+.decision-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.decision-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.decision-hub button:disabled { opacity: .5; cursor: not-allowed; }
+.decision-hub .secondary-button { min-height: 36px; width: max-content; }
+.decision-notice { min-height: 24px; color: var(--lx-accent); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .decision-grid { grid-template-columns: 1fr; } }

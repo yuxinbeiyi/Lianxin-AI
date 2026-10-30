@@ -46,9 +46,29 @@ export type ChatStreamEvent = {
   description?: string;
   message?: { role: "assistant"; content: string };
 };
+export type DecisionSettings = {
+  enabled: boolean;
+  provider: "api" | "local";
+  allow_cloud_context: boolean;
+  timeout_seconds: number;
+  budget_seconds: number;
+  local_model_dir: string;
+  local_python: string;
+  local_port: number;
+  local_device: string;
+  local_auto_start: boolean;
+  api_key_configured: boolean;
+  api_key_source: "saved" | "environment" | "none";
+  api_key_error: string;
+  api_model: string;
+  local_model: string;
+  local: { status: string; ready: boolean; managed: boolean };
+};
+
 export type ToolActivityEvent = {
   id: number;
   kind: "call" | "result";
+  category?: "tool" | "decision";
   seq: number;
   ts?: number;
   sessionId?: number;
@@ -400,6 +420,13 @@ export const lianxinApi = {
   background: (include = true) => request<BackgroundState>(`/settings/background?include=${include ? "1" : "0"}`),
   avatars: (include = true) => request<AvatarState>(`/settings/avatars?include=${include ? "1" : "0"}`),
   settingsPanels: () => request<SettingsPanelState>("/settings/panels"),
+  decisionSettings: () => request<DecisionSettings>("/decision/settings"),
+  saveDecisionSettings: (payload: Partial<DecisionSettings> & { api_key?: string; clear_api_key?: boolean }) =>
+    request<DecisionSettings>("/decision/settings", { method: "POST", body: JSON.stringify(payload) }),
+  testDecision: () => request<{ ok: boolean; model?: string; provider?: string; summary?: string; error?: string }>(
+    "/decision/test", { method: "POST", body: "{}" }),
+  decisionLocal: (action: "start" | "stop") => request<DecisionSettings["local"]>(
+    "/decision/local", { method: "POST", body: JSON.stringify({ action }) }),
   saveSettingsPanels: (payload: Partial<{ global: Partial<SettingsPanelState["global"]>; sound: Partial<SettingsPanelState["sound"]> }>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
   avatarAction: (action: "tap" | "headpat") => request<{ action: string; accepted?: boolean; sound?: boolean; response?: string; counterAction?: string; message?: string }>(`/avatar/action?action=${action}`),
   openLegacy: (feature: LegacyFeature) => request<{ feature: string; pid: number; mode: string }>("/legacy/open", { method: "POST", body: JSON.stringify({ feature }) }),

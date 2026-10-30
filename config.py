@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from pathlib import Path
 from utils.paths import get_user_data_dir   # 新增导入
 
@@ -1031,6 +1032,59 @@ _RAG_DEFAULTS = {
     "rag_fts_only_fallback_enabled": True,
     "rag_metrics_enabled": True,
 }
+
+
+_DECISION_DEFAULTS = {
+    "enabled": False,
+    "provider": "api",
+    "allow_cloud_context": False,
+    "timeout_seconds": 8,
+    "budget_seconds": 20,
+    "local_model_dir": "E:/Desktop/Decision/d3-edge",
+    "local_python": "D:/anacondaDeep1/envs/d3/python.exe",
+    "local_port": 8013,
+    "local_device": "cuda:0",
+    "local_auto_start": True,
+}
+
+
+def get_decision_config() -> dict:
+    result = _DECISION_DEFAULTS.copy()
+    saved = _load_full_config().get("decision", {})
+    saved = saved if isinstance(saved, dict) else {}
+    result.update({key: saved[key] for key in result if key in saved})
+    for key, variable in (
+        ("enabled", "LIANXIN_DECISION_ENABLED"),
+        ("allow_cloud_context", "LIANXIN_DECISION_ALLOW_CLOUD_CONTEXT"),
+    ):
+        if key not in saved and variable in os.environ:
+            result[key] = os.environ[variable].strip().lower() in {"1", "true", "yes"}
+        else:
+            result[key] = result[key] is True
+    for key, maximum in (("timeout_seconds", 15), ("budget_seconds", 30)):
+        try:
+            value = float(result[key])
+            result[key] = max(1.0, min(maximum, value)) if math.isfinite(value) else _DECISION_DEFAULTS[key]
+        except (TypeError, ValueError):
+            result[key] = _DECISION_DEFAULTS[key]
+    result["provider"] = "local" if result["provider"] == "local" else "api"
+    result["local_auto_start"] = result["local_auto_start"] is True
+    try:
+        result["local_port"] = max(1024, min(65535, int(result["local_port"])))
+    except (TypeError, ValueError):
+        result["local_port"] = _DECISION_DEFAULTS["local_port"]
+    for key in ("local_model_dir", "local_python", "local_device"):
+        result[key] = str(result[key] or _DECISION_DEFAULTS[key])[:1024]
+    return result
+
+
+def save_decision_config(config: dict):
+    full = _load_full_config()
+    previous = full.get("decision", {})
+    previous = previous if isinstance(previous, dict) else {}
+    full["decision"] = {key: config.get(key, previous.get(key, default))
+                        for key, default in _DECISION_DEFAULTS.items()}
+    _save_full_config(full)
 
 
 def get_rag_config() -> dict:

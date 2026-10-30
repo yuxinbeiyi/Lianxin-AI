@@ -1671,7 +1671,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_graph_memory",
-"description": "统一搜索长期记忆：同时搜索分类事实和知识图谱实体关系。比 search_memory 更全面——一次调用返回分类事实 + 实体关系边。适用于所有需要回顾信息的问题，尤其是涉及「谁」「什么关系」「哪些关联」的查询。必填参数名是 keywords（字符串数组），从用户问题提取实体名和关系词填入 keywords；不要使用 query 或 keyword 作为参数名。",
+"description": "统一搜索长期记忆：默认搜索分类事实和知识图谱实体关系；strategy=hybrid 时进行混合补查。适用于所有需要回顾信息的问题，尤其是涉及「谁」「什么关系」「哪些关联」的查询。必须提供 keywords（字符串数组），从用户问题提取实体名和关系词；query 只用于 hybrid 补充完整问题，不能代替 keywords。",
 
             "parameters": {
                 "type": "object",
@@ -1685,6 +1685,15 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "enum": ["人物", "地点", "组织", "物品", "概念", "时间", "事件", "活动", "技术", "文件"],
                         "description": "可选，限定实体类型"
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["lexical", "hybrid"],
+                        "description": "默认 lexical 查实体与事实；hybrid 使用已就绪向量与关键词混合补查，不冷启动模型"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "hybrid 补查时的完整问题及必要话题线索"
                     }
                 },
                 "required": ["keywords"]
@@ -5370,7 +5379,8 @@ def _discover_connections(entity_name: str, depth: int = 2) -> str:
     return discovery["summary"]
 
 
-def _search_graph_memory(keywords, entity_type: str = None) -> str:
+def _search_graph_memory(keywords, entity_type: str = None, *,
+                         strategy: str = "lexical", query: str = "") -> str:
     """在图记忆中搜索实体关联，同时搜索图边和分类事实。
 
     支持多个关键词：逐个搜索后按事实 id / 图边去重合并，
@@ -5381,6 +5391,18 @@ def _search_graph_memory(keywords, entity_type: str = None) -> str:
     keyword_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
     if not keyword_list:
         return "请提供搜索关键词。"
+
+    if strategy == "hybrid":
+        from brain.memory_rag import search_similar, format_rag_context
+        from brain.persona.authority import filter_persona_memories
+        memories = search_similar(
+            (query or " ".join(keyword_list))[:1800], top_k=5,
+            threshold=0.35, allow_model_load=False,
+        )
+        memories = filter_persona_memories(memories)
+        return format_rag_context(memories) or "未找到匹配的记忆。"
+    if strategy != "lexical":
+        raise ValueError("不支持的记忆查询策略")
 
     from brain.graph_memory import unified_search
     data = {"facts": [], "graph_edges": []}
@@ -6157,7 +6179,9 @@ TOOL_EXECUTORS = {
     "delete_memory":   lambda inp: _delete_memory(inp["keyword"], inp.get("category")),
     "list_memories":   lambda inp: _list_memories(),
     "discover_connections": lambda inp: _discover_connections(inp["entity_name"], inp.get("depth", 2)),
-    "search_graph_memory": lambda inp: _search_graph_memory((inp.get("keywords") or inp.get("query") or ""), inp.get("entity_type")),
+    "search_graph_memory": lambda inp: _search_graph_memory(
+        (inp.get("keywords") or inp.get("query") or ""), inp.get("entity_type"),
+        strategy=inp.get("strategy", "lexical"), query=inp.get("query", "")),
     "query_connected_entities": lambda inp: _query_connected_entities(inp["entity_name"], inp.get("depth", 1)),
     "delete_graph_entity": lambda inp: _delete_graph_entity(inp["entity_name"]),
     "set_expression":  lambda inp: _set_expression(inp["emotion"]),

@@ -62,6 +62,7 @@ from pathlib import Path
 from utils import bridge_log
 from brain.mcp import get_all_mcp_tool_definitions
 from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
+from brain.recall_decision import RECALL_READ_TOOLS, prepare_recall, complete_recall
 from brain.web_evidence_cache import (
     WebEvidenceCache,
     is_successful_web_result,
@@ -1818,6 +1819,13 @@ class AgentCore:
         parsed: list[dict] = []
         for tc in tool_calls:
             name = tc.function.name
+            if (getattr(self, "_recall_decision_complete", False)
+                    and name in RECALL_READ_TOOLS):
+                result = "本轮有界回忆准备已经结束，请基于已核验背景回答或自然澄清，不要重复检索。"
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                if on_tool_result:
+                    on_tool_result(name, result, True, 0.0)
+                continue
             if (not getattr(self, "_owner_scope", True)
                     and name not in _GUEST_ALLOWED_TOOLS):
                 result = "当前不是主人会话，此工具不可用。"
@@ -2914,6 +2922,7 @@ class AgentCore:
         self._request_context = request_context
         self._raw_request_text = str(user_message or "")
         self._current_request_text = request_context.routing_text
+        self._recall_decision_complete = False
         # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
         # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
         # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
@@ -2971,6 +2980,13 @@ class AgentCore:
                 frozenset(),
                 "Ollama 本地模型仅使用纯聊天链路",
             )
+        _recall_plan = None
+        try:
+            route, _recall_plan = prepare_recall(
+                self, route, disable_tools=disable_tools, on_activity=on_activity,
+            )
+        except Exception as exc:
+            logger.warning("回忆决策不可用，保留原有路由: %s", type(exc).__name__)
         # 只有"纯自我认知问询"才允许这条确定性回复；混合任务（例如顺带
         # 提到了音乐空间/具身智能的搜索请求）不能被它顶掉用户真正要的活
         # （缺陷 P0-1）。
@@ -3369,7 +3385,9 @@ class AgentCore:
             try:
                 from brain.pre_recall import build_pre_recall_context
                 _pre_text, _pre_mem_count, _pre_self_count = build_pre_recall_context(_pre_query)
-                if _pre_text:
+                if _recall_plan is not None:
+                    _recall_plan.initial_evidence = _pre_text
+                elif _pre_text:
                     messages.append({"role": "system", "content": _pre_text})
                     self._memory_injected_count = int(_pre_mem_count) + int(_pre_self_count)
                     print(
@@ -3386,7 +3404,7 @@ class AgentCore:
         # 避免普通请求被 embedding 模型冷启动拖到 40 秒以上。
         from brain.request_tool_policy import is_external_lookup_request
         _skip_memory_rag = is_external_lookup_request(_pre_query)
-        if (not self._use_local and self._owner_scope
+        if (_recall_plan is None and not self._use_local and self._owner_scope
                 and not self._memory_injected_count
                 and (route.uses_memory_context or "memory_read" in route.capabilities)):
             try:
@@ -4093,6 +4111,28 @@ class AgentCore:
         self._task_run = task_run
         MAX_ITERATIONS = max(MAX_ITERATIONS, task_run.budget.hard_rounds)
         SOFT_LIMIT = task_run.budget.soft_rounds
+
+        if _recall_plan is not None:
+            try:
+                recall_context = complete_recall(
+                    self, _recall_plan, available_tool_names,
+                    on_tool_call=on_tool_call, on_tool_result=on_tool_result, on_activity=on_activity,
+                )
+            except Exception as exc:
+                logger.warning("回忆准备未完成: %s", type(exc).__name__)
+                recall_context = (
+                    "【回忆准备未完成】查询或证据复核发生异常，不能声称已确认记得。"
+                    "请基于用户当前提供的信息回应，必要时自然询问关键背景；不要继续重复查询。"
+                )
+            self._recall_decision_complete = True
+            messages.append({"role": "system", "content": recall_context, "_module": "decision_recall"})
+            closed_memory_tools = RECALL_READ_TOOLS
+            all_tools = [item for item in all_tools if item.get("function", {}).get("name") not in closed_memory_tools]
+            available_tool_names.difference_update(closed_memory_tools)
+            _contract_chain = [name for name in _contract_chain if name not in closed_memory_tools]
+            required_tool = _contract_chain[0] if _contract_chain else None
+            if forced_tool in closed_memory_tools:
+                forced_tool = None
 
         while iteration < MAX_ITERATIONS:
             iteration += 1
