@@ -36,7 +36,7 @@ class DynamicsConfig:
     immersion_decay: float = 0.02
     rupture_decay: float = 0.000035
     repair_decay: float = 0.00008
-    observation_threshold: float = 0.35
+    observation_threshold: float = 0.12
     contact_threshold: float = 0.20
     urgent_threshold: float = 0.80
     guardedness_block: float = 0.55

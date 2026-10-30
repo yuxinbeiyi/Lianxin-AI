@@ -159,12 +159,16 @@ def _grab_vision_panel_frame():
     return False, None
 
 
-def capture_live_camera_frame(camera_index: int = 0, wait_seconds: int = 5):
+def capture_live_camera_frame(camera_index: int = 0, wait_seconds: int = 5, *,
+                              authorized: bool = False):
     """优先复用运行中视觉感知面板的当前帧，避免与已占用的摄像头冲突。
 
     返回 (图片路径, 来源)。来源为 "视觉感知面板" 或 "摄像头"；
     面板正在运行但暂无画面，或面板与摄像头均不可用时返回 (None, "")。
     """
+    if not authorized:
+        print("[观察] 未获本轮摄像头授权，跳过画面采集")
+        return None, ""
     try:
         panel_found, frame = _grab_vision_panel_frame()
     except Exception as exc:

@@ -362,7 +362,7 @@ class EmotionalDebugDialog(QDialog):
         grid.addWidget(self._param_accel_delay, 1, 1)
         self._param_thresholds = {}
         for row, (key, label, value) in enumerate((
-            ("observation_threshold", "开始留意", 35),
+            ("observation_threshold", "开始留意", 12),
             ("contact_threshold", "产生联系动机", 20),
                                ("urgent_threshold", "强联系动机", 80),
         ), start=2):
@@ -675,7 +675,7 @@ class EmotionalDebugDialog(QDialog):
             from brain.emotional import get_manager as _get_emotion_mgr
             self._param_connection_rate.setValue(0.025)
             self._param_accel_delay.setValue(90)
-            for key, value in (("observation_threshold", 35),
+            for key, value in (("observation_threshold", 12),
                                ("contact_threshold", 20),
                                ("urgent_threshold", 80)):
                 self._param_thresholds[key].setValue(value)
@@ -687,7 +687,7 @@ class EmotionalDebugDialog(QDialog):
                 connection_rate=0.00042,
                 connection_accel_delay=90,
                 immersion_decay=0.02,
-                observation_threshold=0.35,
+                observation_threshold=0.12,
                 contact_threshold=0.20,
                 urgent_threshold=0.80,
             )

@@ -143,12 +143,15 @@ def _get_proxies() -> dict | None:
 
 
 
-def set_cross_session_context(session_id: int, history_mgr, model: str = ""):
+def set_cross_session_context(session_id: int, history_mgr, model: str = "", *,
+                              request_text: str = "", forced_tool: str | None = None):
     """设置当前线程的跨端搜索上下文（供 search_cross_session 工具使用）。"""
     _tool_context.cross_session = {
         "session_id": session_id,
         "history_mgr": history_mgr,
         "model": str(model or ""),
+        "request_text": request_text,
+        "forced_tool": forced_tool,
     }
 
 
@@ -4859,8 +4862,13 @@ def query_qq_friend_list(refresh: bool = False, keyword: str = "") -> str:
         return f"获取 QQ 好友列表失败：{e}"
 
 def capture_from_camera():
+    from brain.request_tool_policy import CAMERA_DENIAL, camera_access_requested
+    context = getattr(_tool_context, "cross_session", {}) or {}
+    authorized = camera_access_requested(context.get("request_text", ""), context.get("forced_tool"))
+    if not authorized:
+        return CAMERA_DENIAL
     from brain.observation import capture_live_camera_frame, analyze_observation
-    path, source = capture_live_camera_frame()
+    path, source = capture_live_camera_frame(authorized=authorized)
     if not path:
         return _CAMERA_CAPTURE_FAIL
     desc = analyze_observation(path, source or "摄像头")
@@ -4875,9 +4883,14 @@ def look_at_camera():
     优先复用视觉感知面板的当前帧（避免与已占用的摄像头冲突），
     面板不可用时回退到 capture_live_camera_frame 打开摄像头。
     """
+    from brain.request_tool_policy import CAMERA_DENIAL, camera_access_requested
+    context = getattr(_tool_context, "cross_session", {}) or {}
+    authorized = camera_access_requested(context.get("request_text", ""), context.get("forced_tool"))
+    if not authorized:
+        return CAMERA_DENIAL
     print("[视觉工具] look_at_camera 开始执行")
     from brain.observation import capture_live_camera_frame, analyze_observation
-    path, source = capture_live_camera_frame()
+    path, source = capture_live_camera_frame(authorized=authorized)
     print(f"[视觉工具] look_at_camera 获取画面: {path}（来源 {source}）")
     if not path:
         return _CAMERA_CAPTURE_FAIL

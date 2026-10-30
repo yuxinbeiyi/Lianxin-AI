@@ -1023,7 +1023,7 @@ function ChatWorkspace({
   }>(() => {
     try {
       return JSON.parse(
-        window.localStorage.getItem("lianxin-tool-selection") || "{}",
+        window.sessionStorage.getItem("lianxin-tool-selection") || "{}",
       );
     } catch {
       return {};
@@ -1259,6 +1259,28 @@ function ChatWorkspace({
         />
       ) : null}
       <div className="composer-wrap">
+        {(toolSelection.forcedTool || toolSelection.preferredTool) && (
+          <div className="attachment-preview">
+            <span>
+              仅下一条消息：{toolSelection.forcedTool ? "强制使用" : "建议使用"}
+              {toolSelection.forcedTool || toolSelection.preferredTool}
+              {toolSelection.forcedTool &&
+                ["look_at_camera", "capture_from_camera"].includes(toolSelection.forcedTool)
+                ? "（发送即授权本轮拍照）"
+                : ""}
+            </span>
+            <button
+              type="button"
+              className="composer-tool"
+              onClick={() => {
+                window.sessionStorage.removeItem("lianxin-tool-selection");
+                window.dispatchEvent(new CustomEvent("tool-selection", { detail: {} }));
+              }}
+            >
+              取消工具选择
+            </button>
+          </div>
+        )}
         <div
           className="composer"
           onDragOver={(event) => event.preventDefault()}
@@ -3775,6 +3797,9 @@ export function App() {
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
   ) => {
+    window.sessionStorage.removeItem("lianxin-tool-selection");
+    window.localStorage.removeItem("lianxin-tool-selection");
+    window.dispatchEvent(new CustomEvent("tool-selection", { detail: {} }));
     const turnGeneration = ++turnGenerationRef.current;
     cancelSegments();
     pendingSendsRef.current += 1;
@@ -4070,7 +4095,7 @@ export function App() {
   const selectedTools = (() => {
     try {
       return JSON.parse(
-        window.localStorage.getItem("lianxin-tool-selection") || "{}",
+        window.sessionStorage.getItem("lianxin-tool-selection") || "{}",
       );
     } catch {
       return {};
@@ -4137,7 +4162,7 @@ export function App() {
       <ToolPanel
         selected={selectedTools}
         onSelect={(selection) => {
-          window.localStorage.setItem(
+          window.sessionStorage.setItem(
             "lianxin-tool-selection",
             JSON.stringify(selection),
           );

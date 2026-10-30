@@ -690,17 +690,20 @@ def has_hard_task_signal(text: str) -> bool:
 
 def classify_request(message: str, *, recent_messages: Iterable[dict] = (),
                      forced_tool: str | None = None,
+                     preferred_tool: str | None = None,
                      session_state: ToolSessionState | None = None) -> RequestRoute:
     request_context = parse_request_context(message)
     text = request_context.routing_text
     lowered = text.lower()
-    if forced_tool:
+    selected_tool = forced_tool or preferred_tool
+    if selected_tool:
         capabilities = {
             capability for capability, names in CAPABILITY_TO_TOOLS.items()
-            if forced_tool in names
+            if selected_tool in names
         }
         return RequestRoute(
-            RequestMode.TASK_DIRECT, frozenset(capabilities), "用户从界面手动指定工具"
+            RequestMode.TASK_DIRECT, frozenset(capabilities),
+            "用户从界面强制指定工具" if forced_tool else "用户从界面建议工具（非强制、非摄像头授权）"
         )
 
     if session_state and session_state.active and _CONTINUATION_RE.search(text):

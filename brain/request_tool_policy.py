@@ -89,6 +89,37 @@ def _normalized_request_text(text: str) -> str:
     return parse_request_context(text).routing_text
 
 
+CAMERA_TOOLS = frozenset({"capture_from_camera", "look_at_camera"})
+CAMERA_DENIAL = "本轮未获摄像头授权，已阻止拍照。只有明确要求查看摄像头画面或本轮强制选择相机工具时才可采集；普通聊天和报时不需要摄像头。"
+
+
+def camera_access_requested(text: str, forced_tool: str | None = None) -> bool:
+    request = _normalized_request_text(text).lower()
+    if re.search(r"(?:不要|别|不许|禁止|关闭|停用).{0,16}(?:摄像头|相机|拍照|拍摄|camera|look_at_camera|capture_from_camera)", request):
+        return False
+    if forced_tool in CAMERA_TOOLS:
+        return True
+    if re.search(r"为什么|为何|怎么|如何|是否|是不是|会不会|修复|排查|日志|权限|之前|刚才", request):
+        return False
+    return bool(re.search(
+        r"(?:打开|开启|调用|使用|用|通过|查看|看看).{0,12}(?:摄像头|相机|look_at_camera|capture_from_camera)"
+        r"\s*(?:$|[，。？！?!]|画面|看看|看一下|拍|抓拍|帮我|给我)"
+        r"|(?:摄像头|相机).{0,12}(?:拍照|拍一张|拍张|看看|看一下|查看|抓拍)"
+        r"|(?:看看|看一下|瞧瞧)(?:你面前|我面前)"
+        r"|(?:看看|看一下|瞧瞧)我(?:$|[，。？！?!]|(?:的)?(?:脸|表情|穿搭|样子)|穿)"
+        r"|(?:给我|帮我|请).{0,6}(?:拍张照|拍一张照|拍照)",
+        request,
+    ))
+
+
+def filter_camera_tools(definitions: Iterable[dict], text: str,
+                        forced_tool: str | None = None) -> list[dict]:
+    if camera_access_requested(text, forced_tool):
+        return list(definitions)
+    return [item for item in definitions
+            if item.get("function", {}).get("name", "") not in CAMERA_TOOLS]
+
+
 # “联网”需要词边界保护：描述性文本中的“物联网”“互联网”包含“联网”
 # 二字，曾把普通图片描述误判成联网配置变更请求，导致回复被守卫替换。
 _NETWORK_CONTEXT_RE = re.compile(
@@ -183,7 +214,7 @@ def request_tool_allowlist(text: str) -> set[str] | None:
 
 def filter_definitions_for_request(definitions: Iterable[dict], text: str) -> list[dict]:
     """在工具定义注入前应用请求级白名单。"""
-    definitions = list(definitions)
+    definitions = filter_camera_tools(definitions, text)
     browser_enabled = True
     try:
         from config import get_browser_config
@@ -204,10 +235,14 @@ def filter_definitions_for_request(definitions: Iterable[dict], text: str) -> li
 
 
 def authorize_tool_call(name: str, args: dict, request_text: str,
-                        audit: Iterable[dict] | None = None) -> tuple[bool, str]:
+                        audit: Iterable[dict] | None = None, *,
+                        forced_tool: str | None = None) -> tuple[bool, str]:
     """执行前进行确定性授权，返回 ``(允许, 给模型的原因)``。"""
     request = _normalized_request_text(request_text)
     lowered = request.lower()
+
+    if name in CAMERA_TOOLS and not camera_access_requested(request_text, forced_tool):
+        return False, CAMERA_DENIAL
 
     if name in BROWSER_TOOLS:
         try:

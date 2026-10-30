@@ -1647,32 +1647,31 @@ class AgentCore:
 
         last_reply = self._load_current_session_last_time() or self._last_reply_time
 
-        if last_reply is not None:
-            diff = (now - last_reply).total_seconds()
-            use_minute = diff > 15 * 60
-        else:
-            use_minute = True
-
         weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         weekday = weekday_names[now.weekday()]
         date_str = now.strftime("%Y年%m月%d日")
-        time_str = now.strftime("%H:%M") if use_minute else now.strftime("%H:00")
+        time_str = now.strftime("%H:%M:%S")
+        time_policy = (
+            f"\n来源：本机系统时钟，时区 {now.astimezone().strftime('%Z %z')}。"
+            "这是本次请求的当前时间；历史对话、摘要和旧截图中的时间不是现在。"
+            "时长只能由真实起止时间计算；没有时间戳时不要编造精确到分秒的耗时。"
+        )
 
         route = getattr(self, "_request_route", None)
         if route is not None and route.mode == RequestMode.CHAT_LIGHT:
-            return {"role": "system", "content": f"【当前时刻】{date_str} {time_str} {weekday}",
+            return {"role": "system", "content": f"【当前时刻】{date_str} {time_str} {weekday}" + time_policy,
                     "_module": "time"}
 
         lunar_info = self._get_lunar_info(now)
         holiday_info = self._get_holiday_info(now)
 
-        realtime = f"【实时时间】\n公历：{date_str} {time_str} {weekday}"
+        realtime = f"【实时时间】\n公历：{date_str} {time_str} {weekday}" + time_policy
         if lunar_info:
             realtime += f"\n农历：{lunar_info}"
         if holiday_info:
             realtime += f"\n{holiday_info}"
         if not self._use_local:
-            realtime += "\n注意：涉及时间、日期、节气、节日相关的问题时，必须先调用 get_current_time 工具获取最新信息，不要依赖记忆或猜测。"
+            realtime += "\n用户明确询问当前时间、日期、节气或节日时，用 get_current_time 核实；普通闲聊可依据本轮时钟，不必为报时截图或拍照。"
         try:
             from brain.time_sense import build_time_sense_block
             sense = build_time_sense_block(now, last_reply)
@@ -1947,7 +1946,8 @@ class AgentCore:
             with self._tool_audit_lock:
                 audit_snapshot = list(self._request_tool_audit)
             allowed, denial = authorize_tool_call(
-                name, args, getattr(self, "_current_request_text", ""), audit_snapshot
+                name, args, getattr(self, "_current_request_text", ""), audit_snapshot,
+                forced_tool=getattr(self, "_manual_forced_tool", None),
             )
             if not allowed:
                 event = {"name": name, "args": args, "result": denial,
@@ -2176,7 +2176,9 @@ class AgentCore:
         import time as _perf_time
         def _run_one_impl(item: dict):
             """执行单个工具调用（在 worker 线程内）。"""
-            _set_ctx(self._session_id, self._history_mgr, self._model)
+            _set_ctx(self._session_id, self._history_mgr, self._model,
+                     request_text=getattr(self, "_current_request_text", ""),
+                     forced_tool=getattr(self, "_manual_forced_tool", None))
             name, args = item["name"], item["args"]
             reread_targets = tuple(getattr(self, "_web_reread_target_urls", ()) or ())
             if name.startswith("fetch_webpage") and reread_targets:
@@ -2953,7 +2955,8 @@ class AgentCore:
         route = classify_request(
             user_message,
             recent_messages=getattr(self, "history", [])[-6:],
-            forced_tool=forced_tool or preferred_tool,
+            forced_tool=forced_tool,
+            preferred_tool=preferred_tool,
             session_state=self._tool_session_state,
         )
         if on_activity:
@@ -3167,7 +3170,6 @@ class AgentCore:
                 return
             on_progress(text)
 
-        # ── 注入实时时间信息（自适应精度：间隔>15分钟用分钟级，否则小时级） ──
         messages.append(self._build_realtime_message())
 
         # ── 跨天/长间隔时注入最近对话时间线，帮助莲心重建时间线 ──
@@ -3741,6 +3743,9 @@ class AgentCore:
                 logger.debug("契约自检失败: %s", _coverage_exc)
             # 长任务执行引擎已开放时，明确要求把活交给它，而不是用普通工具
             # 一步步硬做（后者会拖很久，还占着对话线程）。
+            from brain.request_tool_policy import filter_camera_tools
+            all_tools = filter_camera_tools(
+                all_tools, self._current_request_text, manual_forced_tool)
             _execution_tool_names = {"run_execution_task", "resume_execution_task"}
             if "execution" in route.capabilities and any(
                 item.get("function", {}).get("name", "") in _execution_tool_names
@@ -4195,6 +4200,13 @@ class AgentCore:
                         continue
                     forced_tool = _contract_name
                     break
+
+            from brain.request_tool_policy import filter_camera_tools
+            all_tools = filter_camera_tools(
+                all_tools, self._current_request_text, manual_forced_tool)
+            for message in messages:
+                if message.get("_module") == "time":
+                    message.update(self._build_realtime_message())
 
             # 确定 tool_choice（熔断器可强制设为 "none"）
             forcing_text_response = bool(_force_text_response)

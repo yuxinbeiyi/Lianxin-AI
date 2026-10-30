@@ -201,7 +201,8 @@ class ProactiveWorker(QThread):
             source = "截图"
         elif self._observation_mode == "camera":
             print("[观察-调试] → 调用 capture_live_camera_frame()...")
-            path, source = capture_live_camera_frame(self._camera_index, self._camera_wait)
+            path, source = capture_live_camera_frame(
+                self._camera_index, self._camera_wait, authorized=True)
             print(f"[观察-调试] capture_live_camera_frame 返回: {path}（来源 {source}）")
             if not source:
                 source = "摄像头"
