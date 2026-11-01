@@ -62,7 +62,7 @@ from pathlib import Path
 from utils import bridge_log
 from brain.mcp import get_all_mcp_tool_definitions
 from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
-from brain.recall_decision import RECALL_READ_TOOLS, prepare_recall, complete_recall
+from brain.recall_decision import RECALL_READ_TOOLS, prepare_recall, complete_recall, guard_recall_reply
 from brain.web_evidence_cache import (
     WebEvidenceCache,
     is_successful_web_result,
@@ -2923,6 +2923,7 @@ class AgentCore:
         self._raw_request_text = str(user_message or "")
         self._current_request_text = request_context.routing_text
         self._recall_decision_complete = False
+        self._recall_outcome = None
         # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
         # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
         # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
@@ -4711,6 +4712,7 @@ class AgentCore:
                             fallback="刚才没有生成出可显示的内容，请再发送一次。")
                     final_content = content
 
+                final_content = guard_recall_reply(final_content, getattr(self, "_recall_outcome", None))
                 # ── 回忆优先守卫：未查证就断言“没有”必须先查证再重答（见设计文档 L5）──
                 if (_recall_deny_retry_count < 1
                         and "search_graph_memory" in available_tool_names

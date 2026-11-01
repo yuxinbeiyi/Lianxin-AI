@@ -570,7 +570,9 @@ def _lexical_memory_results(
     from brain.graph_memory import _get_conn
     conn = _get_conn()
     text = " ".join(str(query or "").split()).strip()
-    terms = []
+    from brain.memory_query import recall_subjects
+    subjects = recall_subjects(text)
+    terms = list(subjects)
     for term in re.findall(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", text):
         terms.append(term)
         if re.fullmatch(r"[\u4e00-\u9fff]+", term) and len(term) > 2:
@@ -579,10 +581,12 @@ def _lexical_memory_results(
         terms.append(text)
     if not terms:
         return []
+    terms = list(dict.fromkeys(terms))[:16]
+    candidates = {}
     # Prefer the indexed channel.  SQLite builds without FTS5 continue below
     # with the same parameterized LIKE fallback used by older installations.
     try:
-        match_terms = [term.replace('"', ' ') for term in terms[:8] if term.strip()]
+        match_terms = [term.replace('"', ' ') for term in terms if term.strip()]
         match_query = " OR ".join(f'"{term}"' for term in match_terms)
         fts_sql = """SELECT f.id,f.content,f.category,f.source,f.strength,f.created_at,
                     f.updated_at,f.source_channel,f.quality_score,f.review_status,f.access_count,
@@ -595,38 +599,39 @@ def _lexical_memory_results(
             fts_params.append(category)
         fts_params.append(max(1, int(limit)))
         fts_rows = conn.execute(fts_sql + " ORDER BY rank LIMIT ?", fts_params).fetchall()
-        if fts_rows:
-            output = []
-            for index, row in enumerate(fts_rows):
-                item = dict(row)
-                item.update({"memory_id": int(row["id"]), "semantic_similarity": 0.0,
-                             "evidence_count": 0, "source_table": "memory_facts",
-                             "keyword_channel": "fts5"})
-                output.append((1.0 / (index + 1), item))
-            return output
+        for row in fts_rows:
+            candidates[int(row["id"])] = {**dict(row), "keyword_channel": "fts5"}
     except Exception as exc:
         logger.debug("FTS5 memory search unavailable, using LIKE fallback: %s", exc)
 
     where = ["status='active'"]
     params: list[str] = []
     clauses = []
-    for term in terms[:8]:
+    for term in terms:
         clauses.append("content LIKE ?")
         params.append(f"%{term}%")
     where.append("(" + " OR ".join(clauses) + ")")
     if category:
         where.append("category=?")
         params.append(category)
+    ordering = "updated_at DESC"
+    if subjects:
+        ordering = "CASE WHEN " + " OR ".join("content LIKE ?" for subject in subjects) + " THEN 0 ELSE 1 END, " + ordering
+        params.extend(f"%{subject}%" for subject in subjects)
     rows = conn.execute(
         """SELECT id,content,category,source,strength,created_at,updated_at,
                   source_channel,quality_score,review_status,access_count
-           FROM memory_facts WHERE """ + " AND ".join(where) + " ORDER BY updated_at DESC LIMIT ?""",
+           FROM memory_facts WHERE """ + " AND ".join(where) + " ORDER BY " + ordering + " LIMIT ?",
         params + [max(1, int(limit))],
     ).fetchall()
+    for row in rows:
+        candidates.setdefault(int(row["id"]), {**dict(row), "keyword_channel": "like"})
+    ranked = sorted(candidates.values(), key=lambda item: sum(
+        subject.casefold() in item["content"].casefold() for subject in subjects
+    ), reverse=True)
     output = []
-    for index, row in enumerate(rows):
-        item = dict(row)
-        item.update({"memory_id": int(row["id"]), "semantic_similarity": 0.0,
+    for index, item in enumerate(ranked[:max(1, int(limit))]):
+        item.update({"memory_id": int(item["id"]), "semantic_similarity": 0.0,
                      "evidence_count": 0, "source_table": "memory_facts"})
         output.append((1.0 / (index + 1), item))
     return output
@@ -731,9 +736,12 @@ def format_rag_context(memories: list[tuple[float, dict]]) -> str:
         source = mem.get("source_channel") or mem.get("source") or "unknown"
         updated = mem.get("updated_at") or "时间未知"
         semantic = mem.get("semantic_similarity", sim)
+        relevance = f"语义相关:{semantic:.0%}"
+        if mem.get("keyword_channel") and "vector" not in mem.get("retrieval_channels", []):
+            relevance = "关键词命中，未计算向量相似度"
         lines.append(
             f"· [记忆#{mem.get('memory_id', '?')}] {mem['content']} "
-            f"(语义相关:{semantic:.0%}, 更新:{updated}, 来源:{source}, "
+            f"({relevance}, 更新:{updated}, 来源:{source}, "
             f"证据:{mem.get('evidence_count', 0)}条, "
             f"质量:{float(mem.get('quality_score', 0.5)):.0%})"
         )

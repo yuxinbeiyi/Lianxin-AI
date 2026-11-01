@@ -1230,7 +1230,8 @@ TOOL_DEFINITIONS = [
                         "items": {"type": "string", "enum": ["desktop", "qq_private", "qq_group", "wechat_private", "wechat_group"]},
                         "description": "可选来源端；未明确指定端时不要填写"
                     },
-                    "limit": {"type": "integer", "description": "最多返回消息数，默认20，最大50"}
+                    "limit": {"type": "integer", "description": "最多返回消息数，默认20，最大50"},
+                    "exclude_current_session": {"type": "boolean", "description": "查其他历史会话时设为true，避免当前测试与助手旧回复混入证据"}
                 },
                 "additionalProperties": False
             }
@@ -5116,7 +5117,7 @@ def search_cross_session(keyword: str, limit: int = 5) -> str:
 
 def search_conversation_history(query: str = "", mode: str = "recent",
                                 time_range: str = "7d", channels=None,
-                                limit: int = 20) -> str:
+                                limit: int = 20, exclude_current_session: bool = False) -> str:
     """按真实时间和来源搜索主人的统一会话历史。"""
     ctx = getattr(_tool_context, "cross_session", None)
     if ctx is None:
@@ -5137,10 +5138,12 @@ def search_conversation_history(query: str = "", mode: str = "recent",
     try:
         history_mgr = ctx["history_mgr"]
         current_session_id = int(ctx["session_id"])
+        search_options = {"exclude_session_id": current_session_id} if exclude_current_session else {}
         rows = history_mgr.search_conversation_history(
             query=query, mode=mode, time_range=time_range,
             channels=selected_channels, owner_only=True,
             limit=min(max(int(limit), 1), 50),
+            **search_options,
         )
         # 当前问题在工具执行前已经入库，不应作为“历史结果”返回。
         if rows and rows[-1].get("session_id") == current_session_id \
@@ -5153,9 +5156,12 @@ def search_conversation_history(query: str = "", mode: str = "recent",
         lines = [f"找到 {len(rows)} 条真实聊天记录（按时间顺序）："]
         for row in rows:
             speaker = "莲心" if row.get("role") == "assistant" else "用户"
-            content = (row.get("content") or "").strip()[:300]
+            content = (row.get("content") or "").strip()
+            position = content.find(query) if mode == "keyword" and query else 0
+            start = max(0, position - 80)
+            content = content[start:start + 500]
             lines.append(
-                f"[{row.get('timestamp', '')} | {row.get('channel', 'unknown')} | {speaker}] {content}"
+                f"[历史消息#{row.get('id', '?')} | {row.get('timestamp', '')} | {row.get('channel', 'unknown')} | {speaker}] {content}"
             )
         lines.append("请依据时间回答；不要把更早记录描述成最近发生。")
         return "\n".join(lines)
@@ -6159,7 +6165,8 @@ TOOL_EXECUTORS = {
     "capture_desktop": lambda inp: capture_desktop(),
     "search_conversation_history": lambda inp: search_conversation_history(
         inp.get("query", ""), inp.get("mode", "recent"),
-        inp.get("time_range", "7d"), inp.get("channels"), inp.get("limit", 20)
+        inp.get("time_range", "7d"), inp.get("channels"), inp.get("limit", 20),
+        inp.get("exclude_current_session") is True,
     ),
     "search_cross_session": lambda inp: search_cross_session(inp["keyword"], inp.get("limit", 5)),
     "query_recent_contacts": lambda inp: query_recent_contacts(

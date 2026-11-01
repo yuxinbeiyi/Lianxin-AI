@@ -127,12 +127,15 @@ def cheap_recall(query: str, *, limit: int = _MAX_HITS, scan: int = 40) -> "list
         return []
 
     latin, bigrams = _relevance_terms_split(value)
+    from brain.memory_query import recall_subjects
+    subjects = recall_subjects(value)
     hits: list[dict] = []
     for _score, item in rows:
         content = _text(item.get("content"))
         if not content:
             continue
-        if not _is_relevant(content, latin, bigrams):
+        if not (any(subject.casefold() in content.casefold() for subject in subjects)
+                or _is_relevant(content, latin, bigrams)):
             # FTS 的 CJK 分词与查询分词不一致时会产生噪声命中，这里补一道相关性过滤。
             continue
         hits.append(item)
