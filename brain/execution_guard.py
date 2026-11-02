@@ -23,7 +23,7 @@ def _succeeded(audit: Iterable[dict], names: set[str]) -> bool:
             continue
         if item.get("is_error", False) or item.get("authorized") is False:
             continue
-        if item.get("name") in _WEB_READ_TOOLS:
+        if item.get("name") in _WEB_READ_TOOLS | {"get_weather"}:
             from brain.tool_usage import classify_tool_result
             if classify_tool_result(item.get("result", "")) not in {"success", "cached"}:
                 continue
@@ -112,11 +112,13 @@ def validate_execution_claims(content: str, request_text: str, audit: Iterable[d
     # A memory lookup can identify the city, but it cannot establish live weather.
     if "weather" in capability_set:
         weather_facts = re.search(
-            r"(?:\d+\s*(?:℃|度)|降水|雷阵雨|暴雨|大雨|中雨|小雨|晴转|阴转|[东南西北]风)",
+            r"(?:\d+\s*(?:℃|度)|降水|雷阵雨|暴雨|大雨|中雨|小雨|晴转|阴转|[东南西北]风|"
+            r"(?:最近|这边|当地).{0,8}(?:确实|的确).{0,6}(?:反常|异常)|"
+            r"(?:我给你|我来|我帮你|我这就|马上).{0,6}查(?:查|一下|天气))",
             text,
         )
         if weather_facts and not _succeeded(events, {"get_weather"}):
-            return "我已取得地点相关的记忆，但本轮没有成功查询实时天气，不能直接给出温度、降雨或风力结论。"
+            return "这轮还没有成功查询实时天气，不能把体感或历史信息当成当地实况；需要先确认当前城市，再查天气。"
 
     if mode == "TASK_DISCOVERY" or "web_search" in capability_set:
         search_claim = re.search(r"(?:我|已经|刚刚|这次).{0,12}(?:搜了一圈|搜索了|检索到|查到)", text)

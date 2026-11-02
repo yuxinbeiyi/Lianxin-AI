@@ -14,6 +14,7 @@ from brain.decision_client import DecisionClient, DecisionError
 from brain.memory_query import recall_followup, recall_subjects, recall_terms
 from brain.request_context import parse_request_context
 from brain.request_router import CAPABILITY_TO_TOOLS, RequestMode, RequestRoute, is_verifiable_recall_request
+from brain.weather_background import WeatherRecallPlan, weather_background_state, weather_location_followup
 
 
 logger = logging.getLogger("RecallDecision")
@@ -29,6 +30,9 @@ NEXT_STEP = {
             "涉及未补齐的共同经历、先前提及的人事或那个项目，优先查询内部记忆；"
             "已有足够背景则直接回复。聊天历史仅是线索，助手旧回复不是可靠事实证据。"
             "recall_subjects是从用户原话解析的查询对象，不是已确认事实。"
+            "purpose为weather_location时，先检查confirmed_cities和candidate_cities；"
+            "已有当前城市无需重复查询；旧居住地只可确认，不能当作用户现在的位置。"
+            "缺少current_city且无地点线索时，先memory_read检索用户所在地，不要直接问城市或检索天气这个词。"
             "用户问对他有无印象、指出健忘或说以前提过时，应沿用查询对象补查，不把抱怨当检索主题。"
         ),
         "criteria": {
@@ -130,6 +134,20 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
             continue
         recent.append({"role": message["role"], "content": content[:360]})
     state = {"message": context.active_text, "recent_messages": recent[-8:]}
+    weather_state = weather_background_state(context.active_text, recent[-8:], [])
+    location_confirmation = weather_location_followup(
+        context.active_text, getattr(agent, "_weather_location_topic", {}),
+        getattr(agent, "_session_id", None), recent[-8:])
+    if location_confirmation:
+        weather_state = location_confirmation
+    if weather_state is not None:
+        try:
+            from brain.current_state import list_current_states
+            if not location_confirmation:
+                weather_state = weather_background_state(context.active_text, recent[-8:], list_current_states())
+        except Exception:
+            logger.debug("Current location state unavailable", exc_info=True)
+        state.update(weather_state)
     subjects = recall_subjects(context.active_text)
     topic = getattr(agent, "_recall_topic", {})
     session_id = getattr(agent, "_session_id", None)
@@ -161,6 +179,11 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
         _record(agent, "decision_fallback", reason=str(exc), provider=config.get("provider", "api"))
         return route, None
     _record(agent, "decision_route", choice=answer["choice"], probabilities=answer["probabilities"])
+    if weather_state is not None:
+        agent._weather_location_topic = {}
+        upgraded = RequestRoute(RequestMode.CHAT_MEMORY, route.capabilities | {"memory_read", "weather"},
+                                "天气对话：建议补齐当前城市，不强制执行")
+        return upgraded, WeatherRecallPlan(client, state, answer["choice"])
     recall_check = bool(subjects and re.search(r"印象|健忘|记得|忘了|说过|提过|聊过", context.active_text))
     if (answer["choice"] != "memory_read" and not route.uses_memory_context
             and not recall_check):
