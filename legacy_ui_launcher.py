@@ -17,13 +17,13 @@ import urllib.error
 
 
 WEBENGINE_FEATURES = {
-    "ripple", "memory-constellation", "study-room", "time-capsule", "data-tide",
+    "ripple", "memory-constellation", "study-room", "time-capsule", "data-tide", "live2d",
 }
 
 
 def _configure_webengine(feature: str) -> None:
     """Configure Qt WebEngine before importing QApplication on Windows."""
-    if feature not in WEBENGINE_FEATURES:
+    if feature not in WEBENGINE_FEATURES or feature == "live2d":
         return
 
     # The constellation pages use Canvas and remain functional without GPU
@@ -130,7 +130,7 @@ def build_window(feature: str):
     if feature == "video-call":
         from gui.video_call_window import VideoCallWindow
         return VideoCallWindow()
-    if feature == "galgame":
+    if feature in ("galgame", "live2d"):
         from gui.galgame.galgame_dialog import GalgameDialog
         return GalgameDialog()
     raise ValueError(f"unsupported legacy feature: {feature}")
@@ -168,7 +168,7 @@ def main() -> int:
             loading.setMinimumSize(280, 110)
             loading.setStyleSheet("QWidget { background: #151B2B; color: #E6EDF7; } QLabel { padding: 18px; font-size: 14px; }")
             loading_layout = QVBoxLayout(loading)
-            display_name = "桌宠模式" if feature == "galgame" else feature
+            display_name = {"galgame": "桌宠模式", "live2d": "莲心 Live2D"}.get(feature, feature)
             loading_label = QLabel(f"正在打开 {display_name}…")
             loading_label.setAlignment(Qt.AlignCenter)
             loading_layout.addWidget(loading_label)
@@ -185,7 +185,7 @@ def main() -> int:
                     window.raise_()
                     window.activateWindow()
 
-                    if feature == "galgame":
+                    if feature in ("galgame", "live2d"):
                         from PyQt5.QtCore import QObject, pyqtSignal
                         from gui.galgame.tachie_window import TachieWindow
 
@@ -216,7 +216,10 @@ def main() -> int:
                                             headers={"Content-Type": "application/json"},
                                             method="POST",
                                         )
-                                        with urllib.request.urlopen(tts_request, timeout=10):
+                                        try:
+                                            with urllib.request.urlopen(tts_request, timeout=10):
+                                                pass
+                                        except (OSError, ValueError):
                                             pass
                                     self.reply_ready.emit(reply)
                                 except (OSError, ValueError, KeyError) as exc:
@@ -241,6 +244,17 @@ def main() -> int:
 
                             def _poll(self):
                                 try:
+                                    with urllib.request.urlopen("http://127.0.0.1:8766/api/tts/status", timeout=2) as response:
+                                        tts = json.loads(response.read().decode("utf-8"))
+                                    speaking = bool(tts.get("speaking"))
+                                    if speaking != self._tts_speaking:
+                                        self._tts_speaking = speaking
+                                        if speaking:
+                                            self._tachie.stop_breathing()
+                                            self._tachie.start_talking()
+                                        else:
+                                            self._tachie.stop_talking()
+                                            self._tachie.start_breathing()
                                     with urllib.request.urlopen("http://127.0.0.1:8766/api/app/status", timeout=2) as response:
                                         status = json.loads(response.read().decode("utf-8"))
                                     sid = status.get("sessionId")
@@ -273,22 +287,19 @@ def main() -> int:
                                         if content != self._last_text:
                                             self._last_text = content
                                             self._win.show_reply(content)
-                                    with urllib.request.urlopen("http://127.0.0.1:8766/api/tts/status", timeout=2) as response:
-                                        tts = json.loads(response.read().decode("utf-8"))
-                                    speaking = bool(tts.get("speaking"))
-                                    if speaking != self._tts_speaking:
-                                        self._tts_speaking = speaking
-                                        if speaking:
-                                            self._tachie.stop_breathing()
-                                            self._tachie.start_talking()
-                                        else:
-                                            self._tachie.stop_talking()
-                                            self._tachie.start_breathing()
+                                            if feature == "live2d":
+                                                self._tachie.preview_reply(content)
                                 except Exception:
                                     pass
 
                         assets_dir = Path(__file__).resolve().parent / "gui" / "galgame" / "assets"
-                        tachie = TachieWindow(assets_dir)
+                        if feature == "live2d":
+                            from gui.galgame.live2d_window import Live2DTachieWindow
+                            tachie = Live2DTachieWindow(assets_dir)
+                            tachie.load_error.connect(lambda message: window.set_status(f"Live2D 加载失败：{message}"))
+                            tachie.model_ready.connect(lambda: window.set_status("Live2D 已就绪"))
+                        else:
+                            tachie = TachieWindow(assets_dir)
                         bridge = GalgameBridge(tachie)
                         poller = GalgamePoller(window, tachie)
 
@@ -314,6 +325,8 @@ def main() -> int:
                         def _on_reply(text: str):
                             window.show_reply(text)
                             poller.note_displayed(text)
+                            if feature == "live2d":
+                                tachie.preview_reply(text)
 
                         bridge.reply_ready.connect(_on_reply)
                         bridge.error.connect(lambda message: window.set_status(f"聊天失败：{message}"))
@@ -323,6 +336,8 @@ def main() -> int:
                         tachie.close_requested.connect(window.close)
                         tachie.close_requested.connect(app.quit)
                         tachie.position_changed.connect(lambda x, y: _move_dialog())
+                        window.settings_changed.connect(tachie.apply_settings)
+                        app.aboutToQuit.connect(tachie.close)
                         QTimer.singleShot(80, _place_bottom_right)
                         # Keep both top-level widgets and the bridge alive for the app lifetime.
                         window._lianxin_galgame_objects = (tachie, bridge, poller)

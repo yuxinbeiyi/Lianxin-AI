@@ -265,7 +265,7 @@ export type LegacyFeature =
   | "ripple" | "persona" | "memory-constellation" | "prism-memory"
   | "history" | "note" | "workflow" | "duty" | "proactive" | "alarm" | "reminder"
   | "settings" | "api" | "network" | "capability" | "vision" | "voice-stt" | "sound"
-  | "qq" | "wechat" | "study-room" | "time-capsule" | "data-tide" | "camera" | "galgame"
+  | "qq" | "wechat" | "study-room" | "time-capsule" | "data-tide" | "camera" | "galgame" | "live2d"
   | "video-call";
 
 export type VisionState = {

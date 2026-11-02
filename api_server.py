@@ -154,7 +154,7 @@ LEGACY_FEATURES = {
     "history", "note", "workflow", "duty", "proactive", "alarm", "reminder",
     "settings", "api", "network", "capability", "voice-stt", "sound",
     "qq", "wechat", "study-room", "time-capsule", "data-tide", "galgame",
-    "video-call",
+    "video-call", "live2d",
 }
 WEBENGINE_FEATURES = {"ripple", "memory-constellation", "study-room", "time-capsule", "data-tide"}
 _CONSTELLATION_BRIDGE_SHIM = """<script>
@@ -3591,7 +3591,7 @@ class LianxinBridge:
     def open_legacy_window(self, feature: str) -> dict:
         if feature not in LEGACY_FEATURES:
             raise ValueError(f"不支持的原版界面: {feature}")
-        if feature in WEBENGINE_FEATURES:
+        if feature in WEBENGINE_FEATURES or feature == "live2d":
             try:
                 import PyQt5.QtWebEngineWidgets  # noqa: F401
             except ImportError as exc:

@@ -14,7 +14,8 @@ from brain.decision_client import DecisionClient, DecisionError
 from brain.memory_query import recall_followup, recall_subjects, recall_terms
 from brain.request_context import parse_request_context
 from brain.request_router import CAPABILITY_TO_TOOLS, RequestMode, RequestRoute, is_verifiable_recall_request
-from brain.weather_background import WeatherRecallPlan, weather_background_state, weather_location_followup
+from brain.background_recall import BackgroundRecallPlan
+from brain.weather_background import WEATHER_LOCATION_ADAPTER, _weather_context, weather_background_state, weather_location_followup
 
 
 logger = logging.getLogger("RecallDecision")
@@ -30,9 +31,9 @@ NEXT_STEP = {
             "涉及未补齐的共同经历、先前提及的人事或那个项目，优先查询内部记忆；"
             "已有足够背景则直接回复。聊天历史仅是线索，助手旧回复不是可靠事实证据。"
             "recall_subjects是从用户原话解析的查询对象，不是已确认事实。"
-            "purpose为weather_location时，先检查confirmed_cities和candidate_cities；"
-            "已有当前城市无需重复查询；旧居住地只可确认，不能当作用户现在的位置。"
-            "缺少current_city且无地点线索时，先memory_read检索用户所在地，不要直接问城市或检索天气这个词。"
+            "若提供background_context，先检查每个槽位的resolved_value、候选证据、来源、时效与冲突；"
+            "只有缺失且对当前意图重要的背景才考虑memory_read，已有可靠值不要重复查询；"
+            "候选不等于确认，当前任务要求的新鲜度高于记忆证据时应先确认。"
             "用户问对他有无印象、指出健忘或说以前提过时，应沿用查询对象补查，不把抱怨当检索主题。"
         ),
         "criteria": {
@@ -183,7 +184,9 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
         agent._weather_location_topic = {}
         upgraded = RequestRoute(RequestMode.CHAT_MEMORY, route.capabilities | {"memory_read", "weather"},
                                 "天气对话：建议补齐当前城市，不强制执行")
-        return upgraded, WeatherRecallPlan(client, state, answer["choice"])
+        return upgraded, BackgroundRecallPlan(
+            client, state, answer["choice"], _weather_context(state), WEATHER_LOCATION_ADAPTER,
+        )
     recall_check = bool(subjects and re.search(r"印象|健忘|记得|忘了|说过|提过|聊过", context.active_text))
     if (answer["choice"] != "memory_read" and not route.uses_memory_context
             and not recall_check):

@@ -63,7 +63,7 @@ from utils import bridge_log
 from brain.mcp import get_all_mcp_tool_definitions
 from brain.task_run import TaskPhase, TaskRun, resource_fingerprint
 from brain.recall_decision import RECALL_READ_TOOLS, prepare_recall, complete_recall, guard_recall_reply
-from brain.weather_background import WeatherRecallPlan
+from brain.background_recall import BackgroundRecallPlan
 from brain.web_evidence_cache import (
     WebEvidenceCache,
     is_successful_web_result,
@@ -1977,10 +1977,10 @@ class AgentCore:
                     on_tool_result(name, denial, True, 0.0)
                 continue
 
-            weather_plan = getattr(self, "_weather_recall_plan", None)
-            if weather_plan is not None:
+            background_plan = getattr(self, "_background_recall_plan", None)
+            if background_plan is not None:
                 denial = ("本轮已取消，不再执行地点补齐或天气查询。" if self._cancel_event.is_set()
-                          else weather_plan.before_tool(name, args))
+                          else background_plan.before_tool(name, args))
                 if denial:
                     event = {"name": name, "args": dict(args), "result": denial,
                              "is_error": True, "authorized": False}
@@ -2940,7 +2940,7 @@ class AgentCore:
         self._current_request_text = request_context.routing_text
         self._recall_decision_complete = False
         self._recall_outcome = None
-        self._weather_recall_plan = None
+        self._background_recall_plan = None
         # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
         # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
         # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
@@ -3005,8 +3005,8 @@ class AgentCore:
             )
         except Exception as exc:
             logger.warning("回忆决策不可用，保留原有路由: %s", type(exc).__name__)
-        if isinstance(_recall_plan, WeatherRecallPlan):
-            self._weather_recall_plan = _recall_plan
+        if isinstance(_recall_plan, BackgroundRecallPlan):
+            self._background_recall_plan = _recall_plan
         # 只有"纯自我认知问询"才允许这条确定性回复；混合任务（例如顺带
         # 提到了音乐空间/具身智能的搜索请求）不能被它顶掉用户真正要的活
         # （缺陷 P0-1）。
@@ -3402,7 +3402,7 @@ class AgentCore:
         self._memory_injected_count = 0
         _pre_query = last_user_msg if last_user_msg else user_message
         if (not self._use_local and self._owner_scope and _pre_query
-                and self._weather_recall_plan is None):
+                and self._background_recall_plan is None):
             try:
                 from brain.pre_recall import build_pre_recall_context
                 _pre_text, _pre_mem_count, _pre_self_count = build_pre_recall_context(_pre_query)
@@ -4133,14 +4133,14 @@ class AgentCore:
         MAX_ITERATIONS = max(MAX_ITERATIONS, task_run.budget.hard_rounds)
         SOFT_LIMIT = task_run.budget.soft_rounds
 
-        if self._weather_recall_plan is not None:
-            self._recall_outcome = {"status": "candidate", "keywords": ["当前城市"], "tools": []}
-            messages.append({"role": "system", "content": self._weather_recall_plan.prompt(),
+        if self._background_recall_plan is not None:
+            self._recall_outcome = {"status": "candidate", "keywords": ["背景缺口"], "tools": []}
+            messages.append({"role": "system", "content": self._background_recall_plan.prompt(),
                              "_module": "decision_background"})
             all_tools = [item for item in all_tools if item.get("function", {}).get("name") not in (
                 RECALL_READ_TOOLS - {"search_graph_memory"}) | {"set_user_city"}]
             available_tool_names = {item.get("function", {}).get("name") for item in all_tools}
-            self._weather_recall_plan.available_tools = frozenset(available_tool_names)
+            self._background_recall_plan.available_tools = frozenset(available_tool_names)
         elif _recall_plan is not None:
             try:
                 recall_context = complete_recall(
@@ -4165,8 +4165,8 @@ class AgentCore:
 
         while iteration < MAX_ITERATIONS:
             iteration += 1
-            if self._weather_recall_plan is not None:
-                background_update = self._weather_recall_plan.followup(self)
+            if self._background_recall_plan is not None:
+                background_update = self._background_recall_plan.followup(self)
                 if background_update:
                     messages.append({"role": "system", "content": background_update,
                                      "_module": "decision_background_evidence"})
@@ -4746,11 +4746,11 @@ class AgentCore:
                     final_content = content
 
                 final_content = guard_recall_reply(final_content, getattr(self, "_recall_outcome", None))
-                if self._weather_recall_plan is not None:
-                    final_content = self._weather_recall_plan.guard_reply(self, final_content)
+                if self._background_recall_plan is not None:
+                    final_content = self._background_recall_plan.guard_reply(self, final_content)
                 # ── 回忆优先守卫：未查证就断言“没有”必须先查证再重答（见设计文档 L5）──
                 if (_recall_deny_retry_count < 1
-                        and self._weather_recall_plan is None
+                        and self._background_recall_plan is None
                         and "search_graph_memory" in available_tool_names
                         and request_needs_recall(_msg_for_match)
                         and looks_like_denial(final_content)
@@ -4846,8 +4846,8 @@ class AgentCore:
                     pass
                 if self._browser_task_state:
                     self._browser_task_state.complete()
-                if self._weather_recall_plan is not None:
-                    self._weather_recall_plan.remember_confirmation(self, final_content)
+                if self._background_recall_plan is not None:
+                    self._background_recall_plan.remember_confirmation(self, final_content)
                 return final_content
             elif finish == "tool_calls":
                 from types import SimpleNamespace

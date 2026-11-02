@@ -477,6 +477,10 @@ function TopBar({
           <Sparkles size={16} />
           桌宠模式
         </button>
+        <button className="mode-button" onClick={() => onLegacy("live2d")}>
+          <Sparkles size={16} />
+          莲心 Live2D
+        </button>
       </nav>
       <div className="window-actions">
         <button className="icon-button" title="最小化" onClick={onMinimize}>
