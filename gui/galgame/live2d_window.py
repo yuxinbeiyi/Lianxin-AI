@@ -3,10 +3,11 @@
 import html
 import json
 import logging
+import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QBitmap, QColor, QRegion
+from PyQt5.QtGui import QBitmap, QColor, QCursor, QRegion
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineProfile, QWebEngineSettings, QWebEngineView
 from PyQt5.QtWidgets import QApplication, QMenu, QWidget
 
@@ -59,6 +60,9 @@ class Live2DTachieWindow(TachieWindow):
         self._previewing = False
         self._state = "idle"
         self._disposed = False
+        self._tracking_enabled = True
+        self._press_position = None
+        self._click_dragged = False
         super().__init__(assets_dir, parent)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -66,11 +70,15 @@ class Live2DTachieWindow(TachieWindow):
         self._mask_timer = QTimer(self)
         self._mask_timer.setInterval(700)
         self._mask_timer.timeout.connect(self._refresh_mask)
+        self._tracking_timer = QTimer(self)
+        self._tracking_timer.setInterval(100)
+        self._tracking_timer.timeout.connect(self._update_tracking)
 
     def _init_window(self):
         super()._init_window()
         self.setWindowTitle("莲心 - Live2D")
         self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setMouseTracking(True)
 
     def _init_ui(self):
         self._view = QWebEngineView(self)
@@ -109,7 +117,58 @@ class Live2DTachieWindow(TachieWindow):
         self._ready = True
         self._sync_playback()
         self._mask_timer.start()
+        self._tracking_timer.start()
         self.model_ready.emit()
+
+    def _call_interaction(self, method, *arguments):
+        if not self._ready or self._disposed:
+            return
+        payload = ",".join(json.dumps(value, ensure_ascii=True) for value in arguments)
+        self._view.page().runJavaScript(f"window.lianxinLive2D && window.lianxinLive2D.{method}({payload})")
+
+    def react(self, action):
+        if action in {"nod", "shake", "headpat", "tap", "smile", "sad", "angry", "surprised", "normal"}:
+            self._call_interaction("react", action)
+
+    def set_thinking(self, active):
+        self._call_interaction("setThinking", bool(active))
+
+    def _update_tracking(self):
+        if not self.isVisible() or not self._ready or self._disposed:
+            return
+        pointer = self.mapFromGlobal(QCursor.pos())
+        nearby = self.rect().adjusted(-180, -180, 180, 180).contains(pointer)
+        if self._tracking_enabled and nearby and self._drag_pos is None:
+            horizontal = (pointer.x() - self.width() * 0.5) / max(1, self.width() * 0.8)
+            vertical = (self.height() * 0.28 - pointer.y()) / max(1, self.height() * 0.65)
+            self._call_interaction("setTracking", horizontal, vertical)
+        else:
+            self._call_interaction("setTracking", 0, 0)
+
+    def _toggle_tracking(self, enabled):
+        self._tracking_enabled = enabled
+        self._update_tracking()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_position = event.globalPos()
+            self._press_time = time.monotonic()
+            self._click_dragged = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_position is not None:
+            if (event.globalPos() - self._press_position).manhattanLength() > QApplication.startDragDistance():
+                self._click_dragged = True
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_position is not None:
+            distance = (event.globalPos() - self._press_position).manhattanLength()
+            if not self._click_dragged and distance <= QApplication.startDragDistance() and time.monotonic() - self._press_time < 0.8:
+                self.react("headpat" if event.pos().y() < self.height() * 0.38 else "tap")
+            self._press_position = None
+        super().mouseReleaseEvent(event)
 
     def _refresh_mask(self):
         if not self.isVisible() or not self._ready or self._disposed:
@@ -163,6 +222,7 @@ class Live2DTachieWindow(TachieWindow):
         pass
 
     def start_talking(self):
+        self.set_thinking(False)
         self._talking = True
         self._previewing = False
         self._preview_timer.stop()
@@ -173,8 +233,10 @@ class Live2DTachieWindow(TachieWindow):
         self._sync_playback()
 
     def preview_reply(self, text):
+        self.set_thinking(False)
         if self._talking or not text.strip():
             return
+        self.react("nod")
         self._previewing = True
         self._preview_timer.start(max(1500, min(14000, len(text) * 60)))
         self._sync_playback()
@@ -197,6 +259,14 @@ class Live2DTachieWindow(TachieWindow):
 
     def _show_action_menu(self, event):
         menu = QMenu(self)
+        reactions = menu.addMenu("互动动作与表情")
+        for title, action in (("点头", "nod"), ("摇头", "shake"), ("摸摸头", "headpat"), ("微笑", "smile"), ("难过", "sad"), ("生气", "angry"), ("惊讶", "surprised"), ("恢复自然", "normal")):
+            reactions.addAction(title, lambda checked=False, name=action: self.react(name))
+        tracking = menu.addAction("视线跟随鼠标（附近）")
+        tracking.setCheckable(True)
+        tracking.setChecked(self._tracking_enabled)
+        tracking.toggled.connect(self._toggle_tracking)
+        menu.addSeparator()
         menu.addAction("向左移动", self.move_left)
         menu.addAction("向右移动", self.move_right)
         menu.addAction("停止移动", self.stop_moving)
@@ -212,16 +282,19 @@ class Live2DTachieWindow(TachieWindow):
         self._sync_playback()
         if self._ready:
             self._mask_timer.start()
+            self._tracking_timer.start()
 
     def hideEvent(self, event):
         super().hideEvent(event)
         self._sync_playback()
         if hasattr(self, "_mask_timer"):
             self._mask_timer.stop()
+            self._tracking_timer.stop()
 
     def closeEvent(self, event):
         self._preview_timer.stop()
         self._mask_timer.stop()
+        self._tracking_timer.stop()
         self._movement_timer.stop()
         if not self._disposed:
             self._view.page().runJavaScript("window.lianxinLive2D && window.lianxinLive2D.dispose()")

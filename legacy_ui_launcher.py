@@ -260,6 +260,8 @@ def main() -> int:
                                             self._tachie.start_breathing()
                                     with urllib.request.urlopen("http://127.0.0.1:8766/api/app/status", timeout=2) as response:
                                         status = json.loads(response.read().decode("utf-8"))
+                                    if feature == "live2d":
+                                        self._tachie.set_thinking(bool(status.get("busy")) and not speaking)
                                     sid = status.get("sessionId")
                                     if not sid:
                                         return
@@ -324,6 +326,9 @@ def main() -> int:
                             tachie.raise_()
 
                         window.message_submitted.connect(bridge.send)
+                        if feature == "live2d":
+                            window.message_submitted.connect(lambda text: tachie.set_thinking(True))
+                            bridge.error.connect(lambda message: tachie.set_thinking(False))
 
                         def _on_reply(text: str):
                             window.show_reply(text)
