@@ -1,4 +1,4 @@
-"""Prepare local Cubism assets without redistributing the installed Core."""
+"""Prepare a self-contained local Cubism runtime using the supplied Core."""
 
 import argparse
 import base64
@@ -65,7 +65,10 @@ def prepare(model, core, target):
         destination = target / "model" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-    config = {"model": str(target / "model" / model.name), "core": str(core)}
+    core_destination = target / "live2dcubismcore.min.js"
+    if core != core_destination:
+        shutil.copy2(core, core_destination)
+    config = {"model": (Path("model") / model.name).as_posix(), "core": core_destination.name}
     (target / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     return config
 
@@ -74,7 +77,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--core", required=True, type=Path)
-    parser.add_argument("--target", type=Path, default=ROOT / "assets" / "live2d")
+    parser.add_argument("--target", type=Path, default=ROOT / "Live2D")
     args = parser.parse_args()
     config = prepare(args.model, args.core, args.target)
     print(json.dumps(config, ensure_ascii=False, indent=2))

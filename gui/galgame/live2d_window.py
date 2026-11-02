@@ -1,4 +1,4 @@
-"""Cubism renderer using the existing desktop-pet window interactions.""
+"""Cubism renderer using the existing desktop-pet window interactions."""
 
 import html
 import json
@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QBitmap, QColor, QRegion
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineProfile, QWebEngineSettings, QWebEngineView
 from PyQt5.QtWidgets import QApplication, QMenu, QWidget
 
@@ -14,16 +14,17 @@ from .tachie_window import TachieWindow
 
 
 ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_DIR = ROOT / "Live2D"
 logger = logging.getLogger(__name__)
 
 
-def load_runtime_config(directory):
+def load_runtime_config(directory=RUNTIME_DIR):
     directory = Path(directory).resolve()
     config_file = directory / "config.json"
     if not config_file.is_file():
         raise FileNotFoundError("尚未准备 Live2D 本地资源，请按 docs/莲心Live2D接入说明.md 操作")
     config = json.loads(config_file.read_text(encoding="utf-8"))
-    files = {key: Path(config[key]).resolve() for key in ("model", "core")}
+    files = {key: (directory / config[key]).resolve() for key in ("model", "core")}
     files.update(pixi=directory / "pixi.min.js", display=directory / "cubism4.min.js")
     for path in files.values():
         if not path.is_file():
@@ -32,12 +33,15 @@ def load_runtime_config(directory):
 
 
 class Live2DPage(QWebEnginePage):
+    ready = pyqtSignal()
+    error = pyqtSignal(str)
+
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         logger.info("Live2D JS[%s] %s (%s:%s)", level, message, source_id, line_number)
         if message == "LIANXIN_LIVE2D_READY":
-            self.parent().parent()._on_model_ready()
+            self.ready.emit()
         elif message.startswith("LIANXIN_LIVE2D_ERROR:"):
-            self.parent().parent().load_error.emit(message.split(":", 1)[1])
+            self.error.emit(message.split(":", 1)[1])
 
     def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
         return url.scheme() in ("file", "data", "about")
@@ -48,7 +52,7 @@ class Live2DTachieWindow(TachieWindow):
     load_error = pyqtSignal(str)
 
     def __init__(self, assets_dir, parent=None, *, runtime_dir=None):
-        self._runtime_dir = Path(runtime_dir) if runtime_dir else ROOT / "assets" / "live2d"
+        self._runtime_dir = Path(runtime_dir) if runtime_dir else RUNTIME_DIR
         self._runtime_files = load_runtime_config(self._runtime_dir)
         self._ready = False
         self._talking = False
@@ -59,15 +63,22 @@ class Live2DTachieWindow(TachieWindow):
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._finish_preview)
+        self._mask_timer = QTimer(self)
+        self._mask_timer.setInterval(700)
+        self._mask_timer.timeout.connect(self._refresh_mask)
 
     def _init_window(self):
         super()._init_window()
         self.setWindowTitle("莲心 - Live2D")
+        self.setAttribute(Qt.WA_DeleteOnClose)
 
     def _init_ui(self):
         self._view = QWebEngineView(self)
         self._profile = QWebEngineProfile(self._view)
-        self._view.setPage(Live2DPage(self._profile, self._view))
+        page = Live2DPage(self._profile, self._view)
+        page.ready.connect(self._on_model_ready)
+        page.error.connect(self.load_error)
+        self._view.setPage(page)
         self._view.page().setBackgroundColor(QColor(Qt.transparent))
         self._view.setStyleSheet("background: transparent;")
         self._view.setAttribute(Qt.WA_TranslucentBackground)
@@ -93,9 +104,25 @@ class Live2DTachieWindow(TachieWindow):
             self.load_error.emit("本地播放器页面加载失败")
 
     def _on_model_ready(self):
+        if self._disposed:
+            return
         self._ready = True
         self._sync_playback()
+        self._mask_timer.start()
         self.model_ready.emit()
+
+    def _refresh_mask(self):
+        if not self.isVisible() or not self._ready or self._disposed:
+            return
+        image = self._view.grab().toImage()
+        region = QRegion(QBitmap.fromImage(image.createAlphaMask()))
+        if region.isEmpty():
+            return
+        margin = max(10, int(self.width() * 0.05))
+        expanded = QRegion(region)
+        for delta_x, delta_y in ((margin, 0), (-margin, 0), (0, margin), (0, -margin)):
+            expanded = expanded.united(region.translated(delta_x, delta_y))
+        self.setMask(expanded)
 
     def _sync_playback(self):
         if self._ready and not self._disposed:
@@ -116,6 +143,9 @@ class Live2DTachieWindow(TachieWindow):
         height = min(int(620 * self._scale), screen.availableGeometry().height() - 70)
         self.resize(max(100, int(height * 0.56)), max(180, height))
         self._view.setGeometry(self.rect())
+        if self._ready:
+            self.clearMask()
+            QTimer.singleShot(250, self._refresh_mask)
         self.move(self.pos() + old_center - self.geometry().center())
         if self.isVisible():
             self.position_changed.emit(self.x(), self.y())
@@ -180,13 +210,18 @@ class Live2DTachieWindow(TachieWindow):
     def showEvent(self, event):
         super().showEvent(event)
         self._sync_playback()
+        if self._ready:
+            self._mask_timer.start()
 
     def hideEvent(self, event):
         super().hideEvent(event)
         self._sync_playback()
+        if hasattr(self, "_mask_timer"):
+            self._mask_timer.stop()
 
     def closeEvent(self, event):
         self._preview_timer.stop()
+        self._mask_timer.stop()
         self._movement_timer.stop()
         if not self._disposed:
             self._view.page().runJavaScript("window.lianxinLive2D && window.lianxinLive2D.dispose()")

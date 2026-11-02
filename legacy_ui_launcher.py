@@ -131,6 +131,9 @@ def build_window(feature: str):
         from gui.video_call_window import VideoCallWindow
         return VideoCallWindow()
     if feature in ("galgame", "live2d"):
+        if feature == "live2d":
+            from gui.galgame.live2d_window import load_runtime_config
+            load_runtime_config()
         from gui.galgame.galgame_dialog import GalgameDialog
         return GalgameDialog()
     raise ValueError(f"unsupported legacy feature: {feature}")

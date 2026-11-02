@@ -13,6 +13,7 @@ import copy
 import atexit
 import hashlib
 import base64
+import importlib.util
 import mimetypes
 import random
 import subprocess
@@ -3593,12 +3594,14 @@ class LianxinBridge:
             raise ValueError(f"不支持的原版界面: {feature}")
         if feature in WEBENGINE_FEATURES or feature == "live2d":
             try:
-                import PyQt5.QtWebEngineWidgets  # noqa: F401
-            except ImportError as exc:
+                webengine_available = importlib.util.find_spec("PyQt5.QtWebEngineWidgets") is not None
+            except ModuleNotFoundError:
+                webengine_available = False
+            if not webengine_available:
                 raise RuntimeError(
                     "原版 WebEngine 窗口需要 PyQtWebEngine，请在莲心运行环境执行: "
                     "python -m pip install PyQtWebEngine==5.15.7"
-                ) from exc
+                )
         launcher = Path(__file__).with_name("legacy_ui_launcher.py")
         log_dir = Path(__file__).with_name("logs")
         log_dir.mkdir(parents=True, exist_ok=True)

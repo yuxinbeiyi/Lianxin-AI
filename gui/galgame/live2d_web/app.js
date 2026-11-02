@@ -6,6 +6,8 @@
   let disposed = false;
   let ready = false;
   let currentMotion;
+  let displayedMouth = 0;
+  let lastFrame = performance.now();
 
   function fail(error) {
     document.getElementById("error").textContent = "Live2D 加载失败：" + String(error);
@@ -42,8 +44,14 @@
     currentMotion = group;
     model.internalModel.motionManager.stopAllMotions();
     model.motion(group, 0, PIXI.live2d.MotionPriority.FORCE).then(function (started) {
-      if (!started && !disposed) fail(new Error("无法播放动作：" + group));
-    }).catch(function (error) { if (!disposed) fail(error); });
+      if (!started && !disposed) {
+        currentMotion = undefined;
+        fail(new Error("无法播放动作：" + group));
+      }
+    }).catch(function (error) {
+      currentMotion = undefined;
+      if (!disposed) fail(error);
+    });
   }
 
   window.lianxinLive2D = {
@@ -62,7 +70,9 @@
       const core = model.internalModel.coreModel;
       return {
         ready: true, state: state, motion: currentMotion, disposed: disposed,
-        mouth: core.getParameterValueById("ParamMouthOpenY"),
+        mouth: displayedMouth,
+        arm: core.getParameterValueById("ParamArmSway"),
+        breath: core.getParameterValueById("ParamBreath"),
         drawables: core.getDrawableCount(), rendering: app.ticker.started,
       };
     },
@@ -91,10 +101,28 @@
     });
     model = await PIXI.live2d.Live2DModel.from(settings, { autoInteract: false, motionPreload: "ALL" });
     if (disposed) { model.destroy(); return; }
+    model.internalModel.breath = undefined;
+    model.internalModel.on("beforeModelUpdate", function () {
+      const now = performance.now();
+      const elapsed = Math.min(100, now - lastFrame);
+      lastFrame = now;
+      const core = model.internalModel.coreModel;
+      if (state === "talking") {
+        displayedMouth = core.getParameterValueById("ParamMouthOpenY");
+      } else {
+        displayedMouth *= Math.exp(-elapsed / 70);
+        if (displayedMouth < 0.001) displayedMouth = 0;
+        core.setParameterValueById("ParamMouthOpenY", displayedMouth);
+        if (model.internalModel.eyeBlink) {
+          model.internalModel.eyeBlink.updateParameters(core, elapsed / 1000);
+        }
+      }
+    });
     app.stage.addChild(model);
     model.internalModel.motionManager.on("motionFinish", function () {
+      if (disposed) return;
       currentMotion = undefined;
-      playState();
+      requestAnimationFrame(playState);
     });
     window.addEventListener("resize", fit);
     fit();
