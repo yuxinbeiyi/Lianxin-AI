@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def build_self_knowledge_context(persona_id: str = "") -> str:
+def build_self_knowledge_context(persona_id: str = "", scene: str = "main_chat") -> str:
     from brain.capability_knowledge import get_capability_index
 
     index = get_capability_index()
@@ -17,7 +17,7 @@ def build_self_knowledge_context(persona_id: str = "") -> str:
     if persona_id:
         try:
             from brain.persona.growth import get_persona_growth_service
-            growth = get_persona_growth_service().dynamic_context(persona_id)
+            growth = get_persona_growth_service().dynamic_context(persona_id, scene)
             if growth:
                 lines.append(growth)
         except Exception:

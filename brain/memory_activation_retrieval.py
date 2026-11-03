@@ -164,6 +164,29 @@ def _load_facts(conn, memory_ids: list[int]) -> list[dict]:
     return [facts[memory_id] for memory_id in memory_ids if memory_id in facts]
 
 
+def reload_activation_facts(candidates, *, deadline, snapshot=None) -> list[dict]:
+    from brain.graph_memory import _DB_PATH
+
+    started = time.monotonic()
+    if not math.isfinite(deadline) or deadline <= started:
+        return []
+    stop_at = min(deadline, started + MAX_RETRIEVAL_SECONDS)
+    conn = sqlite3.connect(_DB_PATH.resolve().as_uri() + "?mode=ro", uri=True,
+                           timeout=max(0.001, stop_at - started))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.set_progress_handler(lambda: time.monotonic() >= stop_at, 200)
+        expected = {item.memory_id: item for item in candidates[:3]}
+        rows = _load_facts(conn, list(expected))
+        valid = {item.memory_id for item in filter_candidates(rows, snapshot=snapshot)
+                 if item == expected.get(item.memory_id)}
+        if time.monotonic() >= stop_at:
+            return []
+        return [row for row in rows if row["memory_id"] in valid]
+    finally:
+        conn.close()
+
+
 def collect_activation(
     message: str, *, deadline: float, memory_allowed: bool, eligible: bool,
     enabled: bool, force: bool = False, turn: int = 0, last_attempt_turn: int = -PULSE_GAP,
@@ -307,6 +330,7 @@ def observe_activation(agent, route, *, request_started: float, disable_tools: b
         and not context.is_quote_ack and not context.has_image_blocks
         and not getattr(agent, "_manual_forced_tool", None)
         and not getattr(agent, "_manual_preferred_tool", None)
+        and getattr(agent, "_request_decision_choice", None) in {None, "reply"}
     )
     memory_allowed = (
         getattr(agent, "_owner_scope", False) and not getattr(agent, "_use_local", True)
@@ -318,15 +342,24 @@ def observe_activation(agent, route, *, request_started: float, disable_tools: b
             and (allowed_tools is None or "search_graph_memory" in allowed_tools)
         )
     deadline = request_started + config["budget_seconds"]
+    mention_session, mentioned = getattr(agent, "_memory_activation_mentions", (None, ()))
     outcome = collect_activation(
         context.active_text, deadline=deadline, enabled=config["enabled"],
         memory_allowed=bool(memory_allowed), eligible=eligible, turn=turn,
         force=isinstance(request_metadata, dict) and request_metadata.get("force_memory_activation") is True,
         last_attempt_turn=last_turn if last_session == session_id else -PULSE_GAP,
         recent_text=[item.get("content", "") for item in getattr(agent, "history", [])[-8:]],
+        excluded_ids=mentioned if mention_session == session_id else (),
         cancelled=cancel_event.is_set if cancel_event else lambda: False, snapshot=snapshot,
     )
     agent._memory_activation_outcome = outcome
+    from brain.memory_activation_debug import update_activation_debug
+    update_activation_debug(
+        agent, phase="retrieved", retrieval_status=outcome.status, retrieval_reason=outcome.reason,
+        candidate_ids=[item.memory_id for item in outcome.candidates],
+        channels=list(outcome.channels), inspected=outcome.inspected,
+        retrieval_elapsed_ms=round(outcome.elapsed_ms, 2),
+    )
     if outcome.channels:
         agent._memory_activation_attempt = (session_id, turn)
     diagnostics = outcome.diagnostics()

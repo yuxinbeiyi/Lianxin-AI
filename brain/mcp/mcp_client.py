@@ -7,6 +7,7 @@
 
 稳定性要点（2026-10 加固）：
 - stdout 由常驻线程按行投递到队列，读取带超时，不会阻塞事件循环；
+- stderr 由独立线程持续排空并写入后台日志，防止日志管道写满卡死子进程；
 - 子进程死亡 / 响应超时 / 响应错位都会被识别为“连接失效”；
 - 失效后自动重启子进程并重试一次；仍失败则返回可读错误，而不是静默的空结果。
 
@@ -27,6 +28,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
+
+from utils import bridge_log
 
 logger = logging.getLogger("MCPClient")
 
@@ -64,6 +67,7 @@ class ExternalMCPClient:
         self._tools: List[Dict] = []
         self._stdout_queue: "queue.Queue[Any]" = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
         self._last_error = ""
         self.icon = "🔌"
         self.description = f"外部 MCP 服务: {service_name}"
@@ -105,6 +109,7 @@ class ExternalMCPClient:
                 env=merged_env,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             # 外部 MCP 服务（含其派生的分离进程如 mpv）随莲心退出被系统自动清理
@@ -114,6 +119,7 @@ class ExternalMCPClient:
             except Exception:
                 pass
             self._start_reader()
+            self._start_stderr_reader()
 
             response = await self._request(
                 "initialize",
@@ -172,6 +178,24 @@ class ExternalMCPClient:
             target=_pump, name=f"mcp-reader-{self.service_name}", daemon=True
         )
         self._reader_thread.start()
+
+    def _start_stderr_reader(self) -> None:
+        """Drain diagnostics separately so a full stderr pipe cannot block the server."""
+        stream = getattr(self._process, "stderr", None)
+        if stream is None:
+            return
+
+        def _pump_stderr():
+            try:
+                for line in stream:
+                    bridge_log.log(f"MCP:{self.service_name}", line.rstrip(), console=False)
+            except (OSError, ValueError):
+                pass
+
+        self._stderr_thread = threading.Thread(
+            target=_pump_stderr, name=f"mcp-stderr-{self.service_name}", daemon=True
+        )
+        self._stderr_thread.start()
 
     def _read_line(self, timeout: float):
         """返回一行 / None（超时）/ _EOF（stdout 关闭）。"""
@@ -371,6 +395,9 @@ class ExternalMCPClient:
                     proc.kill()
                 except Exception:
                     pass
+            for reader in (self._reader_thread, self._stderr_thread):
+                if reader is not None:
+                    reader.join(timeout=1)
             for stream in (proc.stdout, proc.stderr):
                 try:
                     stream.close()
@@ -378,4 +405,5 @@ class ExternalMCPClient:
                     pass
             self._process = None
         self._reader_thread = None
+        self._stderr_thread = None
         self._drain_stdout_queue()

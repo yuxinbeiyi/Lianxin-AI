@@ -1421,6 +1421,16 @@ def build_extraction_prompt(recent_conversation: str) -> str:
 类型仅限：人物、地点、组织、物品、概念、时间、事件、活动、技术、文件。
 五元组必须来自用户明确表达的事实；没有时返回空数组。
 
+## 可选成长候选（与记忆分开，同一次请求）
+记忆记录事实或共同经历；成长候选记录以后怎样调整相处习惯。两者可关联同一用户原话，但不能把行为命令当作事实。
+只从用户真实反馈提出最多 8 个待确认候选，不从助手回复、引文、假设、玩笑或今天/本轮临时要求归纳永久变化。
+不推断人格、身份、依赖、诊断、亲密关系或权限；没有充分依据就返回空数组。事实准确性本来就是基础规则，不作为成长候选。
+growth_candidates 每项必须有 field、proposed_value、evidence_quote（逐字用户原话）、source_message_ids（直接支持的用户消息编号）、scope、scene。
+默认只提出 scope=shared、scene=all 的共同成长；没有消息当时的模式与场景证据时，不猜测专属范围。
+允许的 field/proposed_value 只有 response_length: compact/detailed，response_structure: conclusion_first，interaction_tone: fewer_emojis，teasing_level: gentler，support_style: listen_first。
+scope 默认为 shared（同一个莲心的通用习惯）；明确限定当前表达模式时为 persona。scene 默认为 all，明确限定界面时可用 main_chat/qq_chat/proactive/tree_hole/study_room/time_capsule/bilibili_comment。
+候选只是建议，不能声称已采纳；原始经历可以记录为事实，但不要在 memories 中重复写一条永久执行命令。
+
 ## 输出格式（JSON，契约版本 memory_extraction_v2）
 {{
     "contract_version": "memory_extraction_v2",
@@ -1435,6 +1445,7 @@ def build_extraction_prompt(recent_conversation: str) -> str:
             "associative_triggers": []
         }}
     ],
+    "growth_candidates": [],
     "quintuples": [
         ["用户", "人物", "正在开发", "莲心AI", "技术"]
     ]

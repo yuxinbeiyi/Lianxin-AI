@@ -143,7 +143,8 @@ class DecisionClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = Request(self.endpoint, data=body, headers=headers, method="POST")
         opener = build_opener(_NoRedirect(), ProxyHandler({})) if self.provider == "local" else build_opener(_NoRedirect())
-        stage = "回复前决策" if "next_step" in questions else "回忆证据评估"
+        stage = ("回复前决策" if "next_step" in questions else
+                 "主动联想评估" if "candidate" in questions else "回忆证据评估")
         details = {"model": self.model, "provider": self.provider, "stage": stage}
         started = time.monotonic()
         preview = "调用失败：unexpected_error；本轮按既有策略回退，不使用未核验决策。"
@@ -175,6 +176,9 @@ class DecisionClient:
             if "match" in answers and "ambiguous" in answers:
                 preview += (f"；证据匹配期望分 {answers['match']['score']:.2f}/4"
                             f"，歧义概率 {answers['ambiguous']['noul']:.0%}")
+            if "candidate" in answers and "action" in answers:
+                preview += (f"；候选 {answers['candidate']['choice']}"
+                            f"；建议 {answers['action']['choice']}（仍须本地门控）")
             is_error = False
             return answers
         except DecisionError as exc:

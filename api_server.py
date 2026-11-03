@@ -3201,30 +3201,75 @@ class LianxinBridge:
 
 
     def persona_state(self) -> dict:
-        from brain.persona import PersonaPromptComposer, get_persona_manager
-        from brain.persona.growth import get_persona_growth_service
-        from brain.persona.scenes import scene_policy
-        from config import get_core_system_policy, get_user_name
+        from brain.persona import get_persona_manager
 
         manager = get_persona_manager()
         snapshot = manager.get_snapshot()
-        growth = get_persona_growth_service()
-        try:
-            compiled = PersonaPromptComposer.compose(
-                snapshot,
-                user_name=get_user_name(),
-                core_policy=get_core_system_policy(),
-                scene_policy=scene_policy("main_chat"),
-            )
-            preview = {"text": compiled.text, "estimated_tokens": compiled.estimated_tokens, "layers": [layer.name for layer in compiled.layers]}
-        except Exception as exc:
-            preview = {"text": "", "estimated_tokens": 0, "layers": [], "error": str(exc)}
+        preview = self._persona_preview_payload(snapshot)
         return {
             "snapshot": {"profile": snapshot.profile.to_dict(), "revision": snapshot.revision, "enabled": snapshot.enabled, "activated_at": snapshot.activated_at},
             "profiles": [profile.to_dict() for profile in manager.list_profiles()],
             "preview": preview,
-            "growth": {"summary": growth.summary(snapshot.profile.id), "events": [event.__dict__ for event in growth.store.list(snapshot.profile.id)[:100]], "settings": growth.settings()},
+            "growth": self.persona_growth_state(snapshot.profile.id),
         }
+
+    def persona_growth_state(self, profile_id: str = "") -> dict:
+        from brain.persona import get_persona_manager
+        from brain.persona.growth import get_persona_growth_service
+        manager = get_persona_manager()
+        profile_id = profile_id or manager.get_snapshot().profile.id
+        manager.load_profile(profile_id)
+        growth = get_persona_growth_service()
+        effective = growth.effective(profile_id)
+        events = growth.store.list(None, 500)
+        sources = growth.store.evidence_sources([event.id for event in events])
+        return {
+            "persona_id": profile_id, "summary": growth.summary(profile_id),
+            "events": [{**event.__dict__, "evidence_sources": sources.get(event.id, [])} for event in events],
+            "effective_ids": [event.id for event in effective],
+            "context": growth.dynamic_context(profile_id), "settings": growth.settings(),
+        }
+
+    def persona_growth_review(self, payload: dict) -> dict:
+        from brain.persona import get_persona_manager
+        from brain.persona.growth import get_persona_growth_service
+        if not isinstance(payload, dict):
+            raise ValueError("成长请求必须为对象")
+        manager = get_persona_manager()
+        profile_id = str(payload.get("persona_id", "")) or manager.get_snapshot().profile.id
+        manager.load_profile(profile_id)
+        event_id = payload.get("event_id")
+        if type(event_id) is not int or event_id < 1:
+            raise ValueError("无效的成长记录编号")
+        get_persona_growth_service().review(event_id, payload.get("action", ""))
+        return self.persona_growth_state(profile_id)
+
+    def persona_growth_settings(self, payload: dict) -> dict:
+        from brain.persona import get_persona_manager
+        from brain.persona.growth import get_persona_growth_service
+        if not isinstance(payload, dict):
+            raise ValueError("成长请求必须为对象")
+        manager = get_persona_manager()
+        profile_id = str(payload.get("persona_id", "")) or manager.get_snapshot().profile.id
+        manager.load_profile(profile_id)
+        growth = get_persona_growth_service()
+        values = {}
+        if "mode" in payload:
+            if not isinstance(payload["mode"], str) or payload["mode"] not in {"off", "confirm", "low_risk_auto"}:
+                raise ValueError("无效的成长模式")
+            values["mode"] = payload["mode"]
+        for key in ("allow_proactive_requests", "allow_photo_invites"):
+            if key in payload:
+                if type(payload[key]) is not bool:
+                    raise ValueError("成长设置必须为布尔值")
+                values[key] = payload[key]
+        if "paused" in payload:
+            if type(payload["paused"]) is not bool:
+                raise ValueError("暂停设置必须为布尔值")
+            growth.pause_growth(168 if payload["paused"] else 0)
+        if values:
+            growth.save_settings(values)
+        return self.persona_growth_state(profile_id)
 
     @staticmethod
     def _persona_profile_from_payload(manager, payload: dict):
@@ -3242,6 +3287,7 @@ class LianxinBridge:
     def _persona_preview_payload(snapshot) -> dict:
         from brain.persona import PersonaPromptComposer
         from brain.persona.scenes import scene_policy
+        from brain.self_model import build_self_knowledge_context
         from config import get_core_system_policy, get_user_name
         try:
             compiled = PersonaPromptComposer.compose(
@@ -3249,6 +3295,7 @@ class LianxinBridge:
                 user_name=get_user_name(),
                 core_policy=get_core_system_policy(),
                 scene_policy=scene_policy("main_chat"),
+                dynamic_context=[build_self_knowledge_context(snapshot.profile.id)],
             )
             return {
                 "text": compiled.text,
@@ -4123,7 +4170,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith("/api/decision/"):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4413,6 +4460,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/persona/"):
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get("Origin", "")):
+                    return self._send({"error": "untrusted_persona_origin"}, 403)
             if path == "/api/app/status":
                 return self._send(bridge.status())
             if path == "/api/execution-status/events":
@@ -4602,6 +4653,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.management())
             if path == "/api/persona/state":
                 return self._send(bridge.persona_state())
+            if path == "/api/persona/growth":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.persona_growth_state((query.get("id") or [""])[0]))
             if path == "/api/settings/background":
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"
@@ -4681,7 +4735,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
-            if path.startswith("/api/decision/"):
+            if path.startswith(("/api/decision/", "/api/persona/growth")):
                 from brain.decision_settings import trusted_origin
                 if not trusted_origin(self.headers.get("Origin", "")):
                     return self._send({"error": "untrusted_decision_origin"}, 403)
@@ -4866,6 +4920,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.clear_bilibili_comment_draft())
             if path == "/api/persona/save":
                 return self._send(bridge.persona_save(body))
+            if path == "/api/persona/growth/review":
+                return self._send(bridge.persona_growth_review(body))
+            if path == "/api/persona/growth/settings":
+                return self._send(bridge.persona_growth_settings(body))
             if path == "/api/persona/preview":
                 return self._send(bridge.persona_preview(body))
             if path == "/api/persona/save-and-activate":
@@ -4920,6 +4978,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/legacy/open":
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
+        except ValueError as exc:
+            return self._send({"error": str(exc)}, 400 if path.startswith("/api/persona/growth") else 500)
         except Exception as exc:
             return self._send({"error": str(exc)}, 500)
 

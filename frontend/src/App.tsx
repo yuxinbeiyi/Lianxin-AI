@@ -59,6 +59,8 @@ import {
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { playSpeechSequence } from "./utils/speechSequence";
 import { ExecutionNotices } from "./components/ExecutionNotices";
+import { MemoryActivationCard } from "./components/MemoryActivationCard";
+import { createMemoryActivationToggle } from "./utils/memoryActivation";
 import { showExecutionNotice } from "./utils/executionNotices";
 import { executionScope, executionSignature, mergePersistedMessages } from "./utils/executionControls";
 import {
@@ -71,6 +73,8 @@ import {
   type LegacyFeature,
   type ExecutionTaskState,
   type ToolActivityEvent,
+  type ChatRequestMetadata,
+  type MemoryActivationDebug,
 } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
@@ -150,7 +154,8 @@ type ToolCallState = {
 // 因此卡片位置固定，且只有重启莲心 / 新建会话时才会消失。
 type ToolRoundState = {
   key: string;
-  category?: "tool" | "decision";
+  category?: "tool" | "decision" | "memory_activation";
+  activation?: MemoryActivationDebug;
   turn: number;
   round: number;
   anchorIndex: number;
@@ -894,6 +899,9 @@ function ToolRounds({ rounds }: { rounds: ToolRoundState[] }) {
   return (
     <div className="tool-rounds">
       {rounds.map((round) => (
+        round.category === "memory_activation" && round.activation ? (
+          <MemoryActivationCard key={round.key} data={round.activation} />
+        ) :
         <section className="tool-round" key={round.key}>
           <div className="tool-round-heading">
             <span>
@@ -973,6 +981,7 @@ function ChatWorkspace({
   onRuntimeSteer,
   runtimeDeciding,
   searchTargetId,
+  composerResetKey,
 }: {
   messages: Message[];
   segmentBubblesFor: (message: Message) => string[];
@@ -985,6 +994,7 @@ function ChatWorkspace({
     attachments: Attachment[],
     selection?: { forcedTool?: string; preferredTool?: string },
     quote?: { role: "user" | "assistant"; content: string },
+    requestMetadata?: ChatRequestMetadata,
   ) => void;
   onCancel?: () => void;
   onInteraction: (action: "tap" | "headpat") => void;
@@ -1010,8 +1020,29 @@ function ChatWorkspace({
   onRuntimeSteer?: (text: string) => Promise<boolean>;
   runtimeDeciding?: boolean;
   searchTargetId?: string;
+  composerResetKey: number;
 }) {
   const [draft, setDraft] = useState("");
+  const [memoryActivationArmed, setMemoryActivationArmed] = useState(false);
+  const memoryActivationToggle = useRef(createMemoryActivationToggle());
+  const fileReadEpoch = useRef(0);
+  const composerScope = `${sessionId ?? 0}:${composerResetKey}`;
+  const composerScopeRef = useRef(composerScope);
+  composerScopeRef.current = composerScope;
+  const clearMemoryActivation = () => {
+    memoryActivationToggle.current.clear();
+    setMemoryActivationArmed(false);
+  };
+  const consumeMemoryActivation = () => {
+    const metadata = memoryActivationToggle.current.consume(composerScope);
+    setMemoryActivationArmed(false);
+    return metadata;
+  };
+  const resetComposerActivation = () => {
+    clearMemoryActivation();
+    fileReadEpoch.current += 1;
+  };
+  useEffect(resetComposerActivation, [sessionId, composerResetKey, backendOnline]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [quotedMessage, setQuotedMessage] = useState<{
     role: "user" | "assistant";
@@ -1113,7 +1144,10 @@ function ChatWorkspace({
     Array.from(files).forEach((file) => {
       const kind = file.type.startsWith("image/") ? "image" : "file";
       const reader = new FileReader();
+      const fileScope = composerScope;
+      const fileEpoch = fileReadEpoch.current;
       reader.onload = () => {
+        if (fileScope !== composerScopeRef.current || fileEpoch !== fileReadEpoch.current) return;
         const item = {
           kind,
           fileName: file.name,
@@ -1123,7 +1157,8 @@ function ChatWorkspace({
         setAttachments((current) => [...current, item]);
         if (autoSend)
           window.setTimeout(() => {
-            onSend("看看这个附件", [item]);
+            if (fileScope !== composerScopeRef.current || fileEpoch !== fileReadEpoch.current) return;
+            onSend("看看这个附件", [item], undefined, undefined, consumeMemoryActivation());
             nearBottomRef.current = true;
             setNearBottom(true);
             requestAnimationFrame(() => scrollToBottom("smooth"));
@@ -1139,7 +1174,9 @@ function ChatWorkspace({
       attachments,
       toolSelection,
       quotedMessage || undefined,
+      consumeMemoryActivation(),
     );
+    fileReadEpoch.current += 1;
     setDraft("");
     setAttachments([]);
     setQuotedMessage(null);
@@ -1322,11 +1359,12 @@ function ChatWorkspace({
                 <button
                   type="button"
                   title="移除附件"
-                  onClick={() =>
+                  onClick={() => {
+                    if (attachments.length === 1 && !draft.trim()) resetComposerActivation();
                     setAttachments((current) =>
                       current.filter((_, itemIndex) => itemIndex !== index),
-                    )
-                  }
+                    );
+                  }}
                 >
                   <X size={12} />
                 </button>
@@ -1335,7 +1373,10 @@ function ChatWorkspace({
           </div>
           <textarea
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              if (!event.target.value.trim()) resetComposerActivation();
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -1388,6 +1429,22 @@ function ChatWorkspace({
                 <Wrench size={16} />
                 工具
               </button>
+              <button
+                type="button"
+                className={`composer-tool memory-activation-toggle ${memoryActivationArmed ? "armed" : ""}`}
+                aria-pressed={memoryActivationArmed}
+                disabled={!backendOnline}
+                title={memoryActivationArmed ? "下一条消息尝试瞬忆；点击取消，不保证找到或提及记忆" : "仅让下一条消息尝试瞬忆，不保证找到或提及记忆"}
+                onClick={() => {
+                  if (memoryActivationArmed) clearMemoryActivation();
+                  else {
+                    memoryActivationToggle.current.arm(composerScope);
+                    setMemoryActivationArmed(true);
+                  }
+                }}
+              >
+                <BrainCircuit size={16} />{memoryActivationArmed ? "瞬忆 · 下一条" : "瞬忆"}
+              </button>
               <label className="auto-send-control">
                 <input
                   type="checkbox"
@@ -1434,7 +1491,7 @@ function ChatWorkspace({
               {busy && (
                 <button
                   className="icon-button"
-                  onClick={onCancel}
+                  onClick={() => { resetComposerActivation(); onCancel(); }}
                   title="停止当前回复"
                   aria-label="停止当前回复"
                 >
@@ -2923,12 +2980,15 @@ export function App() {
   const [voiceInputActive, setVoiceInputActive] = useState(false);
   const [voiceInputText, setVoiceInputText] = useState("");
   const [toolBlocks, setToolBlocks] = useState<ToolRoundState[]>([]);
+  const [composerResetKey, setComposerResetKey] = useState(0);
   // 执行运行时（阶段 2）：任务进度 + 审批卡片
   const [runtimeTask, setRuntimeTask] = useState<ExecutionTaskState | null>(null);
   const [runtimeDeciding, setRuntimeDeciding] = useState(false);
   const runtimeSigRef = useRef("");
   const toolCursorRef = useRef(0);
   const sessionIdRef = useRef<number | null>(null);
+  const sessionChangingRef = useRef(false);
+  const sendEpochRef = useRef(0);
   const messagesRef = useRef<Message[]>([]);
   const [background, setBackground] = useState<BackgroundState>({
     enabled: true,
@@ -3012,7 +3072,14 @@ export function App() {
         .status()
         .then((status) => {
           setBackendOnline(status.online);
-          sessionIdRef.current = status.sessionId ?? null;
+          if (!sessionChangingRef.current) {
+            if (sessionIdRef.current !== (status.sessionId ?? null)) {
+              sendEpochRef.current += 1;
+              setComposerResetKey((value) => value + 1);
+              setToolBlocks([]);
+            }
+            sessionIdRef.current = status.sessionId ?? null;
+          }
           if (first && status.sessionId) {
             console.info("[IMAGE_FLOW] status", {
               sessionId: status.sessionId,
@@ -3124,7 +3191,8 @@ export function App() {
           Number(event.sessionId) !== Number(session)
         )
           continue;
-        const key = `${event.sessionId ?? 0}:${event.turn ?? 0}:${event.round ?? 0}${event.category === "decision" ? `:decision:${event.seq}` : ""}`;
+        if (event.kind === "memory_activation" && !event.activation) continue;
+        const key = `${event.sessionId ?? 0}:${event.turn ?? 0}:${event.round ?? 0}${event.category === "memory_activation" ? ":memory_activation" : event.category === "decision" ? `:decision:${event.seq}` : ""}`;
         let index = indexByKey.get(key);
         if (index === undefined) {
           const snapshot = messagesRef.current;
@@ -3147,6 +3215,11 @@ export function App() {
           indexByKey.set(key, index);
         }
         const calls = blocks[index].calls;
+        if (event.kind === "memory_activation") {
+          blocks[index].activation = event.activation;
+          changed = true;
+          continue;
+        }
         if (event.kind === "result") {
           const callIndex = calls.findIndex((call) => call.seq === event.seq);
           const patch = {
@@ -3333,13 +3406,20 @@ export function App() {
           const full = includeData ? next : await lianxinApi.background(true);
           if (!disposed) setBackground(full);
         } else {
-          setBackground((current) => ({
-            ...current,
-            enabled: next.enabled,
-            opacity: next.opacity,
-            chatOpacity: next.chatOpacity,
-            fitMode: next.fitMode,
-          }));
+          setBackground((current) =>
+            current.enabled === next.enabled &&
+            current.opacity === next.opacity &&
+            current.chatOpacity === next.chatOpacity &&
+            current.fitMode === next.fitMode
+              ? current
+              : {
+                  ...current,
+                  enabled: next.enabled,
+                  opacity: next.opacity,
+                  chatOpacity: next.chatOpacity,
+                  fitMode: next.fitMode,
+                },
+          );
         }
       } catch {
         /* The bundled fallback remains visible while the API is offline. */
@@ -3362,13 +3442,20 @@ export function App() {
           const full = includeData ? next : await lianxinApi.avatars(true);
           if (!disposed) setAvatar(full);
         } else {
-          setAvatar((current) => ({
-            ...current,
-            enabled: next.enabled,
-            size: next.size,
-            gap: next.gap,
-            border: next.border,
-          }));
+          setAvatar((current) =>
+            current.enabled === next.enabled &&
+            current.size === next.size &&
+            current.gap === next.gap &&
+            current.border === next.border
+              ? current
+              : {
+                  ...current,
+                  enabled: next.enabled,
+                  size: next.size,
+                  gap: next.gap,
+                  border: next.border,
+                },
+          );
         }
       } catch {
         /* Keep the bundled avatar while the API is unavailable. */
@@ -3382,18 +3469,26 @@ export function App() {
     };
   }, [avatar.fingerprint]);
   const openSession = (id: number) => {
+    if (sessionChangingRef.current) return;
+    sendEpochRef.current += 1;
+    setComposerResetKey((value) => value + 1);
+    sessionChangingRef.current = true;
     turnGenerationRef.current += 1;
     cancelSegments();
     return void lianxinApi
       .selectSession(id)
-      .then(() => lianxinApi.messages(id))
+      .then(() => {
+        sessionIdRef.current = id;
+        return lianxinApi.messages(id);
+      })
       .then((result) => {
         setActiveWorkspace("chat");
         setInteractionMessages([]);
         setToolBlocks([]);
         setMessages(result.items.map(restoreMessage));
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => { sessionChangingRef.current = false; });
   };
   // 分段计划的键：折叠空白后比较，避免落库副本与本地乐观消息因空白差异失配。
   const segmentKeyOf = (content: string) =>
@@ -3451,8 +3546,10 @@ export function App() {
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
     turnGeneration = turnGenerationRef.current,
+    requestMetadata?: ChatRequestMetadata,
   ) => {
     const requestSessionId = sessionIdRef.current;
+    const requestEpoch = sendEpochRef.current;
     const messageTime = "现在";
     const imageIds = attachments.map(
       (_, index) => `image-${Date.now()}-${index}`,
@@ -3500,7 +3597,9 @@ export function App() {
         attachments,
         selection,
         quote,
+        requestMetadata,
       )) {
+        if (sendEpochRef.current !== requestEpoch || sessionIdRef.current !== requestSessionId) return;
         if (event.type === "delta") reply += event.content ?? "";
         if (
           event.type === "image_analysis_result" &&
@@ -3523,7 +3622,7 @@ export function App() {
         if (event.type === "error")
           throw new Error(event.error || "聊天请求失败");
       }
-      if (!reply.trim() || sessionIdRef.current !== requestSessionId) return;
+      if (!reply.trim() || sessionIdRef.current !== requestSessionId || sendEpochRef.current !== requestEpoch) return;
       setMessages((current) => [
         ...current,
         {
@@ -3559,7 +3658,12 @@ export function App() {
     attachments: Attachment[] = [],
     selection: { forcedTool?: string; preferredTool?: string } = {},
     quote?: { role: "user" | "assistant"; content: string },
+    requestMetadata?: ChatRequestMetadata,
   ) => {
+    if (sessionChangingRef.current) {
+      showExecutionNotice("正在切换会话，本条消息未发送，请切换完成后重新发送。", "chat_session_changing");
+      return;
+    }
     window.sessionStorage.removeItem("lianxin-tool-selection");
     window.localStorage.removeItem("lianxin-tool-selection");
     window.dispatchEvent(new CustomEvent("tool-selection", { detail: {} }));
@@ -3567,8 +3671,13 @@ export function App() {
     cancelSegments();
     pendingSendsRef.current += 1;
     setBusy(true);
+    const queuedSession = sessionIdRef.current;
+    const queuedEpoch = sendEpochRef.current;
     sendQueueRef.current = sendQueueRef.current
-      .then(() => processSend(text, attachments, selection, quote, turnGeneration))
+      .then(() => {
+        if (sendEpochRef.current !== queuedEpoch || sessionIdRef.current !== queuedSession || sessionChangingRef.current) return;
+        return processSend(text, attachments, selection, quote, turnGeneration, requestMetadata);
+      })
       .catch((error) => {
         console.error("[CHAT_QUEUE] failed", error);
       })
@@ -3604,6 +3713,8 @@ export function App() {
     return () => window.removeEventListener("open-tools", open);
   }, []);
   const handleCancel = () => {
+    sendEpochRef.current += 1;
+    setComposerResetKey((value) => value + 1);
     turnGenerationRef.current += 1;
     cancelSegments();
     void lianxinApi.cancelChat();
@@ -3612,12 +3723,21 @@ export function App() {
   // 工具信息栏永不随对话清空，只有重启莲心或新建/切换会话时才消失。
   messagesRef.current = messages;
   const handleNewChat = () => {
+    if (sessionChangingRef.current) return;
+    sendEpochRef.current += 1;
+    setComposerResetKey((value) => value + 1);
     turnGenerationRef.current += 1;
     cancelSegments();
     setMessages([]);
     setInteractionMessages([]);
     setToolBlocks([]);
-    if (backendOnline) void lianxinApi.newSession().catch(() => undefined);
+    if (backendOnline) {
+      sessionChangingRef.current = true;
+      void lianxinApi.newSession().then((result) => {
+        sessionIdRef.current = result.id;
+        setComposerResetKey((value) => value + 1);
+      }).catch(() => undefined).finally(() => { sessionChangingRef.current = false; });
+    }
   };
   const toggleVoice = () => {
     if (!voiceActive)
@@ -3983,6 +4103,7 @@ export function App() {
                 toolRounds={toolBlocks}
                 avatar={avatar}
                 sessionId={sessionIdRef.current ?? undefined}
+                composerResetKey={composerResetKey}
                 onSend={handleSend}
                 onInteraction={handleAvatarInteraction}
                 interactionThinking={interactionThinking}

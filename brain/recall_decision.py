@@ -106,11 +106,16 @@ def _decision_activity(agent, event: dict, on_activity=None):
         on_activity("decision:" + json.dumps({**event, "name": name}, ensure_ascii=False))
 
 
-def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activity=None):
+def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activity=None,
+                   request_started=None):
     from config import get_builtin_tool_config, get_decision_config
     from brain.request_tool_policy import request_tool_allowlist
 
     config = get_decision_config()
+    started = time.monotonic() if request_started is None else request_started
+    agent._request_decision_deadline = started + config["budget_seconds"]
+    agent._request_decision_client = None
+    agent._request_decision_choice = None
     context = parse_request_context(getattr(agent, "_raw_request_text", ""))
     if (not config["enabled"] or config.get("provider", "api") == "api" and not config["allow_cloud_context"]
             or disable_tools or getattr(agent, "_use_local", False)
@@ -172,6 +177,7 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
     state["recall_subjects"] = subjects
     try:
         client = DecisionClient(config)
+        client.deadline = min(client.deadline, agent._request_decision_deadline)
         client.on_event = lambda event: _decision_activity(agent, event, on_activity)
         answer = client.decide(state, NEXT_STEP)["next_step"]
     except DecisionError as exc:
@@ -179,6 +185,8 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
         bridge_log.log("决策中枢", f"未取得有效决策，回退原有链路：{exc}")
         _record(agent, "decision_fallback", reason=str(exc), provider=config.get("provider", "api"))
         return route, None
+    agent._request_decision_client = client
+    agent._request_decision_choice = answer["choice"]
     _record(agent, "decision_route", choice=answer["choice"], probabilities=answer["probabilities"])
     if weather_state is not None:
         agent._weather_location_topic = {}

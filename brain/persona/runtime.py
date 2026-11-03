@@ -49,10 +49,18 @@ def compose_scene_prompt(
             break
     scene_text = scene_text.replace("莲心", snapshot.profile.assistant_name)
     from brain.persona.scenes import scene_policy
+    from brain.persona.growth import get_persona_growth_service
+    try:
+        growth = get_persona_growth_service().dynamic_context(snapshot.profile.id, scene_key)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("成长上下文不可用，保留人格与场景规则", exc_info=True)
+        growth = ""
     compiled = PersonaPromptComposer.compose(
         snapshot,
         user_name=user_name,
         core_policy="",
         scene_policy=f"{scene_policy(scene_key)}\n\n{scene_text}",
+        dynamic_context=[growth] if growth else [],
     )
     return compiled.text

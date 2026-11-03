@@ -99,6 +99,14 @@ def finish_call(name, result="", is_error=False, elapsed_ms=0.0,
         pass
 
 
+def record_memory_activation(data: dict, *, session_id=None, turn=0) -> None:
+    with _LOCK:
+        event = _base_event("memory_activation", _next_seq(), "记忆联想调试",
+                            session_id, 0, turn, "memory_activation")
+        event["activation"] = dict(data)
+        _append(event)
+
+
 def events_after(after: int = 0) -> dict:
     """返回 id 大于 after 的事件，供界面轮询增量读取。"""
     with _LOCK:

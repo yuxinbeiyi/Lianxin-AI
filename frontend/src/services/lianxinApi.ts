@@ -65,10 +65,34 @@ export type DecisionSettings = {
   local: { status: string; ready: boolean; managed: boolean };
 };
 
+export type ChatRequestMetadata = { force_memory_activation: true };
+export type MemoryActivationDebug = {
+  trigger: "forced" | "ordinary";
+  phase: "started" | "retrieved" | "deciding" | "completed";
+  status: string;
+  reason: string;
+  retrieval_status: string;
+  retrieval_reason: string;
+  candidate_ids: number[];
+  channels: string[];
+  inspected: number;
+  retrieval_elapsed_ms: number;
+  decision_called: boolean;
+  decision_status: "not_called" | "running" | "validated" | "failed";
+  provider: "api" | "local" | null;
+  model: string | null;
+  action: "suppress" | "prompt_only" | "light_mention";
+  prompt_injected: boolean;
+  candidate_id: number | null;
+  expression_status: "unknown";
+  reply_status: "pending" | "finished" | "failed" | "cancelled";
+};
+
 export type ToolActivityEvent = {
   id: number;
-  kind: "call" | "result";
-  category?: "tool" | "decision";
+  kind: "call" | "result" | "memory_activation";
+  category?: "tool" | "decision" | "memory_activation";
+  activation?: MemoryActivationDebug;
   seq: number;
   ts?: number;
   sessionId?: number;
@@ -197,6 +221,21 @@ export type ExecutionTaskState = {
 export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?: number; fitMode: "cover" | "contain" | "stretch"; fingerprint: string; dataUrl?: string };
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
 export type PersonaPreview = { text: string; estimated_tokens: number; layers: string[]; error?: string };
+export type GrowthEvent = {
+  id: number; persona_id: string; title: string; detail: string; evidence: string;
+  status: string; field: string; proposed_value: string; old_value: string;
+  scope: "shared" | "persona"; scene: string; source_kind: string;
+  source_session_id: number; source_message_ids: number[]; source_channel: string;
+  created_at: string; applied_at: string; expires_at: string; risk: string;
+  supersedes_id: number; evidence_count: number;
+  evidence_sources: Array<{ source_ref: string; evidence_text: string }>;
+};
+export type GrowthState = {
+  persona_id: string; events: GrowthEvent[]; effective_ids: number[]; context: string;
+  summary: Record<string, any>;
+  settings: { mode: "off" | "confirm" | "low_risk_auto"; growth_paused_until: string;
+    allow_proactive_requests: boolean; allow_photo_invites: boolean };
+};
 export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: PersonaPreview; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> }; created_id?: string };
 export type SettingsPanelState = { global: { silentMode: boolean; userName: string; emotionProbability: number; backgroundEnabled: boolean; backgroundSource: string; backgroundSourceType: string; backgroundOpacity: number; chatBackgroundOpacity: number; backgroundFitMode: string; segmentPauseChatMin: number; segmentPauseChatMax: number; segmentPauseSemanticMin: number; segmentPauseSemanticMax: number }; sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string } };
 export type BilibiliSurfTag = {
@@ -412,6 +451,9 @@ export const lianxinApi = {
   clearBilibiliCommentDraft: () => request<{ ok: boolean; state: BilibiliInteractionState }>("/bilibili-interaction/draft/clear", { method: "POST", body: "{}" }),
   managementState: () => request<{ modules: Array<{ id: string; label: string; available: boolean; state?: unknown }> }>("/management/state"),
   personaState: () => request<PersonaState>("/persona/state"),
+  personaGrowth: (id: string) => request<GrowthState>(`/persona/growth?id=${encodeURIComponent(id)}`),
+  reviewGrowth: (personaId: string, eventId: number, action: "apply" | "revert" | "dismiss") => request<GrowthState>("/persona/growth/review", { method: "POST", body: JSON.stringify({ persona_id: personaId, event_id: eventId, action }) }),
+  growthSettings: (personaId: string, values: Record<string, unknown>) => request<GrowthState>("/persona/growth/settings", { method: "POST", body: JSON.stringify({ persona_id: personaId, ...values }) }),
   personaSave: (profile: Record<string, unknown>) => request<PersonaState>("/persona/save", { method: "POST", body: JSON.stringify(profile) }),
   personaPreview: (profile: Record<string, unknown>) => request<{ profile: Record<string, any>; preview: PersonaPreview }>("/persona/preview", { method: "POST", body: JSON.stringify(profile) }),
   personaCreate: (profileName: string, template = "") => request<PersonaState>("/persona/create", { method: "POST", body: JSON.stringify({ profile_name: profileName, template }) }),
@@ -466,10 +508,16 @@ export const lianxinApi = {
   timeCapsule: (day = "") => request<{ day: any; timeline: any[]; today: string }>(`/time-capsule/state${day ? `?day=${encodeURIComponent(day)}` : ""}`),
   saveTimeCapsule: (day: string, content: string) => request<Record<string, unknown>>("/time-capsule/save", { method: "POST", body: JSON.stringify({ day, content }) }),
   sealTimeCapsule: (day: string, content: string) => request<Record<string, unknown>>("/time-capsule/seal", { method: "POST", body: JSON.stringify({ day, content }) }),
-  streamChat: async function* (message: string, attachments: Array<{ kind: "image" | "file"; fileName: string; dataUrl: string }> = [], selection: { forcedTool?: string; preferredTool?: string } = {}, quote?: { role: "user" | "assistant"; content: string }) {
-    const response = await fetch(`${API_ROOT}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachments, ...selection, quote }) });
+  streamChat: async function* (message: string, attachments: Array<{ kind: "image" | "file"; fileName: string; dataUrl: string }> = [], selection: { forcedTool?: string; preferredTool?: string } = {}, quote?: { role: "user" | "assistant"; content: string }, requestMetadata?: ChatRequestMetadata) {
+    const metadata = requestMetadata?.force_memory_activation === true ? { force_memory_activation: true } : undefined;
+    const response = await fetch(`${API_ROOT}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachments, ...selection, quote, requestMetadata: metadata }) });
     if (!response.ok || !response.body) throw new Error(`API ${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
-    while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value, { stream: true }); const chunks = buffer.split("\n\n"); buffer = chunks.pop() ?? ""; for (const chunk of chunks) { const line = chunk.split("\n").find((item) => item.startsWith("data: ")); if (line) yield JSON.parse(line.slice(6)) as ChatStreamEvent; } }
+    try {
+      while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value, { stream: true }); const chunks = buffer.split("\n\n"); buffer = chunks.pop() ?? ""; for (const chunk of chunks) { const line = chunk.split("\n").find((item) => item.startsWith("data: ")); if (line) yield JSON.parse(line.slice(6)) as ChatStreamEvent; } }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   },
 };

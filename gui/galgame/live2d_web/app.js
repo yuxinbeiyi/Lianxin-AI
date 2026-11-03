@@ -5,6 +5,7 @@
   let state = "idle";
   let disposed = false;
   let ready = false;
+  let visible = true;
   let currentMotion;
   let displayedMouth = 0;
   let lastFrame = performance.now();
@@ -158,8 +159,9 @@
       thinking = Boolean(active);
       thinkingUntil = performance.now() + 90000;
     },
-    setState: function (nextState, visible) {
+    setState: function (nextState, isVisible) {
       state = nextState === "talking" ? "talking" : "idle";
+      visible = Boolean(isVisible);
       if (!ready || disposed) return;
       if (visible) {
         app.start();
@@ -185,7 +187,8 @@
       if (disposed) return;
       disposed = true;
       window.removeEventListener("resize", fit);
-      if (model) model.destroy();
+      if (app) app.stop();
+      if (model) model.destroy({ texture: true, baseTexture: true });
       if (app) app.destroy(false);
     },
   };
@@ -213,12 +216,17 @@
     const rest = allMotions.find(function (entry) { return /lianxinV3StrongerArmSway/.test(entry.File); });
     if (!speaking || !rest) throw new Error("v17 说话/摆臂动作文件缺失");
     settings.FileReferences.Motions = { Rest: [rest], Speaking: [speaking] };
+    if (disposed) return;
     app = new PIXI.Application({
       view: document.getElementById("stage"), width: window.innerWidth, height: window.innerHeight,
       backgroundAlpha: 0, antialias: true, resolution: window.devicePixelRatio || 1,
+      autoStart: false,
     });
-    model = await PIXI.live2d.Live2DModel.from(settings, { autoInteract: false, motionPreload: "ALL" });
-    if (disposed) { model.destroy(); return; }
+    model = await PIXI.live2d.Live2DModel.from(settings, { autoUpdate: false, autoInteract: false, motionPreload: "ALL" });
+    if (disposed) { model.destroy({ texture: true, baseTexture: true }); return; }
+    app.ticker.add(function () {
+      model.update(app.ticker.deltaMS);
+    }, undefined, PIXI.UPDATE_PRIORITY.HIGH);
     model.internalModel.breath = undefined;
     model.internalModel.motionManager.expressionManager.stopAllExpressions();
     model.internalModel.on("beforeModelUpdate", function () {
@@ -247,7 +255,7 @@
     window.addEventListener("resize", fit);
     fit();
     ready = true;
-    playState();
+    window.lianxinLive2D.setState(state, visible);
     console.info("LIANXIN_LIVE2D_READY");
   } catch (error) {
     if (app) app.stop();

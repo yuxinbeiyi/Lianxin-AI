@@ -670,6 +670,7 @@ def validate_extraction_contract(payload: object) -> dict:
         "memories": memories,
         "quintuples": quintuples,
         "graph_fallback_required": graph_fallback_required,
+        "growth_candidates": payload.get("growth_candidates", []),
     }
 
 
@@ -729,6 +730,16 @@ class LLMExtractionProcessor:
         raw = response.choices[0].message.content or "{}"
         contract = validate_extraction_contract(json.loads(raw))
         memories = contract["memories"]
+        growth_candidates = contract["growth_candidates"]
+        if growth_candidates:
+            try:
+                from brain.persona.growth import get_persona_growth_service
+                get_persona_growth_service().ingest_candidates(
+                    growth_candidates, batch.rows, persona_id=self.persona_id,
+                    source_session_id=batch.session_id, source_channel=self.source_channel,
+                )
+            except Exception:
+                logger.warning("成长候选未写入；保留原有记忆提取流程", exc_info=True)
 
         from brain.graph_memory import add_fact, add_memory_fragment
 

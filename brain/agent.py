@@ -857,15 +857,6 @@ class AgentCore:
         # 即使用户此时在界面切换人格，也只影响下一条新请求。
         persona_snapshot, persona_transition = self._prepare_persona_request()
         self._latest_growth_event = None
-        if persona_snapshot is not None and persona_snapshot.enabled:
-            try:
-                from brain.persona.growth import get_persona_growth_service
-                self._latest_growth_event = get_persona_growth_service().observe_feedback(
-                    persona_snapshot.profile.id, active_request_text
-                )
-            except Exception:
-                pass
-
         trace_id = ""
         trace_started = time.perf_counter()
         if getattr(self, "_owner_scope", True) and not getattr(self, "_use_local", False):
@@ -892,6 +883,17 @@ class AgentCore:
             self._session_id, "user", user_message
         )
         self._execution_request_id = str(user_message_id)
+        if (persona_snapshot is not None and persona_snapshot.enabled
+                and self._owner_scope and not self._request_memory_writes_blocked):
+            try:
+                from brain.persona.growth import get_persona_growth_service
+                self._latest_growth_event = get_persona_growth_service().observe_feedback(
+                    persona_snapshot.profile.id, active_request_text,
+                    source_session_id=self._session_id, source_message_id=user_message_id,
+                    source_channel=self._source_channel, scene=getattr(self, "_scene", "main_chat"),
+                )
+            except Exception as exc:
+                logger.warning("成长反馈记录失败，继续本轮对话: %s", exc)
 
         # 在首次模型调用之前，将用户明确引用的文档批量转换为 Markdown。
         try:
@@ -975,6 +977,7 @@ class AgentCore:
                 logger.warning("涟漪 v3 本轮评估失败，继续使用基础人格: %s", exc)
 
         effective_disable = disable_tools or self._disable_tools or self._use_local
+        _activation_loop_failed = True
         try:
             if on_activity:
                 on_activity("agent_loop_started")
@@ -991,6 +994,7 @@ class AgentCore:
                                                           request_metadata=request_metadata)
             if self._task_run is not None:
                 self._task_run.mark_finished(success=bool(str(response_text or '').strip()))
+            _activation_loop_failed = False
         except Exception as exc:
             if self._task_run is not None:
                 self._task_run.mark_finished(success=False)
@@ -1007,6 +1011,12 @@ class AgentCore:
             self._active_workflow_run_id = 0
             self._prepared_document_context = ""
             raise
+        finally:
+            try:
+                from brain.memory_activation_debug import finish_activation_debug
+                finish_activation_debug(self, failed=_activation_loop_failed)
+            except Exception:
+                logger.debug("Activation progress finalization unavailable", exc_info=True)
 
         if getattr(self, "_last_execution_notice", None) and not response_text:
             self._finish_status_turn(workflow_store, workflow_run_id, trace_id, trace_started)
@@ -1354,7 +1364,7 @@ class AgentCore:
                 core_policy=("" if self._use_local else
                              (_COMPACT_CORE_POLICY if compact else get_core_system_policy())),
                 scene_policy="\n\n".join(scene_parts),
-                dynamic_context=self._growth_and_self_context(persona_snapshot),
+                dynamic_context=self._growth_and_self_context(persona_snapshot, getattr(self, "_scene", "main_chat")),
                 compact=compact,
             )
             return [dict(message, _module="persona") for message in compiled.as_messages()]
@@ -1363,10 +1373,10 @@ class AgentCore:
             return [{"role": "system", "content": self._system_prompt}]
 
     @staticmethod
-    def _growth_and_self_context(persona_snapshot) -> list[str]:
+    def _growth_and_self_context(persona_snapshot, scene="main_chat") -> list[str]:
         try:
             from brain.self_model import build_self_knowledge_context
-            return [build_self_knowledge_context(persona_snapshot.profile.id)]
+            return [build_self_knowledge_context(persona_snapshot.profile.id, scene)]
         except Exception:
             return []
 
@@ -2946,6 +2956,11 @@ class AgentCore:
         self._recall_outcome = None
         self._background_recall_plan = None
         self._memory_activation_outcome = None
+        self._memory_mention_outcome = None
+        self._request_decision_client = None
+        self._request_decision_choice = None
+        from brain.memory_activation_debug import begin_activation_debug
+        begin_activation_debug(self, request_metadata)
         # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
         # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
         # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
@@ -3007,6 +3022,7 @@ class AgentCore:
         try:
             route, _recall_plan = prepare_recall(
                 self, route, disable_tools=disable_tools, on_activity=on_activity,
+                request_started=_request_started,
             )
         except Exception as exc:
             logger.warning("回忆决策不可用，保留原有路由: %s", type(exc).__name__)
@@ -3271,7 +3287,7 @@ class AgentCore:
                     if persona_snapshot is not None and persona_snapshot.enabled:
                         _emotion_snippet += (
                             "\n情感只能在当前激活人格允许的表达范围内体现；"
-                            "不得改变当前人格的身份、语言风格或行为边界。"
+                            "可在已确认成长习惯的基础上改变当下语气，不得改写身份、硬边界或长期偏好。"
                         )
                     messages.append({"role": "system", "content": _emotion_snippet})
             except Exception:
@@ -3573,6 +3589,7 @@ class AgentCore:
             messages.extend(_history_for_prompt(recent_history))
 
         _auto_save_memory = bool(get_memory_config().get("conversation_auto_save", False))
+        runtime_disabled_names = set()
         # ── 工具按需注入：强信号直达；模糊任务仅先暴露能力代理 ──
         if self._use_local:
             all_tools = []
@@ -4177,6 +4194,16 @@ class AgentCore:
             required_tool = _contract_chain[0] if _contract_chain else None
             if forced_tool in closed_memory_tools:
                 forced_tool = None
+
+        try:
+            from brain.memory_activation_flow import inject_activation
+            inject_activation(
+                self, route, messages, disable_tools=disable_tools,
+                recall_plan=_recall_plan, snapshot=persona_snapshot,
+                disabled_tools=runtime_disabled_names,
+            )
+        except Exception:
+            logger.debug("Optional memory association unavailable", exc_info=True)
 
         while iteration < MAX_ITERATIONS:
             iteration += 1

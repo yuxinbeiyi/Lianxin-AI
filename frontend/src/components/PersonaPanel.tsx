@@ -27,6 +27,7 @@ import {
   type PersonaState,
 } from "../services/lianxinApi";
 import { parsePersonaPreview } from "../utils/personaPreview";
+import { GrowthPanel } from "./GrowthPanel";
 
 const PERSONA_FIELDS = [
   "summary", "identity", "appearance", "personality", "speaking_style",
@@ -143,6 +144,8 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
   const [pane, setPane] = useState<PaneId>("editor");
   const [previewVisible, setPreviewVisible] = useState(true);
   const [expandedField, setExpandedField] = useState<PersonaField | null>(null);
+  const [growthOpen, setGrowthOpen] = useState(false);
+  const [growthRevision, setGrowthRevision] = useState(0);
   const previewSequence = useRef(0);
   const toastSequence = useRef(0);
 
@@ -208,7 +211,7 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
         });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [selectedId, draft]);
+  }, [selectedId, draft, growthRevision]);
 
   const profile = findProfile(state, selectedId) ?? null;
   const activeId = String(state?.snapshot.profile.id || "");
@@ -439,6 +442,7 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (growthOpen) return;
       if (deleteTarget) {
         if (!busy) setDeleteTarget(null);
         return;
@@ -455,7 +459,7 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [busy, createOpen, deleteTarget, navigationIntent, requestClose]);
+  }, [busy, createOpen, deleteTarget, navigationIntent, requestClose, growthOpen]);
 
   const activateLabel = pendingAction === "activate"
     ? "正在激活…"
@@ -470,6 +474,17 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
     !profile
     || busy
     || (isActive && !dirty && systemEnabled && !activeSavedNotApplied);
+  if (growthOpen) return <GrowthPanel personaId={selectedId || activeId} profiles={state?.profiles || []}
+    onClose={() => setGrowthOpen(false)} onChange={(growth) => {
+      if (growth.persona_id === selectedId) {
+        setState((previous) => previous ? { ...previous, growth } : previous);
+      } else {
+        void lianxinApi.personaGrowth(selectedId).then((current) => {
+          setState((previous) => previous ? { ...previous, growth: current } : previous);
+        }).catch((error) => notify(formatError(error), "error"));
+      }
+      setGrowthRevision((revision) => revision + 1);
+    }} />;
   return (
     <div className="constellation-overlay persona-overlay">
       <div className="persona-frame">
@@ -492,6 +507,7 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
                 <span className="persona-badge is-warning">已保存草稿尚未应用</span>
               )}
             </div>
+            <button className="secondary-button" disabled={!state || busy} onClick={() => setGrowthOpen(true)}>成长轨迹</button>
             <button
               className="secondary-button persona-toggle"
               onClick={() => void toggleSystem()}
@@ -755,14 +771,14 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
                 {previewError ? "预览编译失败" : "正在等待 Prompt 预览…"}
               </div>
             )}
-            <div className="persona-growth">
+            <button className="persona-growth" onClick={() => setGrowthOpen(true)} disabled={!state || busy}>
               <strong>成长轨迹</strong>
               <span>
                 {state?.growth.summary
                   ? `当前生效 ${state.growth.summary.counts?.applied || 0} 项 · 本周变化 ${state.growth.summary.weekly_changes || 0} 次`
-                  : "暂无成长数据"}
+                  : "暂无成长数据"} · 打开共同成长中心
               </span>
-            </div>
+            </button>
           </aside>
         </div>
 
