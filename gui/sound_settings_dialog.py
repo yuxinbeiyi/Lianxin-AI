@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QComboBox, QLineEdit, QCheckBox, QDialogButtonBox,
     QWidget, QFileDialog, QTabWidget, QMessageBox
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 from utils.settings import get_settings
 from config import get_tts_config, save_tts_config
@@ -27,8 +27,12 @@ _ADVANCED_DEFAULTS = {
 class SoundSettingsDialog(QDialog):
     """声音设置独立对话框（包含音量、音效、TTS引擎、语音合成参数）"""
 
-    def __init__(self, parent=None):
+    _tts_test_finished = pyqtSignal(str)
+
+    def __init__(self, parent=None, tts_preview=None):
         super().__init__(parent)
+        self._tts_preview = tts_preview
+        self._tts_test_finished.connect(self._on_tts_test_finished)
         self._settings = get_settings()
         self._tts_cfg = get_tts_config()
 
@@ -789,18 +793,21 @@ class SoundSettingsDialog(QDialog):
         reset_gpt_sovits_cache()
 
         def _test():
-            import tempfile, os, threading
-            from brain.tts_engine import TtsEngine
-            engine = TtsEngine()
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            wav_path = tmp.name
-            tmp.close()
-            failed = False
+            wav_path = None
+            error = ""
             try:
+                if self._tts_preview is not None:
+                    if not self._tts_preview(test_text):
+                        raise RuntimeError("试听被取消或播放器忙，请稍后重试")
+                    return
+                import tempfile
+                from brain.tts_engine import TtsEngine
+                engine = TtsEngine()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temporary:
+                    wav_path = temporary.name
                 success = engine.synthesize(test_text, wav_path)
                 if not success:
-                    failed = True
-                    return
+                    raise RuntimeError("合成失败，详见 logs/debug.log")
                 import pygame
                 if not pygame.mixer.get_init():
                     pygame.init()
@@ -813,20 +820,23 @@ class SoundSettingsDialog(QDialog):
                     sound.play()
                 while pygame.mixer.get_busy():
                     pygame.time.wait(50)
+            except Exception as exc:
+                error = str(exc)
             finally:
-                try:
-                    os.unlink(wav_path)
-                except Exception:
-                    pass
-                if failed:
-                    self._tts_test_status.setText("❌ 合成失败：可能未找到 FFmpeg 或 TTS 异常，详见 logs/debug.log")
-                else:
-                    self._tts_test_status.setText("✅ 试听完成")
-                self._tts_test_btn.setText("🔊 试听")
-                self._tts_test_btn.setEnabled(True)
+                if wav_path:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+                self._tts_test_finished.emit(error)
 
         import threading
         threading.Thread(target=_test, daemon=True).start()
+
+    def _on_tts_test_finished(self, error):
+        self._tts_test_status.setText(f"❌ 试听失败：{error}" if error else "✅ 试听完成")
+        self._tts_test_btn.setText("🔊 试听")
+        self._tts_test_btn.setEnabled(True)
 
     def _on_save(self):
         self._settings.silent_mode = self._silent_cb.isChecked()

@@ -69,12 +69,12 @@ import {
   type BackgroundState,
   type ChatStreamEvent,
   type LegacyFeature,
-  type PersonaState,
   type ExecutionTaskState,
   type ToolActivityEvent,
 } from "./services/lianxinApi";
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
+import { PersonaPanel as PersonaPanelView } from "./components/PersonaPanel";
 import { DecisionPanel } from "./components/DecisionPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ExecutionCard } from "./components/ExecutionCard";
@@ -2783,255 +2783,6 @@ function DataTidePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-const personaFields = [
-  "summary",
-  "identity",
-  "appearance",
-  "personality",
-  "speaking_style",
-  "habits",
-  "relationship",
-  "user_address",
-  "boundaries",
-  "custom_instructions",
-];
-const personaLabels: Record<string, string> = {
-  summary: "一句话简介",
-  identity: "身份与背景",
-  appearance: "外貌设定",
-  personality: "性格设定",
-  speaking_style: "说话风格",
-  habits: "行为习惯",
-  relationship: "与用户的关系",
-  user_address: "对用户的称呼",
-  boundaries: "关系边界",
-  custom_instructions: "高级补充指令",
-};
-function PersonaPanel({ onClose }: { onClose: () => void }) {
-  const [state, setState] = useState<PersonaState | null>(null);
-  const [selectedId, setSelectedId] = useState("");
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState("");
-  const load = () =>
-    void lianxinApi
-      .personaState()
-      .then((next) => {
-        setState(next);
-        setSelectedId((current) => current || String(next.snapshot.profile.id));
-      })
-      .catch((error) => setStatus(String(error)));
-  useEffect(() => {
-    load();
-  }, []);
-  useEffect(() => {
-    const profile = state?.profiles.find(
-      (item) => String(item.id) === selectedId,
-    );
-    if (profile)
-      setDraft(
-        Object.fromEntries(
-          ["profile_name", "assistant_name", ...personaFields].map((field) => [
-            field,
-            String(profile[field] ?? ""),
-          ]),
-        ),
-      );
-  }, [state, selectedId]);
-  const profile = state?.profiles.find(
-    (item) => String(item.id) === selectedId,
-  );
-  const activeId = String(state?.snapshot.profile.id || "");
-  const save = () => {
-    if (!profile) return;
-    void lianxinApi
-      .personaSave({ id: selectedId, ...draft })
-      .then((next) => {
-        setState(next);
-        setStatus("已保存草稿");
-      })
-      .catch((error) => setStatus(String(error)));
-  };
-  const activate = () =>
-    void lianxinApi
-      .personaActivate(selectedId, true)
-      .then((next) => {
-        setState(next);
-        setStatus("已激活，从下一条新请求生效");
-      })
-      .catch((error) => setStatus(String(error)));
-  const create = () => {
-    const name = window.prompt("新人格档案名称", "新的人格");
-    if (name?.trim())
-      void lianxinApi
-        .personaCreate(name.trim())
-        .then((next) => {
-          setState(next);
-          setStatus("已创建人格档案");
-        })
-        .catch((error) => setStatus(String(error)));
-  };
-  return (
-    <div className="constellation-overlay persona-overlay">
-      <div className="persona-frame">
-        <header className="persona-header">
-          <div>
-            <span className="eyebrow">莲心系统 · 换壳不换底</span>
-            <h2>人格枢控</h2>
-            <p>管理人格档案、表达方式与成长轨迹</p>
-          </div>
-          <div className="persona-header-actions">
-            <span
-              className={`persona-status ${state?.snapshot.enabled ? "is-on" : ""}`}
-            >
-              {state?.snapshot.enabled ? "人格系统已启用" : "人格系统已停用"}
-            </span>
-            <button
-              className="secondary-button"
-              onClick={() =>
-                state &&
-                void lianxinApi
-                  .personaToggle(!state.snapshot.enabled)
-                  .then(setState)
-              }
-            >
-              切换启用
-            </button>
-            <button className="overlay-close" onClick={onClose}>
-              <X size={18} />
-            </button>
-          </div>
-        </header>
-        <div className="persona-body">
-          <aside className="persona-sidebar">
-            <div className="persona-section-title">
-              <strong>人格档案</strong>
-              <button className="secondary-button" onClick={create}>
-                新建
-              </button>
-            </div>
-            <div className="persona-list">
-              {(state?.profiles || []).map((item) => (
-                <button
-                  className={`persona-list-item ${String(item.id) === selectedId ? "is-selected" : ""}`}
-                  key={String(item.id)}
-                  onClick={() => setSelectedId(String(item.id))}
-                >
-                  <span>
-                    {String(item.id) === activeId ? "● " : ""}
-                    {String(item.profile_name || "未命名人格")}
-                  </span>
-                  <small>{String(item.assistant_name || "莲心")}</small>
-                </button>
-              ))}
-            </div>
-            {profile && profile.id !== "default-lianxin" && (
-              <button
-                className="persona-danger"
-                onClick={() =>
-                  void lianxinApi.personaDelete(selectedId).then((next) => {
-                    setState(next);
-                    setSelectedId(String(next.snapshot.profile.id));
-                  })
-                }
-              >
-                删除当前档案
-              </button>
-            )}
-          </aside>
-          <section className="persona-editor">
-            <div className="persona-editor-head">
-              <div>
-                <span className="eyebrow">档案编辑</span>
-                <h3>{String(profile?.profile_name || "选择一个人格")}</h3>
-              </div>
-              <div className="persona-actions">
-                <button
-                  className="secondary-button"
-                  onClick={save}
-                  disabled={!profile}
-                >
-                  保存草稿
-                </button>
-                <button
-                  className="secondary-button persona-activate"
-                  onClick={activate}
-                  disabled={!profile || activeId === selectedId}
-                >
-                  保存并激活
-                </button>
-              </div>
-            </div>
-            {profile ? (
-              <div className="persona-form">
-                <label>
-                  档案名称
-                  <input
-                    value={draft.profile_name || ""}
-                    onChange={(event) =>
-                      setDraft({ ...draft, profile_name: event.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  助手名称
-                  <input
-                    value={draft.assistant_name || ""}
-                    onChange={(event) =>
-                      setDraft({ ...draft, assistant_name: event.target.value })
-                    }
-                  />
-                </label>
-                {personaFields.map((field) => (
-                  <label key={field}>
-                    {personaLabels[field]}
-                    <textarea
-                      value={draft[field] || ""}
-                      onChange={(event) =>
-                        setDraft({ ...draft, [field]: event.target.value })
-                      }
-                      rows={
-                        field === "summary" || field === "user_address" ? 2 : 4
-                      }
-                    />
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <div className="persona-empty">正在读取人格档案…</div>
-            )}
-          </section>
-          <aside className="persona-preview">
-            <div className="persona-preview-head">
-              <div>
-                <span className="eyebrow">最终 Prompt</span>
-                <h3>效果预览</h3>
-              </div>
-              <span>{state?.preview.estimated_tokens || 0} tokens</span>
-            </div>
-            <div className="persona-layers">
-              {(state?.preview.layers || []).map((layer) => (
-                <span key={layer}>{layer}</span>
-              ))}
-            </div>
-            <pre>
-              {state?.preview.text || "选择人格后显示最终 Prompt 分层预览"}
-            </pre>
-            <div className="persona-growth">
-              <strong>成长轨迹</strong>
-              <span>
-                {state?.growth.summary
-                  ? `当前生效 ${state.growth.summary.counts?.applied || 0} 项 · 本周变化 ${state.growth.summary.weekly_changes || 0} 次`
-                  : "暂无成长数据"}
-              </span>
-            </div>
-          </aside>
-        </div>
-        {status && <div className="persona-toast">{status}</div>}
-      </div>
-    </div>
-  );
-}
-
 function StudyRoomPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="constellation-overlay">
@@ -4301,7 +4052,7 @@ export function App() {
         <ConstellationPanel onClose={() => setPanel("none")} />
       )}
       {panel === "ripple" && <RipplePanel onClose={() => setPanel("none")} />}
-      {panel === "persona" && <PersonaPanel onClose={() => setPanel("none")} />}
+      {panel === "persona" && <PersonaPanelView onClose={() => setPanel("none")} />}
       {panel === "data-tide" && (
         <DataTidePanel onClose={() => setPanel("none")} />
       )}

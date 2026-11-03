@@ -139,6 +139,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
 
   const loadPlaylists = (page = 0) => {
     setPlaylistLoading(true);
+    setPlaylistError("");
     lianxinApi.musicPlaylists(page * PLAYLIST_PAGE_SIZE, PLAYLIST_PAGE_SIZE)
       .then((data) => {
         setPlaylists(data.playlists ?? []);
@@ -146,7 +147,12 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
         setPlaylistHasMore(Boolean(data.hasMore));
         setPlaylistPage(page);
       })
-      .catch(() => undefined)
+      .catch((error) => {
+        const raw = String((error as Error)?.message ?? "歌单加载失败");
+        setPlaylistError(/timed out|timeout|超时/i.test(raw)
+          ? "音乐服务响应超时，请稍后点击“刷新”重试"
+          : raw);
+      })
       .finally(() => setPlaylistLoading(false));
   };
 
@@ -555,12 +561,13 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
               <span className="music-playlist-count">{playlistTotal ? `共 ${playlistTotal} 个歌单` : "我的歌单"}</span>
               <button className="music-btn music-btn-outline" onClick={() => loadPlaylists(playlistPage)} disabled={playlistLoading}>{playlistLoading ? "加载中..." : "刷新"}</button>
             </div>
+            {playlistError && !selectedPlaylist ? <p className="music-error-text">{playlistError}</p> : null}
             {selectedPlaylist ? <>
               {selectedPlaylist.trackCount && (selectedPlaylist.tracks?.length ?? 0) < selectedPlaylist.trackCount ? <p className="music-playlist-hint">{`共 ${selectedPlaylist.trackCount} 首，当前显示前 ${selectedPlaylist.tracks?.length ?? 0} 首`}</p> : null}
               <div className="music-feedback-panel"><p>{selectedPlaylist.name}</p><button className="music-btn music-btn-primary" disabled={playlistPlayLoading} onClick={() => { setPlaylistPlayLoading(true); setPlaylistError(""); lianxinApi.musicPlayPlaylist(selectedPlaylist.id).then(() => onRefresh?.()).catch((error) => setPlaylistError(String(error?.message || "歌单播放失败"))).finally(() => setPlaylistPlayLoading(false)); }}>{playlistPlayLoading ? "正在加载播放队列..." : "播放此歌单"}</button>{playlistError ? <p className="music-error-text">{playlistError}</p> : null}</div>
               {(selectedPlaylist.tracks ?? []).map((track, index) => <div className="music-queue-item" key={`${track.id}-${index}`}><span className="music-queue-index">{String(index + 1).padStart(2, "0")}</span><span className="music-queue-copy"><strong>{track.name || "未知歌曲"}</strong><em>{track.artist || "未知歌手"}</em></span><span className="music-track-actions"><button className="music-btn music-btn-small" title="下一首播放" onClick={() => onControl("queue-insert-next", { track })}>下一首</button><button className="music-btn music-btn-small" title="加入播放队列" onClick={() => onControl("queue-append", { track })}>加入</button></span></div>)}
               <button className="music-btn" onClick={() => setSelectedPlaylist(null)}>返回歌单列表</button>
-            </> : playlistLoading ? <div className="music-empty">正在加载歌单...</div> : playlists.length ? playlists.map((item) => <button className="music-queue-item" key={item.id} onClick={() => { setPlaylistDetailLoading(true); lianxinApi.musicPlaylist(item.id).then((data) => setSelectedPlaylist(data.playlist ?? { id: item.id, name: item.name, tracks: data.tracks ?? [] })).catch(() => undefined).finally(() => setPlaylistDetailLoading(false)); }}><span className="music-queue-copy"><strong>{item.name}</strong><em>{playlistDetailLoading ? "正在加载详情..." : `${item.trackCount ?? 0} 首歌曲${item.creator ? ` · ${item.creator}` : ""}`}</em></span></button>) : <div className="music-empty">暂无歌单或网易云尚未登录，请点击“加载歌单”重试</div>}
+            </> : playlistLoading ? <div className="music-empty">正在加载歌单...</div> : playlists.length ? playlists.map((item) => <button className="music-queue-item" key={item.id} onClick={() => { setPlaylistDetailLoading(true); setPlaylistError(""); lianxinApi.musicPlaylist(item.id).then((data) => setSelectedPlaylist(data.playlist ?? { id: item.id, name: item.name, tracks: data.tracks ?? [] })).catch((error) => setPlaylistError(String((error as Error)?.message || "歌单详情加载失败"))).finally(() => setPlaylistDetailLoading(false)); }}><span className="music-queue-copy"><strong>{item.name}</strong><em>{playlistDetailLoading ? "正在加载详情..." : `${item.trackCount ?? 0} 首歌曲${item.creator ? ` · ${item.creator}` : ""}`}</em></span></button>) : <div className="music-empty">暂无歌单或网易云尚未登录，请点击“刷新”重试</div>}
             {!selectedPlaylist && playlistPageCount > 1 ? (
               <div className="music-pager">
                 <button className="music-pager-btn" disabled={playlistPage === 0 || playlistLoading} onClick={() => loadPlaylists(playlistPage - 1)}>上一页</button>

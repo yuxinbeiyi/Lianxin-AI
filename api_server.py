@@ -1013,7 +1013,7 @@ class LianxinBridge:
 
     def chat_stream(self, text: str, attachments: list[dict] | None = None,
                     forced_tool: str | None = None, preferred_tool: str | None = None,
-                    quote: dict | None = None):
+                    quote: dict | None = None, request_metadata: dict | None = None):
         """Run AgentCore in a worker and forward tool lifecycle events as SSE data."""
         attachments = list(attachments or [])
         if not text.strip() and not attachments:
@@ -1152,6 +1152,10 @@ class LianxinBridge:
                         on_round_start=on_round_start,
                         on_tool_call=on_tool_call,
                         on_tool_result=on_tool_result,
+                        request_metadata={
+                            "force_memory_activation": True,
+                        } if isinstance(request_metadata, dict)
+                        and request_metadata.get("force_memory_activation") is True else None,
                     )
                     _attach_observation_to_reply(
                         agent, pending_observation[0], assistant_id_before
@@ -2013,6 +2017,10 @@ class LianxinBridge:
     NETEASE_SPAWN_TIMEOUT = 8.0
     NETEASE_FAIL_STREAK_LIMIT = 3
     NETEASE_COOLDOWN_SECONDS = 300.0
+    # /api/play-track 要等服务端拿到播放地址并让 mpv 接管，正常也可能超过 3s。
+    # 旧值 3s 会把"切歌慢"误判成"不可播放"，进而在一次 next 里连跳整条队列。
+    NETEASE_PLAY_HTTP_TIMEOUT = 12.0
+    NETEASE_PLAY_SETTLE_SECONDS = 2.0
 
     def _netease_port_listening(self, timeout: float = 0.5) -> bool:
         """端口级判活：只看 127.0.0.1:8765 上有没有监听者，不依赖对端是否及时应答。"""
@@ -2211,16 +2219,20 @@ class LianxinBridge:
 
     def music_playlists(self, offset: int = 0, limit: int = 24) -> dict:
         import urllib.request
+        if not self.ensure_netease_online():
+            raise ValueError(self._netease_unavailable_message())
         query = f"?offset={max(0, int(offset))}&limit={max(1, min(50, int(limit)))}"
-        with urllib.request.urlopen("http://127.0.0.1:8765/api/playlists" + query, timeout=5) as response:
+        with urllib.request.urlopen("http://127.0.0.1:8765/api/playlists" + query, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def music_playlist(self, playlist_id: str) -> dict:
         import urllib.request
         if not str(playlist_id).strip():
             raise ValueError("歌单 ID 不能为空")
+        if not self.ensure_netease_online():
+            raise ValueError(self._netease_unavailable_message())
         url = "http://127.0.0.1:8765/api/playlist?id=" + quote(str(playlist_id), safe="")
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(url, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def music_play_playlist(self, playlist_id: str) -> dict:
@@ -2782,6 +2794,30 @@ class LianxinBridge:
         with self._music_control_lock:
             return self._music_skip_unplayable_locked(action, payload)
 
+    @staticmethod
+    def _netease_play_timeout_error(exc: Exception) -> bool:
+        text = f"{exc} {getattr(exc, 'reason', '')}".lower()
+        return isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text or "超时" in text
+
+    @staticmethod
+    def _netease_play_error_detail(exc: Exception) -> str:
+        """Read the HTTP error body so a real VIP/copyright message is not lost."""
+        body = ""
+        try:
+            if hasattr(exc, "read"):
+                body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        detail = body.strip()
+        if detail:
+            try:
+                payload = json.loads(detail)
+                if isinstance(payload, dict):
+                    detail = str(payload.get("message") or payload.get("msg") or payload.get("error") or detail)
+            except Exception:
+                pass
+        return (detail or str(exc) or exc.__class__.__name__).strip()[:300]
+
     def _music_skip_unplayable_locked(self, action: str, payload: dict) -> dict:
         """Run one directional skip while excluding overlapping bridge requests."""
         import urllib.request
@@ -2831,24 +2867,45 @@ class LianxinBridge:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(request, timeout=3) as response:
+                with urllib.request.urlopen(request, timeout=self.NETEASE_PLAY_HTTP_TIMEOUT) as response:
                     response.read()
-                deadline = time.time() + 2.0
-                while time.time() < deadline:
-                    state = self.music_state()
-                    current_id = str((state.get("currentTrack") or {}).get("id") or "")
-                    if state.get("active") and (current_id == str(track_id) or state.get("name") == queue[index].get("name")):
-                        state["skippedTracks"] = max(0, len(tried) - 1)
-                        state["skippedTrackIds"] = skipped
-                        return state
-                    time.sleep(0.2)
             except Exception as exc:
+                if self._netease_play_timeout_error(exc):
+                    message = (
+                        f"网易云播放服务响应超时（{self.NETEASE_PLAY_HTTP_TIMEOUT:.0f}s），"
+                        "已停止本轮自动跳歌；这不是 VIP 或版权问题"
+                    )
+                    bridge_log.log(
+                        "网易云",
+                        f"{message}，曲目 {track_id} 未判定为不可播: {exc}",
+                    )
+                    raise RuntimeError(message) from exc
+                detail = self._netease_play_error_detail(exc)
+                import re
+                if not re.search(r"vip|copyright|版权|会员|无版权|unavailable", detail, re.I):
+                    message = f"切换歌曲失败（{detail}），已停止本轮自动跳歌"
+                    bridge_log.log("网易云", f"{message}，曲目 {track_id}")
+                    raise RuntimeError(message) from exc
                 skipped.append({
                     "id": str(track_id),
                     "title": queue[index].get("name") or "未知歌曲",
-                    "reason": "unavailable",
+                    "reason": "vip",
                 })
-                bridge_log.log("网易云", f"跳过不可播放歌曲 {track_id}: {exc}")
+                bridge_log.log("网易云", f"跳过不可播放歌曲 {track_id}: {detail}")
+                continue
+            # HTTP 200 表示服务端已经完成切歌；状态同步慢时只返回当前状态，
+            # 绝不因为旧状态没刷新就继续跳到下一首。
+            state = self.music_state()
+            deadline = time.time() + self.NETEASE_PLAY_SETTLE_SECONDS
+            while time.time() < deadline:
+                current_id = str((state.get("currentTrack") or {}).get("id") or "")
+                if state.get("active") and (current_id == str(track_id) or state.get("name") == queue[index].get("name")):
+                    break
+                time.sleep(0.2)
+                state = self.music_state()
+            state["skippedTracks"] = max(0, len(tried) - 1)
+            state["skippedTrackIds"] = skipped
+            return state
         raise ValueError(f"未找到可播放的歌曲，已尝试 {len(tried)} 首")
 
     def voice_state(self) -> dict:
@@ -3146,6 +3203,7 @@ class LianxinBridge:
     def persona_state(self) -> dict:
         from brain.persona import PersonaPromptComposer, get_persona_manager
         from brain.persona.growth import get_persona_growth_service
+        from brain.persona.scenes import scene_policy
         from config import get_core_system_policy, get_user_name
 
         manager = get_persona_manager()
@@ -3156,7 +3214,7 @@ class LianxinBridge:
                 snapshot,
                 user_name=get_user_name(),
                 core_policy=get_core_system_policy(),
-                scene_policy="不同渠道会在运行时追加各自的场景规则。",
+                scene_policy=scene_policy("main_chat"),
             )
             preview = {"text": compiled.text, "estimated_tokens": compiled.estimated_tokens, "layers": [layer.name for layer in compiled.layers]}
         except Exception as exc:
@@ -3168,18 +3226,70 @@ class LianxinBridge:
             "growth": {"summary": growth.summary(snapshot.profile.id), "events": [event.__dict__ for event in growth.store.list(snapshot.profile.id)[:100]], "settings": growth.settings()},
         }
 
+    @staticmethod
+    def _persona_profile_from_payload(manager, payload: dict):
+        profile = manager.load_profile(str(payload.get("id", "")))
+        fields = (
+            "profile_name", "assistant_name", "summary", "identity", "appearance",
+            "personality", "speaking_style", "habits", "relationship",
+            "user_address", "boundaries", "custom_instructions",
+        )
+        return profile.updated(**{
+            field: str(payload[field] or "") for field in fields if field in payload
+        })
+
+    @staticmethod
+    def _persona_preview_payload(snapshot) -> dict:
+        from brain.persona import PersonaPromptComposer
+        from brain.persona.scenes import scene_policy
+        from config import get_core_system_policy, get_user_name
+        try:
+            compiled = PersonaPromptComposer.compose(
+                snapshot,
+                user_name=get_user_name(),
+                core_policy=get_core_system_policy(),
+                scene_policy=scene_policy("main_chat"),
+            )
+            return {
+                "text": compiled.text,
+                "estimated_tokens": compiled.estimated_tokens,
+                "layers": [layer.name for layer in compiled.layers],
+            }
+        except Exception as exc:
+            return {"text": "", "estimated_tokens": 0, "layers": [], "error": str(exc)}
+
+    def persona_preview(self, payload: dict) -> dict:
+        """编译当前编辑草稿，不写磁盘；供 Web 端实时预览使用。"""
+        from brain.persona import PersonaSnapshot, get_persona_manager
+        manager = get_persona_manager()
+        profile = self._persona_profile_from_payload(manager, payload)
+        current = manager.get_snapshot()
+        snapshot = PersonaSnapshot(
+            profile=profile,
+            revision=current.revision,
+            enabled=True,
+            activated_at=current.activated_at,
+        )
+        return {"profile": profile.to_dict(), "preview": self._persona_preview_payload(snapshot)}
+
     def persona_save(self, payload: dict) -> dict:
         from brain.persona import get_persona_manager
         manager = get_persona_manager()
-        profile = manager.load_profile(str(payload.get("id", "")))
-        fields = ("profile_name", "assistant_name", "summary", "identity", "appearance", "personality", "speaking_style", "habits", "relationship", "user_address", "boundaries", "custom_instructions")
-        manager.save_profile(profile.updated(**{field: str(payload[field] or "") for field in fields if field in payload}))
+        profile = self._persona_profile_from_payload(manager, payload)
+        manager.save_profile(profile)
         return self.persona_state()
 
-    def persona_create(self, name: str) -> dict:
+    def persona_save_and_activate(self, payload: dict) -> dict:
         from brain.persona import get_persona_manager
-        get_persona_manager().create_profile(name)
+        manager = get_persona_manager()
+        profile = self._persona_profile_from_payload(manager, payload)
+        manager.save_and_activate(profile)
         return self.persona_state()
+
+    def persona_create(self, name: str, template: str = "") -> dict:
+        from brain.persona import get_persona_manager
+        profile = get_persona_manager().create_profile(name, template=template)
+        return {**self.persona_state(), "created_id": profile.id}
 
     def persona_activate(self, profile_id: str, enabled: bool = True) -> dict:
         from brain.persona import get_persona_manager
@@ -4661,6 +4771,7 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("forcedTool") or "") or None,
                     str(body.get("preferredTool") or "") or None,
                     body.get("quote") if isinstance(body.get("quote"), dict) else None,
+                    body.get("requestMetadata") if isinstance(body.get("requestMetadata"), dict) else None,
                 ):
                     if event.get("type") == "completed":
                         event = {**event, "message": event.get("message", {})}
@@ -4755,8 +4866,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.clear_bilibili_comment_draft())
             if path == "/api/persona/save":
                 return self._send(bridge.persona_save(body))
+            if path == "/api/persona/preview":
+                return self._send(bridge.persona_preview(body))
+            if path == "/api/persona/save-and-activate":
+                return self._send(bridge.persona_save_and_activate(body))
             if path == "/api/persona/create":
-                return self._send(bridge.persona_create(str(body.get("profile_name", "新人格"))))
+                return self._send(bridge.persona_create(
+                    str(body.get("profile_name", "新人格")),
+                    str(body.get("template", "")),
+                ))
             if path == "/api/persona/activate":
                 return self._send(bridge.persona_activate(str(body.get("id", "")), bool(body.get("enabled", True))))
             if path == "/api/persona/toggle":

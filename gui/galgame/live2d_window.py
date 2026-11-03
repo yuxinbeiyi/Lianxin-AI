@@ -63,6 +63,9 @@ class Live2DTachieWindow(TachieWindow):
         self._tracking_enabled = True
         self._press_position = None
         self._click_dragged = False
+        self._mask_region = QRegion()
+        self._mask_size = None
+        self._mask_samples = 0
         super().__init__(assets_dir, parent)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -116,7 +119,7 @@ class Live2DTachieWindow(TachieWindow):
             return
         self._ready = True
         self._sync_playback()
-        self._mask_timer.start()
+        self._start_mask_capture()
         self._tracking_timer.start()
         self.model_ready.emit()
 
@@ -170,18 +173,38 @@ class Live2DTachieWindow(TachieWindow):
             self._press_position = None
         super().mouseReleaseEvent(event)
 
+    def _start_mask_capture(self):
+        self._mask_size = self.size()
+        self._mask_region = QRegion()
+        self._mask_samples = 0
+        if self.isVisible():
+            self._mask_timer.start(250)
+
     def _refresh_mask(self):
-        if not self.isVisible() or not self._ready or self._disposed:
+        if not self.isVisible() or not self._ready or self._disposed or self._mask_samples >= 5:
             return
+        self._mask_samples += 1
         image = self._view.grab().toImage()
+        if image.size() != self._view.size():
+            image = image.scaled(self._view.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         region = QRegion(QBitmap.fromImage(image.createAlphaMask()))
-        if region.isEmpty():
-            return
-        margin = max(10, int(self.width() * 0.05))
-        expanded = QRegion(region)
-        for delta_x, delta_y in ((margin, 0), (-margin, 0), (0, margin), (0, -margin)):
-            expanded = expanded.united(region.translated(delta_x, delta_y))
-        self.setMask(expanded)
+        if not region.isEmpty():
+            margin = max(10, int(self.width() * 0.05))
+            expanded = QRegion()
+            for rectangle in region.rects():
+                expanded = expanded.united(QRegion(rectangle.adjusted(-margin, -margin, margin, margin)))
+            combined = self._mask_region.united(expanded)
+            if combined != self._mask_region:
+                self._mask_region = combined
+                self.setMask(combined)
+        if self._mask_samples >= 5:
+            self._mask_timer.stop()
+            if self._mask_region.isEmpty():
+                self.load_error.emit("Live2D 角色遮罩采样失败")
+            else:
+                logger.info("Live2D mask stabilized after %s samples", self._mask_samples)
+        elif self._mask_samples == 1:
+            self._mask_timer.setInterval(700)
 
     def _sync_playback(self):
         if self._ready and not self._disposed:
@@ -202,9 +225,8 @@ class Live2DTachieWindow(TachieWindow):
         height = min(int(620 * self._scale), screen.availableGeometry().height() - 70)
         self.resize(max(100, int(height * 0.56)), max(180, height))
         self._view.setGeometry(self.rect())
-        if self._ready:
-            self.clearMask()
-            QTimer.singleShot(250, self._refresh_mask)
+        if self._ready and self.size() != self._mask_size:
+            self._start_mask_capture()
         self.move(self.pos() + old_center - self.geometry().center())
         if self.isVisible():
             self.position_changed.emit(self.x(), self.y())
@@ -281,7 +303,8 @@ class Live2DTachieWindow(TachieWindow):
         super().showEvent(event)
         self._sync_playback()
         if self._ready:
-            self._mask_timer.start()
+            if self._mask_samples < 5:
+                self._mask_timer.start(250)
             self._tracking_timer.start()
 
     def hideEvent(self, event):

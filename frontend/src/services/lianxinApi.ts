@@ -196,7 +196,8 @@ export type ExecutionTaskState = {
 };
 export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?: number; fitMode: "cover" | "contain" | "stretch"; fingerprint: string; dataUrl?: string };
 export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
-export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: { text: string; estimated_tokens: number; layers: string[]; error?: string }; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> } };
+export type PersonaPreview = { text: string; estimated_tokens: number; layers: string[]; error?: string };
+export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: PersonaPreview; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> }; created_id?: string };
 export type SettingsPanelState = { global: { silentMode: boolean; userName: string; emotionProbability: number; backgroundEnabled: boolean; backgroundSource: string; backgroundSourceType: string; backgroundOpacity: number; chatBackgroundOpacity: number; backgroundFitMode: string; segmentPauseChatMin: number; segmentPauseChatMax: number; segmentPauseSemanticMin: number; segmentPauseSemanticMax: number }; sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string } };
 export type BilibiliSurfTag = {
   keyword: string;
@@ -412,7 +413,9 @@ export const lianxinApi = {
   managementState: () => request<{ modules: Array<{ id: string; label: string; available: boolean; state?: unknown }> }>("/management/state"),
   personaState: () => request<PersonaState>("/persona/state"),
   personaSave: (profile: Record<string, unknown>) => request<PersonaState>("/persona/save", { method: "POST", body: JSON.stringify(profile) }),
-  personaCreate: (profileName: string) => request<PersonaState>("/persona/create", { method: "POST", body: JSON.stringify({ profile_name: profileName }) }),
+  personaPreview: (profile: Record<string, unknown>) => request<{ profile: Record<string, any>; preview: PersonaPreview }>("/persona/preview", { method: "POST", body: JSON.stringify(profile) }),
+  personaCreate: (profileName: string, template = "") => request<PersonaState>("/persona/create", { method: "POST", body: JSON.stringify({ profile_name: profileName, template }) }),
+  personaSaveAndActivate: (profile: Record<string, unknown>) => request<PersonaState>("/persona/save-and-activate", { method: "POST", body: JSON.stringify(profile) }),
   personaActivate: (id: string, enabled = true) => request<PersonaState>("/persona/activate", { method: "POST", body: JSON.stringify({ id, enabled }) }),
   personaToggle: (enabled: boolean) => request<PersonaState>("/persona/toggle", { method: "POST", body: JSON.stringify({ enabled }) }),
   personaDelete: (id: string) => request<PersonaState>("/persona/delete", { method: "POST", body: JSON.stringify({ id }) }),

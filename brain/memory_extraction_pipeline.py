@@ -774,6 +774,15 @@ class LLMExtractionProcessor:
                 occurred_at=occurred_at,
             )
             fragments_created += int(bool(fragment_id))
+            if fragment_id and source_ids and confidence >= 0.8 and memory.get("associative_triggers"):
+                try:
+                    from brain.graph_memory import _get_conn
+                    from brain.memory_activation_retrieval import store_associative_entries
+                    store_associative_entries(
+                        _get_conn(), fact_id, content, memory["associative_triggers"],
+                    )
+                except Exception:
+                    logger.warning("Associative entry indexing failed; fact extraction retained", exc_info=True)
             try:
                 from brain.memory_conflicts import list_conflict_candidates
 

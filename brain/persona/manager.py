@@ -7,6 +7,7 @@ import uuid
 from dataclasses import replace
 from typing import Callable
 
+from brain.persona.defaults import build_naga_style_persona
 from brain.persona.models import (
     DEFAULT_PERSONA_ID,
     PersonaProfile,
@@ -69,8 +70,28 @@ class PersonaManager:
         """只保存草稿；即使编辑的是当前档案，也不会悄悄热应用。"""
         self._store.save_profile(profile)
 
-    def create_profile(self, profile_name: str, base_id: str = DEFAULT_PERSONA_ID) -> PersonaProfile:
-        base = self._store.load_profile(base_id)
+    def save_and_activate(self, profile: PersonaProfile) -> PersonaSnapshot:
+        """原子保存草稿并激活，避免 Web 端出现保存与激活分离造成的旧版本生效。"""
+        profile.validate()
+        with self._transition_lock:
+            self._store.save_profile(profile)
+            self._store.write_state({"enabled": True, "active_id": profile.id})
+            snapshot, listeners = self._replace_snapshot(profile=profile, enabled=True)
+        self._notify(listeners, snapshot)
+        return snapshot
+
+    def create_profile(
+        self,
+        profile_name: str,
+        base_id: str = DEFAULT_PERSONA_ID,
+        *,
+        template: str = "",
+    ) -> PersonaProfile:
+        base = (
+            build_naga_style_persona()
+            if template == "naga_style"
+            else self._store.load_profile(base_id)
+        )
         now = utc_now_iso()
         profile = replace(
             base,
@@ -97,12 +118,15 @@ class PersonaManager:
     def set_enabled(self, enabled: bool) -> PersonaSnapshot:
         with self._transition_lock:
             current = self.get_snapshot()
+            # 重新启用时必须从磁盘读取最新草稿，不能复用停用前的旧内存快照。
+            profile = self._store.load_profile(current.profile.id)
+            profile.validate()
             self._store.write_state({
                 "enabled": enabled,
-                "active_id": current.profile.id,
+                "active_id": profile.id,
             })
             snapshot, listeners = self._replace_snapshot(
-                profile=current.profile, enabled=bool(enabled)
+                profile=profile, enabled=bool(enabled)
             )
         self._notify(listeners, snapshot)
         return snapshot

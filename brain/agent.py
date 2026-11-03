@@ -786,7 +786,8 @@ class AgentCore:
             on_reasoning=None,
             response_guard=None,
             on_tool_enable_request=None,
-            on_browser_confirmation=None) -> str:
+            on_browser_confirmation=None,
+            request_metadata: dict | None = None) -> str:
         """
         处理用户消息并返回 AI 回复。
 
@@ -986,7 +987,8 @@ class AgentCore:
                                                           on_activity=on_activity,
                                                           on_reasoning=on_reasoning,
                                                           on_tool_enable_request=on_tool_enable_request,
-                                                          on_browser_confirmation=on_browser_confirmation)
+                                                          on_browser_confirmation=on_browser_confirmation,
+                                                          request_metadata=request_metadata)
             if self._task_run is not None:
                 self._task_run.mark_finished(success=bool(str(response_text or '').strip()))
         except Exception as exc:
@@ -2928,12 +2930,14 @@ class AgentCore:
                                on_activity=None,
                                on_reasoning=None,
                                on_tool_enable_request=None,
-                               on_browser_confirmation=None) -> str:
+                               on_browser_confirmation=None,
+                               request_metadata: dict | None = None) -> str:
 
        
         # 每进入一次对话循环就换一个 turn 编号，用来区分不同轮的 ReAct 轮次。
         self._activity_turn = int(getattr(self, "_activity_turn", 0) or 0) + 1
         _t0 = time.time()
+        _request_started = time.monotonic()
         request_context = parse_request_context(user_message)
         self._request_context = request_context
         self._raw_request_text = str(user_message or "")
@@ -2941,6 +2945,7 @@ class AgentCore:
         self._recall_decision_complete = False
         self._recall_outcome = None
         self._background_recall_plan = None
+        self._memory_activation_outcome = None
         # ── 历史括号卫生：assistant 历史进入本轮 prompt 前剥离括号旁白 ──
         # 模型会模仿自己历史输出里的（动作/神态/音效旁白），历史里每一条
         # 违例都是下一轮的示范；在进入上下文前统一洗白，few-shot 才是
@@ -3463,6 +3468,16 @@ class AgentCore:
                                         payload={"query": _pre_query[:500], "threshold": 0.5})
             except Exception:
                 pass
+
+        try:
+            from brain.memory_activation_retrieval import observe_activation
+            observe_activation(
+                self, route, request_started=_request_started, disable_tools=disable_tools,
+                recall_plan=_recall_plan, snapshot=persona_snapshot,
+                request_metadata=request_metadata,
+            )
+        except Exception:
+            logger.debug("Optional memory activation observation unavailable", exc_info=True)
 
         # 自我认知 Skill 的详细正文和工具只在用户启用后提供；核心 Agent
         # 仍然保留未激活提示，避免把“已登记”误说成“已加载”。

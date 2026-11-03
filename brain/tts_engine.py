@@ -127,6 +127,7 @@ def _normalize_audio(audio, target_peak: int = 28000):
 # ══════════════════════════════════════════════════════════
 
 _gpt_sovits_state = None  # None=未尝试, True=可用, False=不可用
+_gpt_sovits_config_key = None
 
 # 持久 worker 进程（模块级共享，跨 TtsEngine 实例复用）
 _worker_process: Optional[subprocess.Popen] = None
@@ -134,12 +135,15 @@ _stderr_thread: Optional[threading.Thread] = None
 _worker_lock = threading.Lock()  # 保护 worker stdin/stdout 不被多线程并发读写（桌面+QQ同时用GPT-SoVITS时）
 _worker_idle_timer: Optional[threading.Timer] = None
 _worker_last_used = 0.0
-_worker_version: Optional[str] = None  # 当前 worker 加载的 GPT-SoVITS 模型版本
+_worker_signature: Optional[tuple] = None
 
 
 def _get_runtime_python(gs_path: str) -> Optional[str]:
     """获取 GPT-SoVITS 自带 Python 运行环境路径。"""
     runtime_dir = os.path.join(gs_path, "runtime")
+    py = os.path.join(runtime_dir, "Scripts", "python.exe")
+    if os.path.isfile(py):
+        return os.path.abspath(py)
     # Windows
     py = os.path.join(runtime_dir, "python.exe")
     if os.path.isfile(py):
@@ -162,13 +166,14 @@ def _is_gpt_sovits_available() -> bool:
       2. runtime/python.exe（即 GPT-SoVITS 自带的 Python 环境）存在
       3. 有参考音频可用
     """
-    global _gpt_sovits_state
-    if _gpt_sovits_state is not None:
-        return _gpt_sovits_state
-
+    global _gpt_sovits_state, _gpt_sovits_config_key
     from config import get_tts_config
     cfg = get_tts_config()
     gs_path = cfg.get("gpt_sovits_path", "").strip()
+    config_key = (gs_path, cfg.get("ref_wav_override", ""))
+    if _gpt_sovits_state is not None and _gpt_sovits_config_key == config_key:
+        return _gpt_sovits_state
+    _gpt_sovits_config_key = config_key
 
     if not gs_path or not os.path.isdir(gs_path):
         logger.info("GPT-SoVITS 路径未配置或不存在")
@@ -215,16 +220,19 @@ def _worker_is_running() -> bool:
 
 def _ensure_worker() -> subprocess.Popen:
     """确保持久 worker 进程在运行。模型只在此处加载一次。"""
-    global _worker_process, _stderr_thread, _worker_version
+    global _worker_process, _stderr_thread, _worker_signature
 
     from config import get_tts_config
     cfg = get_tts_config()
 
     # 模型版本（v2Pro/v3/v4）——变更时需重启 worker 重新加载对应模型
     version = (cfg.get("gpt_sovits_version") or "v2Pro").strip() or "v2Pro"
+    signature = tuple(str(cfg.get(key) or "").strip() for key in (
+        "gpt_sovits_path", "gpt_sovits_version", "gpt_sovits_gpt_path", "gpt_sovits_sovits_path",
+    ))
     if (_worker_process is not None and _worker_process.poll() is None
-            and _worker_version != version):
-        logger.info(f"GPT-SoVITS 模型版本变更 {_worker_version} → {version}，重启 worker")
+            and _worker_signature != signature):
+        logger.info("GPT-SoVITS 模型配置变更，重启 worker")
         _close_worker()
 
     if _worker_process is not None and _worker_process.poll() is None:
@@ -243,6 +251,8 @@ def _ensure_worker() -> subprocess.Popen:
         raise RuntimeError(f"Worker 脚本不存在: {worker_script}")
 
     env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["USE_TF"] = "0"
     env["GPT_SOVITS_PATH"] = gs_path
     env["GPT_SOVITS_VERSION"] = version
     env["GPT_SOVITS_GPT_PATH"] = str(cfg.get("gpt_sovits_gpt_path", "") or "").strip()
@@ -273,7 +283,7 @@ def _ensure_worker() -> subprocess.Popen:
             cwd=gs_path,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        _worker_version = version
+        _worker_signature = signature
     except Exception:
         resource_manager.release("gpt_sovits")
         raise
@@ -288,22 +298,31 @@ def _ensure_worker() -> subprocess.Popen:
 
 def _close_worker():
     """关闭持久 worker 进程。"""
-    global _worker_process, _worker_idle_timer, _worker_last_used, _worker_version
+    global _worker_process, _worker_idle_timer, _worker_last_used, _worker_signature
     if _worker_idle_timer is not None:
         _worker_idle_timer.cancel()
         _worker_idle_timer = None
     if _worker_process is not None:
         try:
-            _worker_process.terminate()
+            if _worker_process.stdin is not None:
+                _worker_process.stdin.close()
             _worker_process.wait(timeout=5)
         except Exception:
             try:
-                _worker_process.kill()
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(_worker_process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                else:
+                    _worker_process.kill()
+                _worker_process.wait(timeout=5)
             except Exception:
                 pass
         _worker_process = None
         _worker_last_used = 0.0
-        _worker_version = None
+        _worker_signature = None
         logger.info("GPT-SoVITS worker 已关闭")
     from utils.model_resource_manager import get_model_resource_manager
     get_model_resource_manager().release("gpt_sovits")
@@ -515,6 +534,8 @@ def _pick_ref(text: str, mood_hint: Optional[str] = None) -> Optional[dict]:
     cfg = get_tts_config()
     override = cfg.get("ref_wav_override", "").strip()
     if override and os.path.isfile(override):
+        if cfg.get("gpt_sovits_version") not in ("v3", "v4"):
+            return {"path": override, "text": "", "lang": "中文"}
         from brain.ref_transcriber import get_transcript
         text, lang = get_transcript(override)
         return {"path": override, "text": text, "lang": lang}
@@ -851,9 +872,6 @@ class TtsEngine:
 
         detected_mood = _detect_mood(text, mood) or "casual"
 
-        # 确保 worker 在运行（首次启动会加载模型，后续直接复用）
-        worker = _ensure_worker()
-
         from config import get_tts_config
         cfg = get_tts_config()
         request = json.dumps({
@@ -880,6 +898,7 @@ class TtsEngine:
 
         # 发送请求到 worker（加锁防止多线程并发读写同一个子进程 stdin/stdout）
         with _worker_lock:
+            worker = _ensure_worker()
             try:
                 worker.stdin.write(request + "\n")
                 worker.stdin.flush()
@@ -910,22 +929,11 @@ class TtsEngine:
             response_line = result_queue.get_nowait()
             _mark_worker_used()
 
-        # 解析 JSON 响应（锁外解析，不阻塞其他线程）
-        try:
-            data = json.loads(response_line.strip())
-        except json.JSONDecodeError:
-            _close_worker()
-            raise RuntimeError(f"解析 worker 响应失败: {response_line}")
-
-        if data.get("success"):
-            return True
-        else:
-            raise RuntimeError(data.get("error", "未知错误"))
-        try:
-            data = json.loads(response_line.strip())
-        except json.JSONDecodeError:
-            self._close_worker()
-            raise RuntimeError(f"解析 worker 响应失败: {response_line}")
+            try:
+                data = json.loads(response_line or "")
+            except json.JSONDecodeError:
+                _close_worker()
+                raise RuntimeError(f"解析 worker 响应失败: {response_line}")
 
         if data.get("success"):
             return True

@@ -180,6 +180,8 @@ def _init_tables(conn: sqlite3.Connection):
             conn.execute("INSERT INTO memory_facts_fts(memory_facts_fts) VALUES('rebuild')")
     except sqlite3.OperationalError:
         pass
+    from brain.memory_activation_retrieval import ensure_activation_index
+    ensure_activation_index(conn)
     conn.commit()
 
 
@@ -1408,6 +1410,10 @@ def build_extraction_prompt(recent_conversation: str) -> str:
 7. confidence 表示事实可信度，范围 0~1；用户明确陈述通常为 0.9 以上
 8. occurred_at 填事件实际发生时间；无法判断时留空，不要猜测
 9. 不提取助手/莲心自身的姓名、身份、外貌、瞳色、性格或语言风格；这些属于人格档案，不是用户记忆
+10. 可选 associative_triggers：为适合日后自然联想的事实给出 1~3 条简短的聊天情境（每条 4~96 字），不适合则 []。
+    用自然口语描述“聊到什么处境时可能想起此事”，不要只重复人名或主题词，不要枚举关键词。
+    它们只是检索入口，不是用户事实；不得推断游玩频率、动机、因果、诊断或当前仍然有效，不得写回复指令或敏感隐私。
+    入口可以跨主题，但只能提示可能的联系；不能声称用户存在对话未证实的行为或问题。
 
 ## 五元组关系
 在同一次输出中提取值得长期保存的实体关系，格式为：
@@ -1425,7 +1431,8 @@ def build_extraction_prompt(recent_conversation: str) -> str:
             "reason": "为什么这条信息值得记住",
             "source_message_ids": [123, 124],
             "confidence": 0.95,
-            "occurred_at": "YYYY-MM-DD HH:MM:SS 或空字符串"
+            "occurred_at": "YYYY-MM-DD HH:MM:SS 或空字符串",
+            "associative_triggers": []
         }}
     ],
     "quintuples": [

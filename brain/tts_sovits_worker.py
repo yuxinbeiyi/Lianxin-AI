@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+from contextlib import redirect_stdout
 
 import numpy as np
 import scipy.io.wavfile
@@ -53,10 +54,6 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
                how_to_cut: str = "不切", pause_second: float = 0.3,
                speed: float = 1.0, ref_text: str = "", ref_lang: str = "中文") -> dict:
     """执行一次 GPT-SoVITS 合成，返回 {"success": bool, "output": str, "error": str}。"""
-    # 重定向 stdout → stderr，避免 GPT-SoVITS 日志污染 JSON 输出
-    _orig_stdout = sys.stdout
-    sys.stdout = sys.stderr
-
     from GPT_SoVITS.inference_webui import get_tts_wav # type: ignore
 
     # 参考音频路径
@@ -75,7 +72,6 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
                     if f.endswith(".wav"):
                         candidates.append(os.path.join(root, f))
         if not candidates:
-            sys.stdout = _orig_stdout
             return {"success": False, "error": "无参考音频"}
         ref_path = random.choice(candidates)
 
@@ -120,9 +116,6 @@ def synthesize(gs_path: str, text: str, ref_wav: str, output_path: str,
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             scipy.io.wavfile.write(output_path, sr, audio)
             saved = True
-
-    # 恢复 stdout 输出 JSON
-    sys.stdout = _orig_stdout
 
     if saved:
         return {"success": True, "output": output_path}
@@ -197,21 +190,22 @@ def main():
                 if not text.strip():
                     result = {"success": False, "error": "text 为空"}
                 else:
-                    result = synthesize(
-                        gs_path, text,
-                        req.get("ref_wav", ""),
-                        req.get("output_path", ""),
-                        req.get("mood"),
-                        sample_steps=req.get("sample_steps", 16),
-                        temperature=req.get("temperature", 0.3),
-                        top_k=req.get("top_k", 5),
-                        top_p=req.get("top_p", 0.9),
-                        how_to_cut=req.get("how_to_cut", "不切"),
-                        pause_second=req.get("pause_second", 0.3),
-                        speed=req.get("speed", 1.0),
-                        ref_text=req.get("ref_text", ""),
-                        ref_lang=req.get("ref_lang", "中文"),
-                    )
+                    with redirect_stdout(sys.stderr):
+                        result = synthesize(
+                            gs_path, text,
+                            req.get("ref_wav", ""),
+                            req.get("output_path", ""),
+                            req.get("mood"),
+                            sample_steps=req.get("sample_steps", 16),
+                            temperature=req.get("temperature", 0.3),
+                            top_k=req.get("top_k", 5),
+                            top_p=req.get("top_p", 0.9),
+                            how_to_cut=req.get("how_to_cut", "不切"),
+                            pause_second=req.get("pause_second", 0.3),
+                            speed=req.get("speed", 1.0),
+                            ref_text=req.get("ref_text", ""),
+                            ref_lang=req.get("ref_lang", "中文"),
+                        )
             except Exception as e:
                 result = {"success": False, "error": str(e)}
             print(json.dumps(result), flush=True)
@@ -226,7 +220,8 @@ def main():
         output_path = sys.argv[3]
         mood_hint = sys.argv[4] if len(sys.argv) > 4 else None
 
-        result = synthesize(gs_path, text, ref_wav_arg, output_path, mood_hint)
+        with redirect_stdout(sys.stderr):
+            result = synthesize(gs_path, text, ref_wav_arg, output_path, mood_hint)
         print(json.dumps(result), flush=True)
         return 0 if result.get("success") else 1
 

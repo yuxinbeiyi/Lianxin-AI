@@ -50,6 +50,27 @@ def _http_proactive_trigger(mode: str):
         print(f"[预警] HTTP 触发失败: {exc}", file=sys.stderr)
 
 
+def _http_tts_preview(text: str) -> bool:
+    request = urllib.request.Request(
+        "http://127.0.0.1:8766/api/tts/prepare",
+        data=json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=330) as response:
+        prepared = json.load(response)
+    if not prepared.get("prepared"):
+        raise RuntimeError(prepared.get("reason") or "后端未生成试听语音，请检查静默模式和语音配置")
+    request = urllib.request.Request(
+        "http://127.0.0.1:8766/api/tts/play-prepared",
+        data=json.dumps({"id": prepared["id"]}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return bool(json.load(response).get("played"))
+
+
 def build_window(feature: str):
     if feature == "ripple":
         from gui.ripple_constellation_web import RippleConstellationWebWindow
@@ -111,7 +132,7 @@ def build_window(feature: str):
         return VoiceSTTDialog()
     if feature == "sound":
         from gui.sound_settings_dialog import SoundSettingsDialog
-        return SoundSettingsDialog()
+        return SoundSettingsDialog(tts_preview=_http_tts_preview)
     if feature == "qq":
         from gui.qq_settings_dialog import QqSettingsDialog
         return QqSettingsDialog()

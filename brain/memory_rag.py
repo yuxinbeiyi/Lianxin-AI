@@ -566,12 +566,16 @@ def _lexical_memory_results(
     category: str | None = None,
     *,
     limit: int = 100,
+    conn=None,
+    subjects: list[str] | None = None,
 ) -> list[tuple[float, dict]]:
-    from brain.graph_memory import _get_conn
-    conn = _get_conn()
+    if conn is None:
+        from brain.graph_memory import _get_conn
+        conn = _get_conn()
     text = " ".join(str(query or "").split()).strip()
-    from brain.memory_query import recall_subjects
-    subjects = recall_subjects(text)
+    if subjects is None:
+        from brain.memory_query import recall_subjects
+        subjects = recall_subjects(text)
     terms = list(subjects)
     for term in re.findall(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", text):
         terms.append(term)
