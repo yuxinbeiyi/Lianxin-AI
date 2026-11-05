@@ -1034,9 +1034,21 @@ _RAG_DEFAULTS = {
 }
 
 
+DECISION_API_MODELS = {
+    "vllm-sr/d3-ultra": "27B",
+    "vllm-sr/d3-flash": "9B",
+    "vllm-sr/d3-mini": "4B",
+    "vllm-sr/d3-nano": "2B",
+    "vllm-sr/d3-lite": "0.8B",
+    "vllm-sr/d3-edge": "0.6B",
+}
+
+
 _DECISION_DEFAULTS = {
     "enabled": False,
     "provider": "api",
+    "api_model": "vllm-sr/d3-ultra",
+    "api_fallback_enabled": True,
     "allow_cloud_context": False,
     "timeout_seconds": 8,
     "budget_seconds": 20,
@@ -1068,6 +1080,9 @@ def get_decision_config() -> dict:
         except (TypeError, ValueError):
             result[key] = _DECISION_DEFAULTS[key]
     result["provider"] = "local" if result["provider"] == "local" else "api"
+    if not isinstance(result["api_model"], str) or result["api_model"] not in DECISION_API_MODELS:
+        result["api_model"] = _DECISION_DEFAULTS["api_model"]
+    result["api_fallback_enabled"] = result["api_fallback_enabled"] is True
     result["local_auto_start"] = result["local_auto_start"] is True
     try:
         result["local_port"] = max(1024, min(65535, int(result["local_port"])))

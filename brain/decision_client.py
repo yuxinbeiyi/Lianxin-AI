@@ -1,19 +1,29 @@
-"""Bounded, typed d3-ultra decisions without tool execution privileges."""
+"""Bounded, typed d3 decisions without tool execution privileges."""
 
 from __future__ import annotations
 
 import json
 import math
 import re
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from utils.decision_credentials import get_api_key
+from config import DECISION_API_MODELS
 
 
 MODEL = "vllm-sr/d3-ultra"
 ENDPOINT = "https://decision.vllm-sr.ai/v1/systemone"
+FLASH_MODEL = "vllm-sr/d3-flash"
+_runtime_lock = threading.Lock()
+_runtime = None
+
+
+def runtime_state():
+    with _runtime_lock:
+        return dict(_runtime) if _runtime else None
 
 
 class DecisionError(RuntimeError):
@@ -100,7 +110,15 @@ class DecisionClient:
     def __init__(self, config: dict):
         self.timeout = config["timeout_seconds"]
         self.provider = config.get("provider", "api")
-        self.model = MODEL
+        self.configured_model = config.get("api_model", MODEL)
+        if not isinstance(self.configured_model, str) or self.configured_model not in DECISION_API_MODELS:
+            raise DecisionError("invalid_api_model")
+        self.model = self.configured_model
+        self.fallback_enabled = config.get("api_fallback_enabled", True) is True
+        self.fallback_reason = ""
+        self._retry_slots = 3
+        self.cancelled = lambda: False
+        self.authorized = lambda: True
         self.endpoint = ENDPOINT
         self.api_key = ""
         if self.provider == "local":
@@ -112,6 +130,8 @@ class DecisionClient:
             except OSError:
                 raise DecisionError("local_start_failed") from None
             self.model = decision_local.LOCAL_MODEL
+            self.configured_model = self.model
+            self._local_generation = decision_local.generation()
             self.endpoint = decision_local.endpoint(config)
         else:
             try:
@@ -124,6 +144,13 @@ class DecisionClient:
         self.on_event = None
 
     def _notify(self, event: dict):
+        global _runtime
+        with _runtime_lock:
+            _runtime = {key: event.get(key) for key in (
+                "configured_model", "model", "provider", "stage", "attempt", "fallback_reason", "error", "elapsedMs",
+            )}
+            _runtime.update(status="running" if event["kind"] == "call" else
+                            "failed" if event.get("is_error") else "done", updated_at=time.time())
         if self.on_event:
             try:
                 self.on_event(event)
@@ -137,6 +164,49 @@ class DecisionClient:
         state_text = json.dumps(_redact_state(state), ensure_ascii=False)
         if len(state_text) > 10000:
             raise DecisionError("context_too_long")
+        self._check_active()
+        retryable = (self.provider == "api" and self.model == MODEL and self.fallback_enabled
+                     and "candidate" not in questions)
+        limit = 1 + self._retry_slots if retryable else 1
+        for attempt in range(1, limit + 1):
+            self._check_active()
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise DecisionError("budget_exhausted")
+            if attempt > 1:
+                self._retry_slots -= 1
+            slots = limit - attempt + 1
+            timeout = min(self.timeout, (remaining - min(3.0, remaining * 0.15)) / slots) if retryable else min(self.timeout, remaining)
+            try:
+                return self._attempt(state_text, questions, attempt, timeout)
+            except DecisionError as exc:
+                if not retryable or str(exc) not in {
+                    "transport_error", "http_408", "http_500", "http_502", "http_503", "http_504",
+                } or attempt == limit:
+                    raise
+                self._check_active()
+                delay = 0.15 * attempt
+                until = time.monotonic() + delay
+                if self.deadline - until <= 0.1:
+                    raise DecisionError("budget_exhausted") from None
+                while time.monotonic() < until:
+                    self._check_active()
+                    time.sleep(min(0.05, max(0.0, until - time.monotonic())))
+                if attempt == 3:
+                    self.model = FLASH_MODEL
+                    self.fallback_reason = str(exc)
+
+    def _check_active(self):
+        if self.cancelled():
+            raise DecisionError("cancelled")
+        if not self.authorized():
+            raise DecisionError("permission_denied")
+        if self.provider == "local":
+            from brain import decision_local
+            if not decision_local.request_allowed(self._local_generation):
+                raise DecisionError("local_paused")
+
+    def _attempt(self, state_text: str, questions: dict, attempt: int, timeout: float) -> dict:
         body = json.dumps({"model": self.model, "state": state_text, "questions": questions}, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -145,14 +215,16 @@ class DecisionClient:
         opener = build_opener(_NoRedirect(), ProxyHandler({})) if self.provider == "local" else build_opener(_NoRedirect())
         stage = ("回复前决策" if "next_step" in questions else
                  "主动联想评估" if "candidate" in questions else "回忆证据评估")
-        details = {"model": self.model, "provider": self.provider, "stage": stage}
+        details = {"model": self.model, "provider": self.provider, "stage": stage, "attempt": attempt,
+                   "configured_model": self.configured_model, "fallback_reason": self.fallback_reason}
         started = time.monotonic()
-        preview = "调用失败：unexpected_error；本轮按既有策略回退，不使用未核验决策。"
+        preview = "本次请求失败：unexpected_error；不使用未核验决策。"
         is_error = True
+        error = "unexpected_error"
         self._notify({**details, "kind": "call"})
         try:
             try:
-                with opener.open(request, timeout=min(self.timeout, remaining)) as response:
+                with opener.open(request, timeout=timeout) as response:
                     raw = response.read(65537)
                 if len(raw) > 65536:
                     raise DecisionError("response_too_large")
@@ -163,6 +235,7 @@ class DecisionClient:
                 raise DecisionError("transport_error") from None
             except (ValueError, UnicodeError):
                 raise DecisionError("invalid_json") from None
+            self._check_active()
             if time.monotonic() > self.deadline:
                 raise DecisionError("budget_exhausted")
             answers = validate_answers(payload, questions, self.model)
@@ -180,10 +253,12 @@ class DecisionClient:
                 preview += (f"；候选 {answers['candidate']['choice']}"
                             f"；建议 {answers['action']['choice']}（仍须本地门控）")
             is_error = False
+            error = ""
             return answers
         except DecisionError as exc:
-            preview = f"调用失败：{exc}；本轮按既有策略回退，不使用未核验决策。"
+            error = str(exc)
+            preview = f"本次请求失败：{exc}；仅使用校验通过的后续决策或既有策略。"
             raise
         finally:
-            self._notify({**details, "kind": "result", "preview": preview, "is_error": is_error,
+            self._notify({**details, "kind": "result", "preview": preview, "is_error": is_error, "error": error,
                           "elapsedMs": (time.monotonic() - started) * 1000})

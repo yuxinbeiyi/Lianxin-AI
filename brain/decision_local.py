@@ -16,6 +16,9 @@ LOCAL_MODEL = "vllm-sr/d3-edge"
 _lock = threading.RLock()
 _process = None
 _port = None
+_device = None
+_generation = 0
+_auto_start_paused = False
 _log_path = Path(__file__).resolve().parent.parent / "logs" / "decision_local.log"
 
 
@@ -24,29 +27,51 @@ def endpoint(config: dict) -> str:
 
 
 def status(config: dict) -> dict:
-    port = int(config["local_port"])
-    try:
-        with build_opener(ProxyHandler({})).open(f"http://127.0.0.1:{port}/health", timeout=0.6) as response:
-            payload = json.loads(response.read(8192))
-        if payload.get("status") == "ready" and payload.get("model") == LOCAL_MODEL:
-            if payload.get("authentication"):
-                return {"status": "authentication_required", "ready": False, "managed": False}
-            return {"status": "ready", "ready": True,
-                    "managed": bool(_process and _process.poll() is None and _port == port)}
-        return {"status": "unexpected_service", "ready": False, "managed": False}
-    except Exception:
-        if _process and _port == port:
-            running = _process.poll() is None
-            return {"status": "starting" if running else "failed", "ready": False, "managed": running}
-        return {"status": "stopped", "ready": False, "managed": False}
+    with _lock:
+        port = int(config["local_port"])
+        running = bool(_process and _process.poll() is None)
+        base = {"ready": False, "managed": running, "auto_start_paused": _auto_start_paused,
+                "pid": int(_process.pid) if running else None, "port": _port if running else port,
+                "device": _device if running else None, "modalities": []}
+        if running and _port != port:
+            return {**base, "status": "different_port"}
+        try:
+            with build_opener(ProxyHandler({})).open(f"http://127.0.0.1:{port}/health", timeout=0.6) as response:
+                payload = json.loads(response.read(8192))
+            if payload.get("status") == "ready" and payload.get("model") == LOCAL_MODEL:
+                if payload.get("authentication"):
+                    return {**base, "status": "authentication_required"}
+                modalities = payload.get("modalities", [])
+                if not isinstance(modalities, list):
+                    modalities = []
+                return {**base, "status": "ready", "ready": True,
+                        "modalities": [item for item in ("text", "image", "video") if item in modalities]}
+            return {**base, "status": "unexpected_service"}
+        except Exception:
+            if _process and _port == port:
+                return {**base, "status": "starting" if running else "failed"}
+            return {**base, "status": "stopped"}
+
+
+def generation() -> int:
+    with _lock:
+        return _generation
+
+
+def request_allowed(expected_generation: int) -> bool:
+    with _lock:
+        return not _auto_start_paused and expected_generation == _generation
 
 
 def start(config: dict) -> dict:
-    global _process, _port
+    global _process, _port, _device, _auto_start_paused, _generation
     with _lock:
         current = status(config)
         if current["status"] in {"ready", "starting"}:
-            return current
+            _auto_start_paused = False
+            return {**current, "auto_start_paused": False}
+        if current["status"] == "different_port":
+            raise ValueError("stop_managed_local_before_changing_port")
         if current["status"] not in {"stopped", "failed"}:
             raise ValueError("local_port_in_use_or_authentication_required")
         if _process and _process.poll() is None:
@@ -67,30 +92,45 @@ def start(config: dict) -> dict:
                      "--device", device, "--name", LOCAL_MODEL, "--batch-size", "1"]
         _log_path.parent.mkdir(parents=True, exist_ok=True)
         with _log_path.open("ab") as log:
+            _generation += 1
             _process = subprocess.Popen(arguments, cwd=str(directory), env=env, stdin=subprocess.DEVNULL,
                                         stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         _port = int(config["local_port"])
-        return {"status": "starting", "ready": False, "managed": True}
+        _device = device
+        _auto_start_paused = False
+        return {"status": "starting", "ready": False, "managed": True, "auto_start_paused": False,
+                "pid": int(_process.pid), "port": _port, "device": device, "modalities": []}
 
 
 def ensure_ready(config: dict):
-    current = status(config)
-    if current["ready"]:
-        return
-    if current["status"] == "stopped" and config.get("local_auto_start", True):
-        current = start(config)
-    raise RuntimeError("local_" + current["status"])
+    with _lock:
+        if _auto_start_paused:
+            raise RuntimeError("local_paused")
+        current = status(config)
+        if current["ready"]:
+            return
+        if current["status"] == "stopped" and config.get("local_auto_start", True):
+            current = start(config)
+        raise RuntimeError("local_" + current["status"])
 
 
 def stop() -> dict:
-    global _process, _port
+    global _process, _port, _device, _generation, _auto_start_paused
     with _lock:
+        _auto_start_paused = True
+        _generation += 1
         if _process and _process.poll() is None:
             _process.terminate()
-            _process.wait(timeout=5)
+            try:
+                _process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _process.kill()
+                _process.wait(timeout=2)
         _process = None
         _port = None
-        return {"status": "stopped", "ready": False, "managed": False}
+        _device = None
+        return {"status": "stopped", "ready": False, "managed": False, "auto_start_paused": True,
+                "pid": None, "port": None, "device": None, "modalities": []}
 
 
 atexit.register(stop)

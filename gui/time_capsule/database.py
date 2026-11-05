@@ -477,8 +477,10 @@ class TimeCapsuleDatabase:
                    ON CONFLICT(note_id) DO UPDATE SET
                        scheduled_at=excluded.scheduled_at, status='waiting',
                        attempts=0, last_error='', lease_owner='',
-                       lease_expires_at=0, updated_at=excluded.updated_at""",
-                (int(note_id), time.time(), _now()),
+                       lease_expires_at=0, updated_at=excluded.updated_at
+                   WHERE tree_reply_jobs.status <> 'running'
+                      OR tree_reply_jobs.lease_expires_at <= ?""",
+                (int(note_id), time.time(), _now(), time.time()),
             )
         return self.get_tree_reply_job(note_id) or {}
 

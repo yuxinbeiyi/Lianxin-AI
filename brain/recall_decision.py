@@ -95,11 +95,14 @@ def _decision_activity(agent, event: dict, on_activity=None):
     from brain import tool_activity
 
     name = "决策模型 · " + event["model"].split("/")[-1] + " · " + event["stage"]
+    if event.get("attempt", 1) > 1:
+        name += " · 尝试" + str(event["attempt"])
     context = {"session_id": getattr(agent, "_session_id", 0),
                "turn": getattr(agent, "_activity_turn", 0), "round_num": 0, "category": "decision"}
     if event["kind"] == "call":
         tool_activity.begin_call(name, {"model": event["model"], "provider": event["provider"],
-                                        "stage": event["stage"]}, **context)
+                                        "stage": event["stage"], "attempt": event.get("attempt", 1),
+                                        "fallback_reason": event.get("fallback_reason", "")}, **context)
     else:
         tool_activity.finish_call(name, event["preview"], event["is_error"], event["elapsedMs"], **context)
     if on_activity:
@@ -177,6 +180,12 @@ def prepare_recall(agent, route: RequestRoute, *, disable_tools: bool, on_activi
     state["recall_subjects"] = subjects
     try:
         client = DecisionClient(config)
+        client.cancelled = lambda: _cancelled(agent)
+        def decision_authorized():
+            current = get_decision_config()
+            return (current["enabled"] and getattr(agent, "_owner_scope", False)
+                    and (client.provider != "api" or current["allow_cloud_context"]))
+        client.authorized = decision_authorized
         client.deadline = min(client.deadline, agent._request_decision_deadline)
         client.on_event = lambda event: _decision_activity(agent, event, on_activity)
         answer = client.decide(state, NEXT_STEP)["next_step"]

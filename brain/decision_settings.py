@@ -7,8 +7,8 @@ import threading
 from urllib.parse import urlparse
 
 from brain import decision_local
-from brain.decision_client import DecisionClient, DecisionError, MODEL
-from config import get_decision_config, save_decision_config
+from brain.decision_client import DecisionClient, DecisionError, runtime_state as decision_runtime_state
+from config import DECISION_API_MODELS, get_decision_config, save_decision_config
 from utils.decision_credentials import clear_api_key, credential_state, save_api_key
 
 
@@ -26,8 +26,17 @@ def trusted_origin(origin: str) -> bool:
 
 def settings_state() -> dict:
     settings = get_decision_config()
-    return {**settings, **credential_state(), "api_model": MODEL, "local_model": decision_local.LOCAL_MODEL,
+    return {**settings, **credential_state(), "local_model": decision_local.LOCAL_MODEL,
+            "api_models": [{"id": model, "size": size} for model, size in DECISION_API_MODELS.items()],
             "local": decision_local.status(settings)}
+
+
+def runtime_state() -> dict:
+    from utils.gpu_resources import gpu_snapshot
+
+    local = decision_local.status(get_decision_config())
+    gpu = gpu_snapshot(local.get("pid") if local.get("managed") else None)
+    return {"local": local, "gpu": gpu, "last_decision": decision_runtime_state()}
 
 
 def save_settings(payload: dict) -> dict:
@@ -39,9 +48,12 @@ def save_settings(payload: dict) -> dict:
             if key not in payload:
                 continue
             value = payload[key]
-            if key in {"enabled", "allow_cloud_context", "local_auto_start"}:
+            if key in {"enabled", "allow_cloud_context", "local_auto_start", "api_fallback_enabled"}:
                 if not isinstance(value, bool):
                     raise ValueError("invalid_decision_boolean")
+            elif key == "api_model":
+                if not isinstance(value, str) or value not in DECISION_API_MODELS:
+                    raise ValueError("invalid_api_model")
             elif key == "provider":
                 if value not in {"api", "local"}:
                     raise ValueError("invalid_decision_provider")
@@ -75,6 +87,7 @@ def test_connection() -> dict:
         return {"ok": False, "error": "cloud_context_not_allowed"}
     try:
         client = DecisionClient(settings)
+        client.authorized = lambda: client.provider != "api" or get_decision_config()["allow_cloud_context"]
         client.decide({"message": "Synthetic connectivity test. This is not a real conversation or memory."}, {
             "connection": {"type": "noul", "instructions": "Is this a synthetic connectivity test?"},
         })
@@ -88,5 +101,6 @@ def local_action(action: str) -> dict:
     if action == "start":
         return decision_local.start(get_decision_config())
     if action == "stop":
-        return decision_local.stop()
+        decision_local.stop()
+        return decision_local.status(get_decision_config())
     raise ValueError("invalid_local_action")

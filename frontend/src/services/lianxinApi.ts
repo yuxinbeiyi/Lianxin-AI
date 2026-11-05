@@ -49,6 +49,8 @@ export type ChatStreamEvent = {
 export type DecisionSettings = {
   enabled: boolean;
   provider: "api" | "local";
+  api_models: { id: string; size: string }[];
+  api_fallback_enabled: boolean;
   allow_cloud_context: boolean;
   timeout_seconds: number;
   budget_seconds: number;
@@ -62,7 +64,32 @@ export type DecisionSettings = {
   api_key_error: string;
   api_model: string;
   local_model: string;
-  local: { status: string; ready: boolean; managed: boolean };
+  local: DecisionLocalState;
+};
+
+export type DecisionLocalState = {
+  status: string;
+  ready: boolean;
+  managed: boolean;
+  auto_start_paused: boolean;
+  pid: number | null;
+  port: number | null;
+  device: string | null;
+  modalities: string[];
+};
+
+export type DecisionRuntime = {
+  local: DecisionLocalState;
+  gpu: {
+    status: string;
+    devices: { index: number; uuid: string; name: string; total_mb: number | null;
+      used_mb: number | null; free_mb: number | null; utilization_percent: number | null }[];
+    process: { pid: number | null; status: string; used_mb: number | null };
+  };
+  last_decision: {
+    configured_model: string; model: string; provider: string; stage: string; attempt: number;
+    fallback_reason: string; error: string | null; status: string; elapsedMs: number | null; updated_at: number;
+  } | null;
 };
 
 export type ChatRequestMetadata = { force_memory_activation: true };
@@ -466,6 +493,7 @@ export const lianxinApi = {
   avatars: (include = true) => request<AvatarState>(`/settings/avatars?include=${include ? "1" : "0"}`),
   settingsPanels: () => request<SettingsPanelState>("/settings/panels"),
   decisionSettings: () => request<DecisionSettings>("/decision/settings"),
+  decisionRuntime: () => request<DecisionRuntime>("/decision/runtime"),
   saveDecisionSettings: (payload: Partial<DecisionSettings> & { api_key?: string; clear_api_key?: boolean }) =>
     request<DecisionSettings>("/decision/settings", { method: "POST", body: JSON.stringify(payload) }),
   testDecision: () => request<{ ok: boolean; model?: string; provider?: string; summary?: string; error?: string }>(

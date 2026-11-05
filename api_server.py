@@ -317,6 +317,10 @@ _TIME_CAPSULE_BRIDGE_SHIM = """<script>
 (function () {
   var listeners = {};
   var signal = function (name) { return { connect: function (callback) { (listeners[name] = listeners[name] || []).push(callback); } }; };
+  var cursor = 0, polling = false;
+  var ready = fetch('/api/time-capsule/events?after=-1', { cache: 'no-store' })
+    .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+    .then(function (data) { cursor = data.latest; });
   var call = function (method, args, callback) {
     var parentActions = { request_minimize: 'minimize', request_fullscreen: 'maximize', request_close: 'close' };
     if (parentActions[method]) {
@@ -324,10 +328,10 @@ _TIME_CAPSULE_BRIDGE_SHIM = """<script>
       if (callback) callback(null);
       return;
     }
-    fetch('/api/time-capsule/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) })
+    ready.then(function () { return fetch('/api/time-capsule/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method: method, args: args || [] }) }); })
       .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
-      .then(function (data) { if (callback) callback(data.result); })
-      .catch(function (error) { console.warn('[TimeCapsule HTTP]', error); if (callback) callback(null); });
+      .then(function (data) { if (data.ok === false) throw new Error(data.error || '时间胶囊请求失败'); if (callback) callback(data.result); })
+      .catch(function (error) { console.warn('[TimeCapsule HTTP]', error); if (callback) callback(JSON.stringify({ ok: false, error: error.message })); });
   };
   var bridge = new Proxy({
     state_changed: signal('state_changed'), page_state_changed: signal('page_state_changed'), page_invalidated: signal('page_invalidated'),
@@ -336,7 +340,20 @@ _TIME_CAPSULE_BRIDGE_SHIM = """<script>
     var args = Array.prototype.slice.call(arguments), callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
     call(name, args, callback);
   }; } });
-  function poll() { call('get_initial_state', [], function (raw) { if (!raw) return; (listeners.state_changed || []).forEach(function (fn) { fn(raw); }); }); }
+  function poll() {
+    if (polling) return;
+    polling = true;
+    ready.then(function () { return fetch('/api/time-capsule/events?after=' + cursor, { cache: 'no-store' }); })
+      .then(function (response) { if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+      .then(function (data) {
+        (data.items || []).forEach(function (event) {
+          (listeners[event.signal] || []).forEach(function (fn) { fn.apply(null, event.args); });
+        });
+        cursor = data.latest;
+      })
+      .catch(function (error) { console.warn('[TimeCapsule events]', error); })
+      .finally(function () { polling = false; });
+  }
   window.qt = { webChannelTransport: {} };
   window.QWebChannel = function (transport, callback) { callback({ objects: { capsuleBridge: bridge } }); };
   document.addEventListener('mousedown', function (event) {
@@ -786,6 +803,8 @@ class LianxinBridge:
         self._time_capsule_bridge = None
         self._study_room_lock = threading.RLock()
         self._time_capsule_lock = threading.RLock()
+        self._time_capsule_events = deque(maxlen=500)
+        self._time_capsule_event_id = 0
         self._diary_workers = set()
         self._qq_runtime = QQBridgeRuntime()
         # Reuse the legacy companion counter so the standalone React/Tauri
@@ -3616,7 +3635,21 @@ class LianxinBridge:
             "toggle_tree_favorite", "toggle_tree_archive", "search", "get_settings", "open_media_directory", "get_default_media_directory",
             "save_settings", "save_settings_payload", "visit_diary", "invite_lianxin", "request_close", "request_minimize", "request_fullscreen",
         }
-        return self._qt_bridge_rpc("time-capsule", method, args, allowed)
+        if method not in allowed or not isinstance(args, list):
+            return {"ok": False, "error": "无效的时间胶囊请求"}
+        return self.proactive_runtime().time_capsule_rpc(method, args, allowed)
+
+    def _record_time_capsule_event(self, signal: str, *args) -> None:
+        with self._time_capsule_lock:
+            self._time_capsule_event_id += 1
+            self._time_capsule_events.append({
+                "id": self._time_capsule_event_id, "signal": signal, "args": list(args),
+            })
+
+    def time_capsule_events(self, after: int = -1) -> dict:
+        with self._time_capsule_lock:
+            items = [event for event in self._time_capsule_events if after >= 0 and event["id"] > after]
+            return {"items": items, "latest": self._time_capsule_event_id}
 
     def _qt_bridge_rpc(self, kind: str, method: str, args: list, allowed: set[str]) -> dict:
         if method not in allowed:
@@ -3632,10 +3665,20 @@ class LianxinBridge:
         else:
             with self._time_capsule_lock:
                 if self._time_capsule_bridge is None:
+                    from PyQt5.QtCore import Qt
                     from gui.time_capsule.bridge import TimeCapsuleBridge
                     self._time_capsule_bridge = TimeCapsuleBridge()
+                    for signal in ("state_changed", "page_state_changed", "page_invalidated",
+                                   "tree_reply_ready", "generation_completed", "companion_ready"):
+                        getattr(self._time_capsule_bridge, signal).connect(
+                            lambda *values, name=signal: self._record_time_capsule_event(name, *values),
+                            type=Qt.DirectConnection,
+                        )
                     self._time_capsule_bridge.generation_requested.connect(
                         self._start_time_capsule_diary_generation
+                    )
+                    self._time_capsule_bridge.tree_reply_requested.connect(
+                        self._start_time_capsule_tree_reply
                     )
                 target = self._time_capsule_bridge
         try:
@@ -3652,6 +3695,30 @@ class LianxinBridge:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _start_time_capsule_tree_reply(self, note_id: int) -> None:
+        self.proactive_runtime()._duty_scheduler.manual_trigger("tree_hole_reply", note_id=int(note_id))
+
+    def _on_time_capsule_tree_updated(self, note_id: int, payload) -> None:
+        with self._time_capsule_lock:
+            capsule = self._time_capsule_bridge
+        if capsule is not None:
+            capsule.tree_reply_ready.emit(int(note_id), json.dumps({
+                "ok": True, "reply": (payload or {}).get("reply"),
+            }, ensure_ascii=False))
+            capsule.emit_state()
+            capsule.emit_page_state("tree")
+
+    def _on_time_capsule_tree_failed(self, name: str, error: str) -> None:
+        if name != "tree_hole_reply":
+            return
+        duty = self.proactive_runtime()._duty_scheduler._duties[name]
+        with self._time_capsule_lock:
+            capsule = self._time_capsule_bridge
+        if capsule is not None:
+            capsule.tree_reply_ready.emit(int(duty._job.get("note_id", 0)), json.dumps({
+                "ok": False, "error": str(error),
+            }, ensure_ascii=False))
 
     @staticmethod
     def _study_room_http_payload(raw):
@@ -3692,6 +3759,8 @@ class LianxinBridge:
 
     def _start_time_capsule_diary_generation(self, date_str: str) -> None:
         """Reuse the existing DiaryWorker chain for iframe-triggered generation."""
+        if any(worker.target_date == str(date_str) for worker in self._diary_workers):
+            return
         try:
             from brain.interaction_events import InteractionEventStore
             from config import get_diary_config
@@ -3862,6 +3931,7 @@ class _ProactiveTriggerRelay(QObject):
     """跨线程触发中继：HTTP handler 线程 emit，槽在 Qt 线程执行"""
     trigger_requested = pyqtSignal(str, str)   # mode, action
     user_message_requested = pyqtSignal()
+    time_capsule_requested = pyqtSignal(object)
 
 
 class _HeadlessProactiveChatWidget:
@@ -3983,7 +4053,7 @@ class LianxinProactiveRuntime:
     def _run(self):
         from PyQt5.QtCore import QEventLoop
         from utils.proactive_chat import ProactiveChatScheduler  # noqa: F401
-        from utils.duty_scheduler import DutyScheduler, ProactiveDuty, BilibiliReplyDuty, register_duty
+        from utils.duty_scheduler import DutyScheduler, ProactiveDuty, BilibiliReplyDuty, TreeHoleReplyDuty, register_duty
         from gui.proactive_controller import ProactivePresentationController
         from utils.settings import get_settings
 
@@ -4008,6 +4078,9 @@ class LianxinProactiveRuntime:
         )
         register_duty(duty, ProactiveDuty())
         register_duty(duty, BilibiliReplyDuty())
+        register_duty(duty, TreeHoleReplyDuty())
+        duty.tree_hole_updated.connect(bridge._on_time_capsule_tree_updated)
+        duty.duty_failed.connect(bridge._on_time_capsule_tree_failed)
 
         controller = ProactivePresentationController(
             scheduler=scheduler,
@@ -4038,6 +4111,7 @@ class LianxinProactiveRuntime:
         relay = _ProactiveTriggerRelay()
         relay.trigger_requested.connect(self._on_trigger)
         relay.user_message_requested.connect(self._on_user_message)
+        relay.time_capsule_requested.connect(self._on_time_capsule_request)
         # pre-warm agent so the first _tick does not block the event loop 10-12s
         try:
             bridge.agent()
@@ -4055,6 +4129,25 @@ class LianxinProactiveRuntime:
         loop.exec_()
 
     # 触发入口
+
+    def time_capsule_rpc(self, method: str, args: list, allowed: set[str]) -> dict:
+        if self._relay is None or not self._ready.is_set():
+            return {"ok": False, "error": "时间胶囊后台尚未就绪，请稍后重试"}
+        request = {"method": method, "args": args, "allowed": allowed, "done": threading.Event()}
+        self._relay.time_capsule_requested.emit(request)
+        if not request["done"].wait(timeout=30):
+            return {"ok": False, "error": "时间胶囊请求超时，请刷新确认状态后重试"}
+        return request["result"]
+
+    def _on_time_capsule_request(self, request) -> None:
+        try:
+            request["result"] = self._bridge._qt_bridge_rpc(
+                "time-capsule", request["method"], request["args"], request["allowed"],
+            )
+        except Exception as exc:
+            request["result"] = {"ok": False, "error": str(exc)}
+        finally:
+            request["done"].set()
 
     def trigger(self, mode: str = "normal", action: str = "") -> dict:
         relay = self._relay
@@ -4170,7 +4263,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4397,7 +4490,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": "time-capsule html missing: %s" % exc}, 404)
         html = template.replace('</head>', _TIME_CAPSULE_EMBEDDED_STYLE + '</head>')
         html = html.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', "")
-        html = html.replace('<script src="app.js?v=20260728-4"></script>', _TIME_CAPSULE_BRIDGE_SHIM + '<script src="app.js?v=20260728-4"></script>')
+        version = hashlib.sha256((asset_dir / 'app.js').read_bytes()).hexdigest()[:12]
+        html = html.replace('<script src="app.js?v=20260728-4"></script>', _TIME_CAPSULE_BRIDGE_SHIM + f'<script src="app.js?v={version}"></script>')
         body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -4641,6 +4735,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/time-capsule/state":
                 query = parse_qs(urlparse(self.path).query)
                 return self._send(bridge.time_capsule_state((query.get("day") or [""])[0]))
+            if path == "/api/time-capsule/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.time_capsule_events(int((query.get("after") or [-1])[0])))
             if path == "/api/proactive/state":
                 return self._send(bridge.proactive())
             if path == "/api/proactive/status":
@@ -4665,6 +4762,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/decision/settings":
                 from brain.decision_settings import settings_state
                 return self._send(settings_state())
+            if path == "/api/decision/runtime":
+                from brain.decision_settings import runtime_state
+                return self._send(runtime_state())
             if path == "/api/settings/avatars":
                 query = parse_qs(urlparse(self.path).query)
                 include_data = (query.get("include") or ["1"])[0] != "0"

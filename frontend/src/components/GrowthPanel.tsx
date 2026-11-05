@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw, X } from "lucide-react";
-import { lianxinApi, type GrowthEvent, type GrowthState } from "../services/lianxinApi";
+import { ApiRequestError, lianxinApi, type GrowthEvent, type GrowthState } from "../services/lianxinApi";
 import "./growthPanel.css";
 
 const STATUS: Record<string, string> = {
@@ -20,6 +20,7 @@ type Props = {
 };
 
 function errorMessage(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status === 404) return "成长接口尚未加载，请重启莲心后端并刷新页面；不会改动原有记录。";
   const message = error instanceof Error ? error.message : String(error);
   try {
     const payload = JSON.parse(message);

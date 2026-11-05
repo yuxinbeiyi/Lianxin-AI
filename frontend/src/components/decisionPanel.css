@@ -9,4 +9,14 @@
 .decision-hub button:disabled { opacity: .5; cursor: not-allowed; }
 .decision-hub .secondary-button { min-height: 36px; width: max-content; }
 .decision-notice { min-height: 24px; color: var(--lx-accent); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.decision-status-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; font-size: 12px; line-height: 1.6; }
+.decision-status-grid dt { color: var(--lx-text-muted); }
+.decision-status-grid dd { margin: 0; overflow-wrap: anywhere; }
+.decision-gpus { display: grid; gap: 10px; margin: 12px 0; }
+.decision-gpu { border: 1px solid var(--lx-border); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.decision-gpu p, .decision-last-call p { margin: 6px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.decision-process-memory { font-size: 13px; }
+.decision-last-call { margin-top: 18px; font-size: 12px; }
+.decision-last-call h4 { margin: 0 0 8px; font-size: 13px; }
+.decision-advanced summary { cursor: pointer; margin-bottom: 12px; }
 @media (max-width: 600px) { .decision-grid { grid-template-columns: 1fr; } }

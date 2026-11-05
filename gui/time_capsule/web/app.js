@@ -547,9 +547,11 @@ function renderTree(payload) {
 
 function renderTreeNote(item) {
   const root = q('#tree-notes');
+  const flipped = root.querySelector(`.tree-note-shell[data-note-id="${item.id}"].flipped`);
   root.innerHTML = '';
   const shell = document.createElement('article');
   shell.className = 'tree-note-shell featured-tree-note';
+  if (flipped) shell.classList.add('flipped');
   shell.dataset.noteId = item.id;
   const isUserNote = item.author !== 'lianxin';
   const reply = item.reply?.content || (isUserNote ? '' : '这张纸条本身，就是莲心悄悄留给你的回响。');
@@ -560,15 +562,21 @@ function renderTreeNote(item) {
     if (shell.classList.contains('flipped')) {
       const unread = await call('mark_tree_thread_read', item.id);
       if (unread) { state = { ...(state || {}), ...unread }; updateTreeBadges(state); }
-      if (isUserNote && !item.reply) await call('request_tree_reply', item.id);
+      if (isUserNote && !item.reply) await requestTreeReply(item.id);
     }
   };
   shell.querySelector('.tree-favorite').onclick = async event => { event.stopPropagation(); await call('toggle_tree_favorite', item.id); };
   shell.querySelector('.tree-archive').onclick = async event => { event.stopPropagation(); await call('toggle_tree_archive', item.id); };
   shell.querySelector('.tree-retry').onclick = async event => {
-    event.stopPropagation(); shell.querySelector('.tree-reply').textContent = '莲心正在重新落笔……'; await call('request_tree_reply', item.id);
+    event.stopPropagation(); shell.querySelector('.tree-reply').textContent = '莲心正在重新落笔……'; await requestTreeReply(item.id);
   };
   root.appendChild(shell);
+}
+
+async function requestTreeReply(noteId) {
+  const result = await call('request_tree_reply', noteId);
+  if (!result || result.ok === false) showToast(result?.error || '暂时无法请求树洞回应，请稍后重试。');
+  return result;
 }
 
 function renderCompactPagination(root, payload, handler) {
@@ -732,7 +740,10 @@ async function inviteSelectedDiary() {
   q('#companion-reading').textContent = '我正在认真重读这一页……';
   q('#companion-panel').classList.remove('hidden');
   const result = await call('invite_lianxin', currentDetailDate, currentDetailAuthor || 'all');
-  if (!result?.ok) showToast(result?.error || '暂时无法邀请莲心。');
+  if (!result?.ok) {
+    q('#companion-reading').textContent = result?.error || '暂时无法邀请莲心，请稍后重试。';
+    showToast(result?.error || '暂时无法邀请莲心。');
+  }
 }
 
 function toFileUrl(value = '') {
@@ -988,21 +999,28 @@ function bindEvents() {
     button.disabled = true;
     button.querySelector('span').textContent = '正在整理今天的日记';
     const result = await call('request_diary_generation', currentDay);
-    if (result?.ok === false) {
+    if (!result || result.ok === false) {
       button.disabled = false;
       button.querySelector('span').textContent = '请莲心写日记';
-      showToast(result.error || '暂时无法生成日记');
+      showToast(result?.error || '暂时无法生成日记');
       return;
     }
     showToast('莲心已经开始整理今天的记录');
-    setTimeout(() => {
-      button.disabled = false;
-      button.querySelector('span').textContent = '请莲心写日记';
-    }, 1800);
   });
   on('#send-tree', 'click', async () => {
     const input = q('#tree-input'); const value = input.value.trim(); if (!value) return;
-    const result = await call('add_tree_note', value); if (result?.ok) { input.value = ''; showToast('纸条已经飞进树洞。'); }
+    const result = await call('add_tree_note', value);
+    if (result?.ok) {
+      input.value = '';
+      currentTreeNoteId = result.id;
+      treePage = 1;
+      treeFilter = 'all';
+      treeQuery = '';
+      treeSort = 'newest';
+      treeArchived = false;
+      await loadPage('tree', true);
+      showToast('纸条已经飞进树洞。');
+    } else showToast(result?.error || '纸条没有保存成功，请稍后重试。');
   });
   on('#invite-lianxin', 'click', inviteSelectedDiary);
   on('#global-search', 'input', debounce(async event => {
@@ -1152,12 +1170,14 @@ function initialize() {
       console.info('[TimeCapsule] QWebChannel connected');
       bridge.state_changed.connect(payload => render(parse(payload)));
       bridge.generation_completed.connect((day, success, error) => {
+        if (day !== currentDay) return;
         const button = q('#request-diary');
         if (button) {
           button.disabled = false;
           button.querySelector('span').textContent = success ? '重新整理今天的日记' : '请莲心写日记';
         }
         if (!success && error) showToast(error);
+        if (success) showToast('莲心的日记已经写好了。');
       });
       bridge.page_state_changed.connect((page, payload) => applyPageState(page, parse(payload)));
       bridge.page_invalidated.connect(page => {
@@ -1188,7 +1208,7 @@ function initialize() {
       });
       call('get_initial_state')
         .then(data => {
-          if (!data) throw new Error('初始状态为空');
+          if (!data || data.ok === false) throw new Error(data?.error || '初始状态为空');
           render(data);
         })
         .catch(error => reportFrontendError(error, '读取初始状态'))
