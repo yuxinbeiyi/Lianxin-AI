@@ -237,7 +237,6 @@ class CharacterWidget(QWidget):
         self._btn_emotion = self._create_button("🧪  涟漪情感系统", "#9B72CF")
         self._btn_sound = self._create_button("🔊  声音设置", "#48A999")
         self._btn_memory = self._create_button("🧠  棱镜记忆系统", "#77839A")
-        self._btn_workflow = self._create_button("🧭  任务运行中心", "#5F83C7")
         self._btn_network = self._create_button("🌐  网络设置", "#4C95D9")
         self._btn_capability = self._create_button("🧩  能力中枢", "#9670C9")
         self._btn_persona = self._create_button("🎭  人格枢控", "#7C72D8")
@@ -278,7 +277,7 @@ class CharacterWidget(QWidget):
         ))
         self._add_function_group(scroll_layout, "莲心", (
             self._btn_emotion, self._btn_memory,
-            self._btn_workflow, self._btn_proactive, self._btn_capability,
+            self._btn_proactive, self._btn_capability,
             self._btn_persona, self._btn_constellation,
         ))
         self._add_function_group(scroll_layout, "感知与声音", (
@@ -634,8 +633,6 @@ class CharacterWidget(QWidget):
         return self._btn_sound
     def get_memory_button(self):
         return self._btn_memory
-    def get_workflow_button(self):
-        return self._btn_workflow
 
     def get_network_button(self):
         return self._btn_network

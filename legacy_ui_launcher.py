@@ -91,13 +91,6 @@ def build_window(feature: str):
     if feature == "note":
         from gui.note_dialog import NoteDialog
         return NoteDialog()
-    if feature == "workflow":
-        from gui.workflow_center import WorkflowCenter
-        return WorkflowCenter()
-    if feature == "duty":
-        from gui.duty_center import DutyCenter
-        from utils.duty_scheduler import DutyScheduler
-        return DutyCenter(DutyScheduler())
     if feature == "proactive":
         from gui.proactive_dialog import ProactiveDialog
         from utils.proactive_chat import ProactiveChatScheduler

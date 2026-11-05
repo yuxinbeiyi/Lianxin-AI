@@ -939,21 +939,6 @@ class MainWindow(QMainWindow):
         self._update_standby_button()
         top_bar_layout.addWidget(self._btn_standby)
 
-        # 后台职责中心入口
-        self._btn_duty = QPushButton("🔧")
-        self._btn_duty.setFixedSize(28, 24)
-        self._btn_duty.setFont(QFont("Microsoft YaHei UI", 9))
-        self._btn_duty.setCursor(Qt.PointingHandCursor)
-        self._btn_duty.setToolTip("后台职责中心：查看/管理莲心的主动行为")
-        self._btn_duty.setStyleSheet("""
-            QPushButton {
-                background-color: #2D2D3F; color: #A0A0B0;
-                border-radius: 5px; border: 1px solid #3D3D5A;
-            }
-            QPushButton:hover { background-color: #3D3D55; color: #FFD700; }
-        """)
-        self._btn_duty.clicked.connect(self._show_duty_center)
-        top_bar_layout.addWidget(self._btn_duty)
 
         top_bar_layout.addStretch()
 
@@ -1040,7 +1025,6 @@ class MainWindow(QMainWindow):
         self._char_widget.get_emotion_button().clicked.connect(self._show_ripple_constellation)
         self._char_widget.get_sound_button().clicked.connect(self._on_sound_settings)
         self._char_widget.get_memory_button().clicked.connect(self._on_memory_settings)
-        self._char_widget.get_workflow_button().clicked.connect(self._show_workflow_center)
         self._char_widget.get_network_button().clicked.connect(self._show_network_settings)
         self._char_widget.get_capability_button().clicked.connect(self._show_capability_center)
         self._char_widget.get_constellation_button().clicked.connect(self._show_constellation_system)
@@ -3286,50 +3270,6 @@ class MainWindow(QMainWindow):
 
     # ── 语音聊天 ──────────────────────────────────────────
 
-    def _show_duty_center(self):
-        """打开后台职责中心"""
-        from gui.duty_center import DutyCenter
-        dlg = DutyCenter(self._duty_scheduler, self)
-        dlg.exec_()
-
-    def _show_workflow_center(self):
-        from gui.workflow_center import WorkflowCenter
-
-        WorkflowCenter(
-            self,
-            retry_callback=self._retry_workflow_run,
-            cancel_callback=self._cancel_workflow_run,
-        ).exec_()
-
-    def _cancel_workflow_run(self, run: dict):
-        if (run.get("kind") == "conversation"
-                and getattr(self, "_agent", None) is not None
-                and int(getattr(self._agent, "_active_workflow_run_id", 0) or 0) == int(run["id"])):
-            self._agent._cancel_event.set()
-
-    def _retry_workflow_run(self, run: dict):
-        metadata = run.get("metadata", {}) if isinstance(run.get("metadata"), dict) else {}
-        if run.get("kind") == "auto_task":
-            from brain.auto_task_executor import execute_auto_task
-            from brain.auto_task_manager import get_auto_task_manager
-
-            task = get_auto_task_manager().get_task(str(metadata.get("task_id", "")))
-            if task is None:
-                self._chat_widget.add_system_tip("原自动任务已不存在，无法重试。")
-                return False
-            task._workflow_retry_of_run_id = int(run["id"])
-            execute_auto_task(task)
-            return True
-        if run.get("kind") != "conversation":
-            self._chat_widget.add_system_tip("当前运行类型没有可用的重试执行器。")
-            return False
-        user_message = str(metadata.get("user_message", "") or "").strip()
-        if not user_message:
-            self._chat_widget.add_system_tip("这条运行记录缺少原始请求，无法自动重试。")
-            return False
-        self._agent._workflow_retry_of_run_id = int(run["id"])
-        QTimer.singleShot(0, lambda: self._on_user_message(user_message, []))
-        return True
 
     def _show_voice_chat_menu(self, pos):
         """右击语音聊天按钮 → 弹出菜单"""

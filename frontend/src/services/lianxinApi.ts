@@ -330,7 +330,7 @@ export type BilibiliInteractionState = {
 };
 export type LegacyFeature =
   | "ripple" | "persona" | "memory-constellation" | "prism-memory"
-  | "history" | "note" | "workflow" | "duty" | "proactive" | "alarm" | "reminder"
+  | "history" | "note" | "proactive" | "alarm" | "reminder"
   | "settings" | "api" | "network" | "capability" | "vision" | "voice-stt" | "sound"
   | "qq" | "wechat" | "study-room" | "time-capsule" | "data-tide" | "camera" | "galgame" | "live2d"
   | "video-call";
@@ -414,7 +414,6 @@ export const lianxinApi = {
   updateSession: (id: number, payload: { title?: string; togglePin?: boolean }) => request(`/conversations/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   note: () => request<{ content: string }>("/note"),
   saveNote: (content: string) => request<{ content: string }>("/note", { method: "POST", body: JSON.stringify({ content }) }),
-  tasks: () => request<{ todos: unknown[]; liveTodos: unknown[]; autoTasks: unknown[]; logs: unknown[]; progress: { completed: number; total: number; active: string } }>("/tasks"),
   musicState: () => request<Record<string, unknown>>("/music/state"),
   musicControl: (action: string, payload?: Record<string, unknown>) => request<Record<string, unknown>>("/music/control", { method: "POST", body: JSON.stringify({ action, ...(payload ?? {}) }) }),
   musicEnsure: () => request<{ online: boolean; url: string }>("/music/ensure"),
@@ -517,8 +516,6 @@ export const lianxinApi = {
   stopQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/stop", { method: "POST", body: "{}" }),
   reloadQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/reload", { method: "POST", body: "{}" }),
   setQqFastReply: (enabled: boolean) => request<{ running: boolean; connected: boolean; state: string; fastReplyEnabled: boolean }>("/qq/fast-reply", { method: "POST", body: JSON.stringify({ enabled }) }),
-  taskSnapshot: () => request<{ workflowRuns: unknown[]; todos: unknown[]; autoTasks: unknown[]; logs: unknown[]; progress: { completed: number; total: number; active: string } }>("/tasks/snapshot"),
-  taskEvents: (after: number) => request<{ items: Array<{ id: number; type: string; data: any }>; latest: number }>(`/tasks/events?after=${after}`),
   capabilities: () => request<{ items: Array<{ name: string; display_name: string; description: string; category: string; enabled: boolean; available: boolean; favorite: boolean }> }>("/capabilities"),
   speak: (text: string, generation?: number) => request<{ speaking: boolean }>("/tts/speak", { method: "POST", body: JSON.stringify({ text, generation }) }),
   prepareSpeech: (text: string, generation: number) => request<{ prepared: boolean; id?: string; unavailable?: boolean; muted?: boolean; cancelled?: boolean }>("/tts/prepare", { method: "POST", body: JSON.stringify({ text, generation }) }),

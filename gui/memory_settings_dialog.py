@@ -201,7 +201,7 @@ class MemorySettingsDialog(QDialog):
 
         interval_desc = QLabel(
             "对话安静后自动处理；消息积压较多时会优先处理。失败采用指数退避，"
-            "达到阈值后自动暂停，可在后台职责中心手动触发恢复。"
+            "达到阈值后自动暂停，以避免持续失败请求。"
         )
         interval_desc.setWordWrap(True)
         interval_desc.setStyleSheet("color: #AEB3C2; font-size: 15px; padding: 4px 0;")

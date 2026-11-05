@@ -24,7 +24,6 @@ import {
   Command,
   FileText,
   FolderOpen,
-  Gauge,
   Gem,
   Image,
   LayoutDashboard,
@@ -51,7 +50,8 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { managementGroups, primaryNavigation, demoMessages } from "./data/demo";
+import { primaryNavigation, demoMessages } from "./data/demo";
+import { managementGroups } from "./managementGroups";
 import {
   shouldSendAsConversation,
   splitConversationText,
@@ -93,7 +93,6 @@ type PanelId =
   | "none"
   | "history"
   | "note"
-  | "tasks"
   | "voice"
   | "video-call"
   | "proactive"
@@ -327,8 +326,6 @@ const managementFeatureMap: Record<string, LegacyFeature> = {
   历史记录: "history",
   备忘本: "note",
   闹钟与提醒: "alarm",
-  任务运行中心: "workflow",
-  后台职责中心: "duty",
   主动聊天: "proactive",
   涟漪情感系统: "ripple",
   人格枢控: "persona",
@@ -359,9 +356,7 @@ const iconMap: Record<string, typeof MessageCircle> = {
 };
 const managementIconMap: Record<string, typeof Settings> = {
   闹钟与提醒: AlarmClock,
-  任务运行中心: Gauge,
   主动聊天: MessageCircle,
-  后台职责中心: Bot,
   涟漪情感系统: Waves,
   人格枢控: UserRound,
   星图系统: Network,
@@ -1872,88 +1867,6 @@ function NotePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function TaskPanel({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{
-    todos: unknown[];
-    liveTodos?: unknown[];
-    autoTasks: unknown[];
-    logs: unknown[];
-    workflowRuns?: any[];
-    progress: { completed: number; total: number; active: string };
-  } | null>(null);
-  const load = () =>
-    void lianxinApi
-      .taskSnapshot()
-      .then(setData)
-      .catch(() => setData(null));
-  useEffect(() => {
-    load();
-    const timer = window.setInterval(load, 2500);
-    return () => window.clearInterval(timer);
-  }, []);
-  return (
-    <Overlay onClose={onClose}>
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">运行与任务</span>
-          <h2>任务运行中心</h2>
-        </div>
-        <button className="secondary-button" onClick={load}>
-          <Activity size={15} />
-          刷新
-        </button>
-      </div>
-      {data ? (
-        <>
-          <div className="task-overview">
-            <strong>
-              {data.progress.completed}/{data.progress.total}
-            </strong>
-            <span>当前会话任务完成度 · 每 2.5 秒同步</span>
-            <b>{data.progress.active || "当前没有运行中的任务"}</b>
-          </div>
-          <div className="task-data-grid">
-            <div>
-              <span>持久任务</span>
-              <strong>{data.todos.length}</strong>
-            </div>
-            <div>
-              <span>自动任务</span>
-              <strong>{data.autoTasks.length}</strong>
-            </div>
-            <div>
-              <span>Workflow 运行</span>
-              <strong>{data.workflowRuns?.length ?? 0}</strong>
-            </div>
-          </div>
-          <h3>最近运行记录</h3>
-          <div className="log-list">
-            {data.logs.length ? (
-              data.logs
-                .slice(-8)
-                .reverse()
-                .map((log: any, index) => (
-                  <div className="log-entry" key={index}>
-                    <span className={log.success ? "log-ok" : "log-fail"}>
-                      {log.success ? "成功" : "失败"}
-                    </span>
-                    <span>{log.message || "任务步骤"}</span>
-                    <time>{log.timestamp || ""}</time>
-                  </div>
-                ))
-            ) : (
-              <p className="muted-copy">暂无任务运行记录。</p>
-            )}
-          </div>
-        </>
-      ) : (
-        <div className="panel-error">
-          任务服务暂时不可用，请确认 Python 后端已启动。
-        </div>
-      )}
-    </Overlay>
-  );
-}
 
 function VoicePanel({
   active,
@@ -4158,7 +4071,6 @@ export function App() {
       )}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
-      {panel === "tasks" && <TaskPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (
         <VoicePanel
           active={voiceActive}

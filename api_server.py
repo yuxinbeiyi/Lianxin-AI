@@ -152,7 +152,7 @@ def _image_flow_log_poll(message: str) -> None:
 
 LEGACY_FEATURES = {
     "ripple", "persona", "memory-constellation", "prism-memory",
-    "history", "note", "workflow", "duty", "proactive", "alarm", "reminder",
+    "history", "note", "proactive", "alarm", "reminder",
     "settings", "api", "network", "capability", "voice-stt", "sound",
     "qq", "wechat", "study-room", "time-capsule", "data-tide", "galgame",
     "video-call", "live2d",
@@ -3198,8 +3198,6 @@ class LianxinBridge:
             {"id": "history", "label": "历史记录", "available": True},
             {"id": "note", "label": "备忘本", "available": True},
             {"id": "alarm", "label": "闹钟与提醒", "available": True},
-            {"id": "workflow", "label": "任务运行中心", "available": True},
-            {"id": "duty", "label": "后台职责中心", "available": True},
             {"id": "proactive", "label": "主动聊天", "available": True},
             {"id": "study-room", "label": "莲心自习室", "available": True},
             {"id": "time-capsule", "label": "时间胶囊", "available": True},
