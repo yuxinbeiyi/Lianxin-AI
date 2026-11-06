@@ -7,6 +7,7 @@ ProactiveChatScheduler：主动聊天调度器
 
 import json
 import random
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from utils.paths import get_user_data_dir
@@ -41,6 +42,7 @@ class ProactiveChatScheduler:
     """
 
     def __init__(self):
+        self._settings_lock = threading.RLock()
         self._settings: dict = {}
         self._load_settings()
 
@@ -156,11 +158,9 @@ class ProactiveChatScheduler:
     def save_settings(self):
         """将当前设置写入 JSON 文件。"""
         try:
-            _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _SETTINGS_PATH.write_text(
-                json.dumps(self._settings, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            from utils.proactive_panel import _write
+            with self._settings_lock:
+                _write(self._settings)
         except Exception as e:
             print(f"[ProactiveChat] 保存设置失败: {e}")
 
@@ -330,17 +330,18 @@ class ProactiveChatScheduler:
 
     def record_behavior_success(self, behavior: str):
         """只有界面实际收到非空消息后才记录全局和单行为冷却。"""
-        now = datetime.now()
-        self._empty_session_waiting = False
-        self._empty_session_started_at = None
-        self._last_fire_time = now
-        self._settings["_last_global_success"] = now.isoformat(timespec="seconds")
-        last_success = self._settings.setdefault("_behavior_last_success", {})
-        last_success[behavior] = now.isoformat(timespec="seconds")
-        history = self._settings.setdefault("_behavior_history", [])
-        history.append(behavior)
-        del history[:-12]
-        self.save_settings()
+        with self._settings_lock:
+            now = datetime.now()
+            self._empty_session_waiting = False
+            self._empty_session_started_at = None
+            self._last_fire_time = now
+            self._settings["_last_global_success"] = now.isoformat(timespec="seconds")
+            last_success = self._settings.setdefault("_behavior_last_success", {})
+            last_success[behavior] = now.isoformat(timespec="seconds")
+            history = self._settings.setdefault("_behavior_history", [])
+            history.append(behavior)
+            del history[:-12]
+            self.save_settings()
 
     # ── 观察设置 ────────────────────────────────────────────────
 
@@ -602,18 +603,20 @@ class ProactiveChatScheduler:
 
     def can_supplement_diary_today(self) -> bool:
         """今天是否还能补充日记（最多2次）"""
-        today = datetime.now().strftime("%Y-%m-%d")
-        last_date = self._settings.get("_slack_last_diary_supplement_date", "")
-        if last_date != today:
-            self._settings["_slack_last_diary_supplement_count"] = 0
-            self._settings["_slack_last_diary_supplement_date"] = today
-        return self._settings.get("_slack_last_diary_supplement_count", 0) < 2
+        with self._settings_lock:
+            today = datetime.now().strftime("%Y-%m-%d")
+            last_date = self._settings.get("_slack_last_diary_supplement_date", "")
+            if last_date != today:
+                self._settings["_slack_last_diary_supplement_count"] = 0
+                self._settings["_slack_last_diary_supplement_date"] = today
+            return self._settings.get("_slack_last_diary_supplement_count", 0) < 2
 
     def record_diary_supplement(self):
         """记录一次日记补充"""
-        today = datetime.now().strftime("%Y-%m-%d")
-        self._settings["_slack_last_diary_supplement_date"] = today
-        self._settings["_slack_last_diary_supplement_count"] = self._settings.get("_slack_last_diary_supplement_count", 0) + 1
+        with self._settings_lock:
+            today = datetime.now().strftime("%Y-%m-%d")
+            self._settings["_slack_last_diary_supplement_date"] = today
+            self._settings["_slack_last_diary_supplement_count"] = self._settings.get("_slack_last_diary_supplement_count", 0) + 1
 
     # ── 观察运行时状态 ────────────────────────────────────────────
 
@@ -622,7 +625,8 @@ class ProactiveChatScheduler:
         return self._settings.get("_last_observation", "")
 
     def set_last_observation(self, desc: str):
-        self._settings["_last_observation"] = desc
+        with self._settings_lock:
+            self._settings["_last_observation"] = desc
 
     # ── 观察触发判断 ──────────────────────────────────────────────
 

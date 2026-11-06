@@ -401,6 +401,18 @@ export type HistorySession = {
   is_pinned?: number;
   message_count: number;
 };
+export type ProactiveBehavior = "normal" | "observe" | "bilibili" | "slack";
+export type ProactiveSettings = Record<string, unknown> & {
+  weights: number[];
+  behavior_weights: Record<ProactiveBehavior, number>;
+  behavior_cooldowns: Record<ProactiveBehavior, number>;
+};
+export type ProactivePanelState = {
+  settings: ProactiveSettings; revision: string; defaultWeights: number[]; baseRate: number;
+  hour: number; recentBehaviors: string[]; lastSuccess: string;
+};
+export type ProactiveStatus = { ready: boolean; running: boolean; lastResult?: string; lastResultText?: string; lastFireTime?: number; runCount?: number; successCount?: number; failCount?: number };
+export type BilibiliHistoryRecord = { id: string; date: string; keyword: string; results: Array<{ bvid: string; title: string; author: string; play_count: number; user_reaction?: string }> };
 
 export type HistoryDetail = {
   session: HistorySession;
@@ -534,8 +546,17 @@ export const lianxinApi = {
   stopVoiceInput: () => request<{ active: boolean }>("/voice/input/stop", { method: "POST", body: "{}" }),
   proactiveState: () => request<{ desktopEnabled: boolean; qqEnabled: boolean; frequency: number; minIntervalMinutes: number }>("/proactive/state"),
   toggleProactive: (enabled: boolean) => request<{ desktopEnabled: boolean }>("/proactive/toggle", { method: "POST", body: JSON.stringify({ enabled }) }),
-  proactiveStatus: () => request<{ ready: boolean; running: boolean }>("/proactive/status"),
-  proactiveTrigger: (mode: string) => request<{ ok: boolean }>("/proactive/trigger", { method: "POST", body: JSON.stringify({ mode }) }),
+  proactiveStatus: () => request<ProactiveStatus>("/proactive/status"),
+  proactiveTrigger: (mode: string, action = "") => request<{ ok: boolean; queued?: boolean; started?: boolean; error?: string }>("/proactive/trigger", { method: "POST", body: JSON.stringify({ mode, action }) }),
+  proactivePanel: () => request<ProactivePanelState>("/proactive/panel/state"),
+  saveProactivePanel: (revision: string, settings: ProactiveSettings) => request<ProactivePanelState>("/proactive/panel/save", { method: "POST", body: JSON.stringify({ revision, settings }) }),
+  validateProactivePanel: (revision: string, settings: ProactiveSettings) => request<{ valid: boolean }>("/proactive/panel/validate", { method: "POST", body: JSON.stringify({ revision, settings }) }),
+  proactiveCameras: () => request<{ items: Array<{ index: number; label: string }> }>("/proactive/panel/cameras", { method: "POST", body: JSON.stringify({ confirmed: true }) }),
+  bilibiliHistory: (keyword = "") => request<{ items: BilibiliHistoryRecord[] }>("/proactive/panel/history", { method: "POST", body: JSON.stringify({ keyword }) }),
+  deleteBilibiliTag: (keyword: string) => request<{ ok: boolean }>("/proactive/panel/tag-delete", { method: "POST", body: JSON.stringify({ keyword }) }),
+  clearBilibiliHistory: () => request<{ items: BilibiliHistoryRecord[] }>("/proactive/panel/history-clear", { method: "POST", body: JSON.stringify({ confirmed: true }) }),
+  reactBilibiliHistory: (recordId: string, bvid: string, reaction: "liked" | "disliked") => request<{ items: BilibiliHistoryRecord[] }>("/proactive/panel/history-react", { method: "POST", body: JSON.stringify({ recordId, bvid, reaction }) }),
+  checkBilibiliAuthorization: () => request<{ ok: boolean; error?: string; state?: BilibiliInteractionState }>("/bilibili-interaction/account/check", { method: "POST", body: "{}" }),
   bilibiliInteractionState: () => request<BilibiliInteractionState>("/bilibili-interaction/state"),
   bilibiliSurfState: () => request<BilibiliSurfState>("/bilibili-surf/state"),
   openBilibiliVideo: (bvid: string) => request<{ ok: boolean; url?: string; error?: string }>("/bilibili-surf/open-video", { method: "POST", body: JSON.stringify({ bvid }) }),

@@ -3189,6 +3189,19 @@ class LianxinBridge:
                 "minIntervalMinutes": scheduler.min_interval_minutes,
                 "frequency": scheduler.frequency}
 
+    def proactive_panel_request(self, action, payload):
+        from utils import proactive_panel
+        if not isinstance(payload, dict):
+            raise ValueError("主动聊天请求必须为对象")
+        scheduler = self.get_proactive_scheduler()
+        if action == "state":
+            return proactive_panel.state(scheduler)
+        if action in ("save", "validate"):
+            return proactive_panel.save(scheduler, payload, validate_only=action == "validate")
+        if action == "cameras":
+            return proactive_panel.cameras(payload.get("confirmed"))
+        return proactive_panel.history_request(action, payload)
+
     def get_proactive_scheduler(self):
         with self._lock:
             if self._proactive is None:
@@ -3197,9 +3210,11 @@ class LianxinBridge:
             return self._proactive
 
     def set_proactive(self, enabled: bool) -> dict:
+        from utils import proactive_panel
         scheduler = self.get_proactive_scheduler()
-        scheduler.desktop_enabled = bool(enabled)
-        scheduler.save_settings()
+        with scheduler._settings_lock:
+            current = proactive_panel.state(scheduler)
+            proactive_panel.save(scheduler, {"revision": current["revision"], "settings": {"desktop_enabled": bool(enabled)}})
         return self.proactive()
 
     def proactive_runtime(self):
@@ -3217,7 +3232,18 @@ class LianxinBridge:
             runtime.stop()
 
     def proactive_trigger(self, mode: str = "normal", action: str = "") -> dict:
-        return self.proactive_runtime().trigger(str(mode), str(action))
+        from utils.proactive_panel import SLACK_ACTIONS
+        if mode not in ("normal", "screenshot", "camera", "bilibili", "slack") or (action and (mode != "slack" or action not in SLACK_ACTIONS)):
+            return {"ok": False, "error": "不支持的调试动作"}
+        scheduler = self.get_proactive_scheduler()
+        if mode == "normal" and not (scheduler.desktop_enabled or scheduler.qq_enabled):
+            return {"ok": False, "error": "请先保存并开启桌面或 QQ 主动聊天"}
+        field = {"screenshot": "observe_enabled", "camera": "observe_enabled", "bilibili": "bilibili_enabled", "slack": "slack_enabled"}.get(mode)
+        if field and not scheduler._settings.get(field, False):
+            return {"ok": False, "error": "请先保存并开启对应行为"}
+        if self.proactive_status().get("running"):
+            return {"ok": False, "error": "主动行为正在执行，请稍候"}
+        return self.proactive_runtime().trigger(mode, action)
 
     def proactive_status(self) -> dict:
         runtime = getattr(self, "_proactive_runtime", None)
@@ -4092,7 +4118,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 class _ProactiveTriggerRelay(QObject):
     """跨线程触发中继：HTTP handler 线程 emit，槽在 Qt 线程执行"""
-    trigger_requested = pyqtSignal(str, str)   # mode, action
+    trigger_requested = pyqtSignal(object)
     user_message_requested = pyqtSignal()
     time_capsule_requested = pyqtSignal(object)
 
@@ -4316,8 +4342,11 @@ class LianxinProactiveRuntime:
         relay = self._relay
         if relay is None or not self._ready.is_set():
             return {"ok": False, "error": "主动聊天运行时尚未就绪"}
-        relay.trigger_requested.emit(str(mode), str(action))
-        return {"ok": True}
+        request = {"mode": str(mode), "action": str(action), "done": threading.Event()}
+        relay.trigger_requested.emit(request)
+        if not request["done"].wait(timeout=10):
+            return {"ok": False, "error": "后台尚未确认调试启动，执行状态未知；请先刷新运行状态，勿重复点击"}
+        return request["result"]
 
     def notify_user_message(self):
         relay = self._relay
@@ -4332,7 +4361,10 @@ class LianxinProactiveRuntime:
         try:
             for item in duty.get_all_statuses():
                 if item.name == "proactive":
-                    running = bool(item.is_running)
+                    return {"ready": True, "running": bool(item.is_running),
+                            "lastResult": item.last_result, "lastResultText": item.last_result_text,
+                            "lastFireTime": item.last_fire_time, "runCount": item.run_count,
+                            "successCount": item.success_count, "failCount": item.fail_count}
         except Exception:
             pass
         return {"ready": True, "running": running}
@@ -4353,29 +4385,42 @@ class LianxinProactiveRuntime:
 
     # Qt 线程内触发的槽函数
 
-    def _on_trigger(self, mode: str, action: str):
+    def _on_trigger(self, request):
+        mode, action = request["mode"], request["action"]
         duty = self._duty_scheduler
         scheduler = self._scheduler
-        if duty is None or scheduler is None:
-            return
         try:
+            if duty is None or scheduler is None:
+                request["result"] = {"ok": False, "error": "主动聊天运行时尚未就绪"}
+                return
             if mode == "bilibili":
-                duty.manual_trigger("proactive", force_observe="bilibili")
+                started = duty.manual_trigger("proactive", force_observe="bilibili")
             elif mode == "slack" or (mode or "").startswith("slack:"):
                 slack_action = action
                 if not slack_action and (mode or "").startswith("slack:"):
                     slack_action = mode.split(":", 1)[1]
-                duty.manual_trigger("proactive", force_behavior="slack", force_action=slack_action)
+                started = duty.manual_trigger("proactive", force_behavior="slack", force_action=slack_action)
             elif mode in ("screenshot", "camera"):
-                duty.manual_trigger("proactive", force_observe=mode)
+                started = duty.manual_trigger("proactive", force_observe=mode)
             else:
                 # 对齐 main_window._on_proactive_debug 的默认触发逻辑
                 if not (scheduler.desktop_enabled or scheduler.qq_enabled):
-                    bridge_log.log("主动", "请先开启桌面或 QQ 主动聊天再触发")
+                    request["result"] = {"ok": False, "error": "请先开启桌面或 QQ 主动聊天再触发"}
                     return
-                duty.manual_trigger("proactive")
+                started = duty.manual_trigger("proactive")
+            if started:
+                request["result"] = {"ok": True, "started": True}
+                bridge_log.log("主动调试", f"已启动 mode={mode} action={action or '-'}")
+            else:
+                status = self.status()
+                error = "主动行为正在执行，请稍候" if status.get("running") else status.get("lastResultText") or "后台未启动调试，请检查运行状态、行为开关和可用动作"
+                request["result"] = {"ok": False, "error": error}
+                bridge_log.log("主动调试", f"未启动 mode={mode} action={action or '-'}")
         except Exception as exc:
-            bridge_log.log("主动", f"触发失败: {exc}")
+            request["result"] = {"ok": False, "error": f"调试启动失败（{type(exc).__name__}），请检查后台日志"}
+            bridge_log.log("主动调试", f"触发失败 mode={mode} type={type(exc).__name__}")
+        finally:
+            request["done"].set()
 
     def _on_user_message(self):
         duty = self._duty_scheduler
@@ -4426,7 +4471,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4465,6 +4510,23 @@ class Handler(BaseHTTPRequestHandler):
             status = getattr(error, "status_code", None)
             suffix = f"（HTTP {status}）" if isinstance(status, int) else ""
             return self._send({"error": f"API 配置操作失败{suffix}，请检查服务和本地文件权限；未回显敏感响应"}, 502)
+
+    def _proactive_panel_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from utils.proactive_panel import ProactivePanelConflict
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_proactive_origin"}, 403)
+        action = urlparse(self.path).path.removeprefix("/api/proactive/panel/")
+        if (method == "GET" and action != "state") or (method == "POST" and action not in ("save", "validate", "cameras", "history", "history-clear", "history-react", "tag-delete")):
+            return self._send({"error": "未知主动聊天操作"}, 404)
+        try:
+            return self._send(bridge.proactive_panel_request(action, self._body() if method == "POST" else {}))
+        except ProactivePanelConflict as error:
+            return self._send({"error": str(error)}, 409)
+        except (ValueError, TypeError) as error:
+            return self._send({"error": str(error)}, 400)
+        except Exception:
+            return self._send({"error": "主动聊天操作失败，请检查服务和本地文件权限；没有回显私密数据"}, 502)
 
     def _history_response(self, method):
         from brain.decision_settings import trusted_origin
@@ -4761,6 +4823,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/bilibili-"):
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get("Origin", "")):
+                    return self._send({"error": "untrusted_proactive_origin"}, 403)
+            if path.startswith("/api/proactive/panel/"):
+                return self._proactive_panel_response("GET")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("GET")
             if path.startswith("/api/history/"):
@@ -5046,6 +5114,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith(("/api/bilibili-", "/api/proactive/")):
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get("Origin", "")):
+                    return self._send({"error": "untrusted_proactive_origin"}, 403)
+            if path.startswith("/api/proactive/panel/"):
+                return self._proactive_panel_response("POST")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("POST")
             if path.startswith("/api/history/"):

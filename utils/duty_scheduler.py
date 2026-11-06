@@ -99,7 +99,7 @@ class Duty(ABC):
 
     def manual_trigger(self, state: SchedulerState, **kwargs):
         """调试触发，绕过所有门控。"""
-        self._execute(state, **kwargs)
+        return self._execute(state, **kwargs)
 
     # ── 子类必须实现 ──
 
@@ -120,14 +120,18 @@ class Duty(ABC):
     def _execute(self, state: SchedulerState, **kwargs):
         """执行职责：创建 Worker → 连接信号 → 启动。"""
         if self.status.is_running:
-            return
+            return False
         try:
             worker = self._create_worker(state, **kwargs)
             if worker is None:
-                return
+                self.status.last_result = "skipped"
+                self.status.last_result_text = "本轮没有可执行的行为，请检查行为开关、观察来源和所选动作"
+                return False
             self.status.is_running = True
             self.status.run_count += 1
             self.status.last_fire_time = time.time()
+            self.status.last_result = ""
+            self.status.last_result_text = ""
             self._worker = worker
             self._wire_worker(worker)
             scheduler = getattr(self, "_scheduler", None)
@@ -139,8 +143,14 @@ class Duty(ABC):
                     pass
                 scheduler.duty_started.emit(self.name)
             worker.start()
-        except Exception:
+            return True
+        except Exception as error:
             self.status.is_running = False
+            self.status.last_result = "failed"
+            self.status.fail_count += 1
+            self.status.last_result_text = f"{self.display_name}启动失败（{type(error).__name__}），请检查后台日志"
+            print(f"[后台职责] {self.name} 启动失败: {type(error).__name__}")
+            return False
 
     @abstractmethod
     def _wire_worker(self, worker):
@@ -296,7 +306,8 @@ class DutyScheduler(QObject):
         duty = self._duties.get(name)
         if duty:
             state = self._build_state()
-            duty.manual_trigger(state, **kwargs)
+            return duty.manual_trigger(state, **kwargs)
+        return False
 
     def _begin_duty_workflow(self, duty: Duty, state: SchedulerState, kwargs: dict):
         try:
@@ -590,7 +601,7 @@ class ProactiveDuty(Duty):
     def manual_trigger(self, state: SchedulerState, **kwargs):
         """手动调试绕过概率和冷却，但仍只执行一种行为。"""
         kwargs["ignore_cooldowns"] = True
-        self._execute(state, **kwargs)
+        return self._execute(state, **kwargs)
 
     def _create_worker(self, state: SchedulerState, **kwargs):
         from workers.proactive_worker import ProactiveWorker

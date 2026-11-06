@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "proactive-dialogs",
+  "description": "Allow proactive chat to request explicit confirmation before debug, device access and public interactions",
+  "windows": ["main", "settings-proactive"],
+  "permissions": ["dialog:allow-message"]
+}
