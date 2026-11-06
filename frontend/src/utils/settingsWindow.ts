@@ -5,6 +5,9 @@ export const settingsWindows = {
   api: { title: "API Key", width: 1120, height: 900 },
   proactive: { title: "主动聊天", width: 1120, height: 900 },
   capability: { title: "能力中枢", width: 1180, height: 900 },
+  "voice-stt": { title: "语音转录", width: 1120, height: 900 },
+  sound: { title: "声音设置", width: 1120, height: 900 },
+  network: { title: "网络设置", width: 1120, height: 900 },
   decision: { title: "决策中枢", width: 960, height: 800 },
   persona: { title: "人格枢控", width: 1280, height: 820 },
   constellation: { title: "星图系统", width: 1180, height: 780 },
@@ -49,6 +52,7 @@ async function createSettingsWindow(id: SettingsWindowId): Promise<boolean> {
       minHeight: 560,
       resizable: true,
       decorations: false,
+      dragDropEnabled: id !== "network",
       center: true,
     });
     return await new Promise<boolean>((resolve) => {

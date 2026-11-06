@@ -82,6 +82,9 @@ import { GlobalSettingsPanel } from "./components/GlobalSettingsPanel";
 import { ApiConfigPanel } from "./components/ApiConfigPanel";
 import { ProactivePanel } from "./components/ProactivePanel";
 import { CapabilityPanel } from "./components/CapabilityPanel";
+import { SttPanel } from "./components/SttPanel";
+import { SoundPanel } from "./components/SoundPanel";
+import { NetworkPanel } from "./components/NetworkPanel";
 import { listen } from "@tauri-apps/api/event";
 import { applyPreferredTool, CAPABILITY_TOOL_EVENT } from "./utils/capabilityWindow";
 import { DecisionPanel } from "./components/DecisionPanel";
@@ -105,6 +108,9 @@ type PanelId =
   | "video-call"
   | "proactive"
   | "capability"
+  | "voice-stt"
+  | "sound"
+  | "network"
   | "management"
   | "tools"
   | "decision"
@@ -2943,6 +2949,10 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "voice-stt" || feature === "sound" || feature === "network") {
+      openPanel(feature);
+      return;
+    }
     if (feature === "capability") {
       openPanel("capability");
       return;
@@ -3351,6 +3361,9 @@ export function App() {
       )}
       {panel === "settings" && <GlobalSettingsPanel onClose={() => setPanel("none")} />}
       {panel === "api" && <ApiConfigPanel onClose={() => setPanel("none")} />}
+      {panel === "voice-stt" && <SttPanel onClose={() => setPanel("none")} />}
+      {panel === "sound" && <SoundPanel onClose={() => setPanel("none")} />}
+      {panel === "network" && <NetworkPanel onClose={() => setPanel("none")} />}
       {panel === "capability" && <CapabilityPanel onClose={() => setPanel("none")} onUse={name => { applyPreferredTool(name); setActiveWorkspace("chat"); setPanel("none"); }} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}

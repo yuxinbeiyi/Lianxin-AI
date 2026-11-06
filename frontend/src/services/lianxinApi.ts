@@ -1,3 +1,13 @@
+export type ConfigPanelDomain = "stt" | "sound" | "network";
+export type ConfigPanelValue = string | number | boolean | string[];
+export type ConfigPanelTask = { id: number; status: "idle" | "running" | "done" | "error"; message: string; progress: number | null; committedRevision?: string };
+export type ConfigNetworkTool = { id: string; name: string; description: string; enabled: boolean; checked: boolean; state: string };
+export type NativeConfigState = {
+  sections: Record<string, Record<string, ConfigPanelValue>>; revision: string;
+  task?: ConfigPanelTask; output?: { silent_mode: boolean; tts_volume: number; sfx_volume: number };
+  migration?: boolean; modelPath?: string; advancedDefaults?: Record<string, ConfigPanelValue>;
+  catalog?: Record<"search" | "fetch", ConfigNetworkTool[]>;
+};
 export type CapabilityUsage = { tool_name: string; call_count: number; success_rate: number; avg_duration_ms: number; last_called: string };
 export type CapabilityTool = { name: string; description?: string; parameters?: Record<string, unknown> };
 export type CapabilityItem = CapabilityTool & {
@@ -638,6 +648,10 @@ export const lianxinApi = {
   setQqFastReply: (enabled: boolean) => request<{ running: boolean; connected: boolean; state: string; fastReplyEnabled: boolean }>("/qq/fast-reply", { method: "POST", body: JSON.stringify({ enabled }) }),
   capabilities: () => request<{ items: Array<{ name: string; display_name: string; description: string; category: string; enabled: boolean; available: boolean; favorite: boolean }> }>("/capabilities"),
   capabilityPanel: () => request<CapabilityPanelState>("/capability-panel/state"),
+  nativeConfig: (domain: ConfigPanelDomain) => request<NativeConfigState>(`/config-panels/${domain}/state`),
+  nativeConfigAction: (domain: ConfigPanelDomain, action: string, payload: Record<string, unknown> = {}) => request<NativeConfigState>(`/config-panels/${domain}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  nativeConfigRead: <T,>(domain: ConfigPanelDomain, action: string) => request<T>(`/config-panels/${domain}/${action}`),
+  revealNativeConfig: (domain: ConfigPanelDomain, field: string, revision: string) => request<{ value: string }>(`/config-panels/${domain}/reveal`, { method: "POST", body: JSON.stringify({ field, revision }) }),
   capabilityAction: (action: "toggle" | "favorite" | "refresh" | "usage-reset" | "mcp-test" | "install" | "uninstall" | "logs-clear" | "save", payload: Record<string, unknown> = {}) => request<CapabilityPanelState>(`/capability-panel/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   capabilityUsage: (days: number | null) => request<CapabilityUsageState>("/capability-panel/usage", { method: "POST", body: JSON.stringify({ days }) }),
   inspectCapabilityPlugin: (source: string) => request<CapabilityPluginInfo>("/capability-panel/inspect", { method: "POST", body: JSON.stringify({ source }) }),

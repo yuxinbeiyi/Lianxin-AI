@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "audio-network-dialogs",
+  "description": "Confirm explicit audio tests, dependency installs, GPU release and network reset",
+  "windows": ["main", "settings-voice-stt", "settings-sound", "settings-network"],
+  "permissions": ["dialog:allow-message"]
+}

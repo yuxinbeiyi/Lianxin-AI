@@ -4484,7 +4484,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/", "/api/config-panels/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4523,6 +4523,28 @@ class Handler(BaseHTTPRequestHandler):
             status = getattr(error, "status_code", None)
             suffix = f"（HTTP {status}）" if isinstance(status, int) else ""
             return self._send({"error": f"API 配置操作失败{suffix}，请检查服务和本地文件权限；未回显敏感响应"}, 502)
+
+    def _native_config_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from utils.config_panel_store import PanelConflict
+        from utils.native_config_panels import request
+
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_config_origin"}, 403)
+        parts = urlparse(self.path).path.removeprefix("/api/config-panels/").split("/")
+        reads = {"stt": {"state", "job"}, "sound": {"state", "job", "references", "runtime"}, "network": {"state"}}
+        writes = {"stt": {"save", "reveal", "migrate", "diagnose", "check", "download", "test", "install", "help"}, "sound": {"save", "volume", "preview", "release", "transcribe", "path-check"}, "network": {"save", "reveal", "reset", "help"}}
+        allowed = reads if method == "GET" else writes
+        if len(parts) != 2 or parts[1] not in allowed.get(parts[0], set()):
+            return self._send({"error": "未知设置操作"}, 404)
+        try:
+            return self._send(request(parts[0], parts[1], self._body() if method == "POST" else {}, bridge))
+        except PanelConflict as error:
+            return self._send({"error": str(error)}, 409)
+        except (ValueError, TypeError):
+            return self._send({"error": "配置校验未通过或当前正在执行其它动作，请核对字段/版本并稍后重试；未回显敏感数据"}, 400)
+        except Exception as error:
+            return self._send({"error": f"设置操作未完成（{type(error).__name__}）；请检查本地权限和依赖，不要假定已回滚"}, 502)
 
     def _capability_panel_response(self, method):
         from brain.decision_settings import trusted_origin
@@ -4864,6 +4886,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._proactive_panel_response("GET")
             if path.startswith("/api/capability-panel/"):
                 return self._capability_panel_response("GET")
+            if path.startswith("/api/config-panels/"):
+                return self._native_config_response("GET")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("GET")
             if path.startswith("/api/history/"):
@@ -5157,6 +5181,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._proactive_panel_response("POST")
             if path.startswith("/api/capability-panel/"):
                 return self._capability_panel_response("POST")
+            if path.startswith("/api/config-panels/"):
+                return self._native_config_response("POST")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("POST")
             if path.startswith("/api/history/"):

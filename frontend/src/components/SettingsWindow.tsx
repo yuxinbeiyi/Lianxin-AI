@@ -7,6 +7,9 @@ import { GlobalSettingsPanel } from "./GlobalSettingsPanel";
 import { ApiConfigPanel } from "./ApiConfigPanel";
 import { ProactivePanel } from "./ProactivePanel";
 import { CapabilityPanel } from "./CapabilityPanel";
+import { SttPanel } from "./SttPanel";
+import { SoundPanel } from "./SoundPanel";
+import { NetworkPanel } from "./NetworkPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
@@ -76,6 +79,9 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
     api: ApiConfigPanel,
     proactive: ProactivePanel,
     capability: CapabilityPanel,
+    "voice-stt": SttPanel,
+    sound: SoundPanel,
+    network: NetworkPanel,
     decision: DecisionPanel,
     persona: PersonaPanel,
     constellation: ConstellationPanel,
