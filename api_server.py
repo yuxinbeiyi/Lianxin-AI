@@ -1331,6 +1331,19 @@ class LianxinBridge:
         from brain.capability_catalog import list_capabilities
         return {"items": [item.__dict__ for item in list_capabilities(include_disabled=True)]}
 
+    def capability_panel_request(self, action, payload):
+        from utils.capability_panel import capability_panel_request
+        if action in ("toggle", "refresh", "install", "uninstall"):
+            if not self._chat_lock.acquire(blocking=False):
+                raise ValueError("当前聊天或工具正在执行，请结束后再修改能力来源")
+            try:
+                if self.proactive_status().get("running"):
+                    raise ValueError("主动行为正在执行，请结束后再修改能力来源")
+                return capability_panel_request(action, payload)
+            finally:
+                self._chat_lock.release()
+        return capability_panel_request(action, payload)
+
     def speak(self, text: str, voice: str = "", generation: int | None = None) -> dict:
         if not str(text or "").strip():
             raise ValueError("朗读内容不能为空")
@@ -4471,7 +4484,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4510,6 +4523,26 @@ class Handler(BaseHTTPRequestHandler):
             status = getattr(error, "status_code", None)
             suffix = f"（HTTP {status}）" if isinstance(status, int) else ""
             return self._send({"error": f"API 配置操作失败{suffix}，请检查服务和本地文件权限；未回显敏感响应"}, 502)
+
+    def _capability_panel_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from brain.browser_security import redact_browser_text
+
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_capability_origin"}, 403)
+        action = urlparse(self.path).path.removeprefix("/api/capability-panel/")
+        reads = ("state", "browser-log")
+        writes = ("usage", "toggle", "favorite", "refresh", "usage-reset", "mcp-test", "inspect", "install", "uninstall", "logs-clear", "save")
+        if (method == "GET" and action not in reads) or (method == "POST" and action not in writes):
+            return self._send({"error": "未知能力中枢操作"}, 404)
+        try:
+            return self._send(bridge.capability_panel_request(action, self._body() if method == "POST" else {}))
+        except (ValueError, TypeError) as error:
+            return self._send({"error": redact_browser_text(str(error), max_chars=1000)}, 400)
+        except LookupError as error:
+            return self._send({"error": redact_browser_text(str(error), max_chars=1000)}, 404)
+        except Exception as error:
+            return self._send({"error": f"能力中枢操作未完成（{type(error).__name__}），请查看扩展日志；不要假定配置或文件已回滚"}, 502)
 
     def _proactive_panel_response(self, method):
         from brain.decision_settings import trusted_origin
@@ -4829,6 +4862,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send({"error": "untrusted_proactive_origin"}, 403)
             if path.startswith("/api/proactive/panel/"):
                 return self._proactive_panel_response("GET")
+            if path.startswith("/api/capability-panel/"):
+                return self._capability_panel_response("GET")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("GET")
             if path.startswith("/api/history/"):
@@ -5120,6 +5155,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send({"error": "untrusted_proactive_origin"}, 403)
             if path.startswith("/api/proactive/panel/"):
                 return self._proactive_panel_response("POST")
+            if path.startswith("/api/capability-panel/"):
+                return self._capability_panel_response("POST")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("POST")
             if path.startswith("/api/history/"):

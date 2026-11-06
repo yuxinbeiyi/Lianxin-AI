@@ -1,3 +1,25 @@
+export type CapabilityUsage = { tool_name: string; call_count: number; success_rate: number; avg_duration_ms: number; last_called: string };
+export type CapabilityTool = { name: string; description?: string; parameters?: Record<string, unknown> };
+export type CapabilityItem = CapabilityTool & {
+  display_name: string; category: string; source_kind: "builtin" | "skill" | "mcp";
+  provider_id: string; provider_name: string; enabled: boolean; available: boolean; favorite: boolean;
+  version: string; status: string; usage: CapabilityUsage;
+};
+export type CapabilityExtension = {
+  name: string; display_name: string; description: string; version: string; enabled: boolean;
+  license?: string; external?: boolean; connected?: boolean; error?: string; tools: CapabilityTool[];
+};
+export type CapabilityLog = { timestamp: string; level: string; message: string };
+export type CapabilityPanelState = {
+  items: CapabilityItem[]; skills: CapabilityExtension[]; mcp: CapabilityExtension[]; categories: string[];
+  mcpScanning: boolean; lastRefresh: string; logs: CapabilityLog[]; installLogs: CapabilityLog[];
+};
+export type CapabilityUsageState = {
+  overview: { call_count: number; success_rate: number; avg_duration_ms: number; used_tool_count: number };
+  unused: number; items: Array<CapabilityUsage & { display_name: string; provider_name: string }>;
+};
+export type CapabilityPluginInfo = { type: string; name: string; description: string; version: string; source: string };
+
 export type ExecutionNotice = {
   id: number;
   timestamp: number;
@@ -615,6 +637,11 @@ export const lianxinApi = {
   reloadQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/reload", { method: "POST", body: "{}" }),
   setQqFastReply: (enabled: boolean) => request<{ running: boolean; connected: boolean; state: string; fastReplyEnabled: boolean }>("/qq/fast-reply", { method: "POST", body: JSON.stringify({ enabled }) }),
   capabilities: () => request<{ items: Array<{ name: string; display_name: string; description: string; category: string; enabled: boolean; available: boolean; favorite: boolean }> }>("/capabilities"),
+  capabilityPanel: () => request<CapabilityPanelState>("/capability-panel/state"),
+  capabilityAction: (action: "toggle" | "favorite" | "refresh" | "usage-reset" | "mcp-test" | "install" | "uninstall" | "logs-clear" | "save", payload: Record<string, unknown> = {}) => request<CapabilityPanelState>(`/capability-panel/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  capabilityUsage: (days: number | null) => request<CapabilityUsageState>("/capability-panel/usage", { method: "POST", body: JSON.stringify({ days }) }),
+  inspectCapabilityPlugin: (source: string) => request<CapabilityPluginInfo>("/capability-panel/inspect", { method: "POST", body: JSON.stringify({ source }) }),
+  capabilityBrowserLog: () => request<{ items: Array<Record<string, string>> }>("/capability-panel/browser-log"),
   speak: (text: string, generation?: number) => request<{ speaking: boolean }>("/tts/speak", { method: "POST", body: JSON.stringify({ text, generation }) }),
   prepareSpeech: (text: string, generation: number) => request<{ prepared: boolean; id?: string; unavailable?: boolean; muted?: boolean; cancelled?: boolean }>("/tts/prepare", { method: "POST", body: JSON.stringify({ text, generation }) }),
   playPreparedSpeech: (id: string) => request<{ played: boolean; cancelled?: boolean }>("/tts/play-prepared", { method: "POST", body: JSON.stringify({ id }) }),

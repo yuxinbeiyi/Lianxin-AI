@@ -54,11 +54,12 @@ def _load_skill_config():
 def save_skill_config():
     """保存当前禁用技能列表到文件"""
     try:
+        from utils.extension_config import save_extension_section
         cfg_path = _get_config_path()
-        data = {"disabled_skills": sorted(_disabled_skills)}
-        cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_extension_section(cfg_path, "disabled_skills", _disabled_skills)
     except Exception as e:
         logger.warning("保存技能配置失败: %s", e)
+        raise
 
 def get_disabled_skills() -> set[str]:
     return _disabled_skills.copy()

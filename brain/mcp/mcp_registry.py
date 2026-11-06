@@ -59,17 +59,12 @@ def _ensure_mcp_config_loaded():
 def save_mcp_config():
     """保存当前 MCP 禁用列表到文件（与技能共用 skill_config.json）"""
     try:
+        from utils.extension_config import save_extension_section
         cfg_path = _get_config_path()
-        existing = {}
-        if cfg_path.exists():
-            try:
-                existing = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        existing["disabled_mcp"] = sorted(_disabled_mcp)
-        cfg_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_extension_section(cfg_path, "disabled_mcp", _disabled_mcp)
     except Exception as e:
         logger.warning("保存 MCP 配置失败: %s", e)
+        raise
 
 
 def scan_mcp_services(mcp_dir: str = None) -> List[str]:

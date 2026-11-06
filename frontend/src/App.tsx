@@ -81,6 +81,9 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { GlobalSettingsPanel } from "./components/GlobalSettingsPanel";
 import { ApiConfigPanel } from "./components/ApiConfigPanel";
 import { ProactivePanel } from "./components/ProactivePanel";
+import { CapabilityPanel } from "./components/CapabilityPanel";
+import { listen } from "@tauri-apps/api/event";
+import { applyPreferredTool, CAPABILITY_TOOL_EVENT } from "./utils/capabilityWindow";
 import { DecisionPanel } from "./components/DecisionPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ExecutionCard } from "./components/ExecutionCard";
@@ -101,6 +104,7 @@ type PanelId =
   | "voice"
   | "video-call"
   | "proactive"
+  | "capability"
   | "management"
   | "tools"
   | "decision"
@@ -2107,6 +2111,19 @@ export function App() {
   const [interactionThinking, setInteractionThinking] = useState(false);
   const [proactiveThinking, setProactiveThinking] = useState(false);
   const [panel, setPanel] = useState<PanelId>("none");
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    void listen<{ name: string }>(CAPABILITY_TOOL_EVENT, event => {
+      if (!live || typeof event.payload?.name !== "string") return;
+      applyPreferredTool(event.payload.name);
+      setActiveWorkspace("chat");
+      setPanel("none");
+    }).then(stop => { if (live) unlisten = stop; else stop(); })
+      .catch(error => console.warn("能力中枢工具交接监听不可用", error));
+    return () => { live = false; unlisten?.(); };
+  }, []);
   const [music, setMusic] = useState<MusicState>({});
   const [musicError, setMusicError] = useState("");
   const [axis, setAxis] = useState<FiveAxisState>({ axes: {}, mood: "中性" });
@@ -2926,6 +2943,10 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "capability") {
+      openPanel("capability");
+      return;
+    }
     if (feature === "proactive") {
       openPanel("proactive");
       return;
@@ -3330,6 +3351,7 @@ export function App() {
       )}
       {panel === "settings" && <GlobalSettingsPanel onClose={() => setPanel("none")} />}
       {panel === "api" && <ApiConfigPanel onClose={() => setPanel("none")} />}
+      {panel === "capability" && <CapabilityPanel onClose={() => setPanel("none")} onUse={name => { applyPreferredTool(name); setActiveWorkspace("chat"); setPanel("none"); }} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (

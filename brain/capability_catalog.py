@@ -166,8 +166,11 @@ def _skill_capabilities(favorites: set[str]) -> list[CapabilityDescriptor]:
     except Exception:
         return []
     result = []
-    for skill_name, info in _skill_registry.items():
+    for skill_name, info in list(_skill_registry.items()):
         active = skill_name in _active_skills
+        if skill_name == "浏览器自动化":
+            from config import get_browser_config
+            active = active and bool(get_browser_config().get("enabled", True))
         for definition in info.get("tool_definitions", []):
             fn = _function(definition)
             name = str(fn.get("name", ""))
@@ -191,7 +194,7 @@ def _mcp_capabilities(favorites: set[str]) -> list[CapabilityDescriptor]:
     except Exception:
         return []
     result = []
-    for service_name, agent in MCP_REGISTRY.items():
+    for service_name, agent in list(MCP_REGISTRY.items()):
         manifest = MANIFEST_CACHE.get(service_name, {})
         provider_name = str(
             manifest.get("displayName") or getattr(agent, "display_name", "") or service_name

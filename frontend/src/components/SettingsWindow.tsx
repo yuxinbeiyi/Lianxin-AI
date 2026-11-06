@@ -6,6 +6,7 @@ import { settingsWindows, type SettingsWindowId } from "../utils/settingsWindow"
 import { GlobalSettingsPanel } from "./GlobalSettingsPanel";
 import { ApiConfigPanel } from "./ApiConfigPanel";
 import { ProactivePanel } from "./ProactivePanel";
+import { CapabilityPanel } from "./CapabilityPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
@@ -74,6 +75,7 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
     settings: GlobalSettingsPanel,
     api: ApiConfigPanel,
     proactive: ProactivePanel,
+    capability: CapabilityPanel,
     decision: DecisionPanel,
     persona: PersonaPanel,
     constellation: ConstellationPanel,

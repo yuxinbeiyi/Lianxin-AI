@@ -4,6 +4,7 @@ export const settingsWindows = {
   settings: { title: "全局设置", width: 1120, height: 900 },
   api: { title: "API Key", width: 1120, height: 900 },
   proactive: { title: "主动聊天", width: 1120, height: 900 },
+  capability: { title: "能力中枢", width: 1180, height: 900 },
   decision: { title: "决策中枢", width: 960, height: 800 },
   persona: { title: "人格枢控", width: 1280, height: 820 },
   constellation: { title: "星图系统", width: 1180, height: 780 },
