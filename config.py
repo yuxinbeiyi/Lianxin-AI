@@ -147,6 +147,13 @@ def normalize_model_for_litellm(model: str, api_base: str = "") -> str:
     return model
 
 
+def normalize_anthropic_base_url(api_base: str) -> str:
+    value = api_base.strip().rstrip("/").removesuffix("/chat/completions")
+    if value.endswith("/v1/messages"):
+        return value
+    return value + ("/messages" if value.endswith("/v1") else "/v1/messages")
+
+
 def normalize_local_model_name(model: str) -> str:
     """Return the Ollama model name without a LiteLLM provider prefix."""
     value = str(model or "").strip()

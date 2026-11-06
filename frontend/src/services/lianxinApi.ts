@@ -450,7 +450,25 @@ export type DataTideState = {
   };
   user_name?: string;
 };
+export type ApiConfigSection = "deepseek" | "agnes" | "qq_bridge" | "siliconflow" | "image_gen" | "video_gen" | "qweather";
+export type ApiConfigValues = Record<string, string | number | boolean>;
+export type ApiChatProfile = { name: string; base_url: string; model: string; api_format: string; max_tokens: number; api_key: string; api_key_set: boolean };
+export type ApiConfigState = {
+  sections: Record<ApiConfigSection, ApiConfigValues>;
+  profiles: ApiChatProfile[];
+  activeProfile: string;
+  revision: string;
+  warnings?: string[];
+};
+export type ApiConfigDraft = { revision: string; sections?: Partial<Record<ApiConfigSection, ApiConfigValues>>; clearSecrets?: string[]; sourceProfile?: string };
+export type ApiConfigTestResult = { message: string; reply?: string; path?: string };
+
 export const lianxinApi = {
+  apiConfig: () => request<ApiConfigState>("/api-config/state"),
+  saveApiConfig: (action: "save" | "profile-save" | "profile-apply" | "profile-delete", payload: ApiConfigDraft & { name?: string }) => request<ApiConfigState>(`/api-config/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  revealApiKey: (payload: { revision: string; section: ApiConfigSection; field: string; sourceProfile?: string }) => request<{ value: string }>("/api-config/reveal", { method: "POST", body: JSON.stringify(payload) }),
+  apiConfigModels: (payload: ApiConfigDraft) => request<{ models: string[] }>("/api-config/models", { method: "POST", body: JSON.stringify(payload) }),
+  testApiConfig: (payload: ApiConfigDraft & { kind: "connection" | "image" | "video"; confirmed?: boolean }) => request<ApiConfigTestResult>("/api-config/test", { method: "POST", body: JSON.stringify(payload) }),
   historySessions: (query = "", date = "") => request<{ items: HistorySession[] }>(`/history/sessions?q=${encodeURIComponent(query)}&date=${encodeURIComponent(date)}`),
   historyDetail: (id: number) => request<HistoryDetail>(`/history/detail?id=${id}`),
   historyUpdate: (payload: { id: number; title?: string; togglePin?: boolean }) => request<HistorySession>("/history/update", { method: "POST", body: JSON.stringify(payload) }),

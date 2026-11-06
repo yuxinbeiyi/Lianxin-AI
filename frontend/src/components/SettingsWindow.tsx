@@ -4,6 +4,7 @@ import { Maximize2, Minimize2, X } from "lucide-react";
 import { ConstellationPanel, DataTidePanel, RipplePanel } from "../App";
 import { settingsWindows, type SettingsWindowId } from "../utils/settingsWindow";
 import { GlobalSettingsPanel } from "./GlobalSettingsPanel";
+import { ApiConfigPanel } from "./ApiConfigPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
@@ -70,6 +71,7 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
 
   const panels = {
     settings: GlobalSettingsPanel,
+    api: ApiConfigPanel,
     decision: DecisionPanel,
     persona: PersonaPanel,
     constellation: ConstellationPanel,

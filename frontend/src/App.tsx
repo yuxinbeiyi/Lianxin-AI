@@ -81,6 +81,7 @@ import { ToolPanel } from "./components/ToolPanel";
 import { PersonaPanel as PersonaPanelView } from "./components/PersonaPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { GlobalSettingsPanel } from "./components/GlobalSettingsPanel";
+import { ApiConfigPanel } from "./components/ApiConfigPanel";
 import { DecisionPanel } from "./components/DecisionPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ExecutionCard } from "./components/ExecutionCard";
@@ -96,6 +97,7 @@ type PanelId =
   | "none"
   | "history"
   | "settings"
+  | "api"
   | "note"
   | "voice"
   | "video-call"
@@ -2560,6 +2562,7 @@ function ManagementPanel({
           const legacy = legacyFeatureIds.has(module.id as LegacyFeature);
           const embedded = [
             "settings",
+            "api",
             "memory-constellation",
             "ripple",
             "data-tide",
@@ -3609,6 +3612,10 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "api") {
+      openPanel("api");
+      return;
+    }
     if (feature === "settings") {
       openPanel("settings");
       return;
@@ -4004,6 +4011,7 @@ export function App() {
         <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} onChanged={refreshHistoryConversation} chatBusy={busy} />
       )}
       {panel === "settings" && <GlobalSettingsPanel onClose={() => setPanel("none")} />}
+      {panel === "api" && <ApiConfigPanel onClose={() => setPanel("none")} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (

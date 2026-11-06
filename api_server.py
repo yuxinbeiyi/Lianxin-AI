@@ -924,6 +924,42 @@ class LianxinBridge:
                 self._history_panel_service = HistoryPanelService(self.agent().get_history_manager())
             return self._history_panel_service
 
+    def api_config_request(self, method, action, body=None):
+        from utils import api_config_panel as panel
+
+        if method == "GET" and action == "state":
+            return panel.state()
+        if method != "POST" or not isinstance(body, dict):
+            raise ValueError("配置请求格式错误")
+        if action == "reveal":
+            return panel.reveal(body)
+        if action == "models":
+            return panel.fetch_models(body)
+        if action == "test":
+            return panel.test_action(body)
+        if action not in {"save", "profile-save", "profile-apply", "profile-delete"}:
+            raise LookupError("未知 API 配置操作")
+        if not self._chat_lock.acquire(blocking=False):
+            raise panel.ApiConfigConflict("莲心正在回复，请等本轮结束后再修改 API 配置")
+        try:
+            result = panel.mutate(action, body)
+            warnings = []
+            if action in {"save", "profile-apply"}:
+                try:
+                    with self._lock:
+                        if self._agent is not None:
+                            self._agent.reload_api_config()
+                except Exception:
+                    warnings.append("配置已保存；当前聊天连接重载失败，请重启莲心生效")
+            if action == "save" and "qq_bridge" in body.get("sections", {}):
+                try:
+                    self.reload_qq()
+                except Exception:
+                    warnings.append("QQ 配置已保存；运行中重载失败，请重新连接 QQ")
+            return {**result, "warnings": warnings}
+        finally:
+            self._chat_lock.release()
+
     def history_request(self, method, action, query, body):
         from utils.history_panel import HistoryConflict, confirmed, selected_ids, session_id, valid_date
 
@@ -4390,7 +4426,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4404,6 +4440,31 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def _api_config_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from utils.api_config_panel import ApiConfigConflict, ApiConfigError
+
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_api_config_origin"}, 403)
+        action = urlparse(self.path).path.removeprefix("/api/api-config/")
+        try:
+            body = self._body() if method == "POST" else None
+            return self._send(bridge.api_config_request(method, action, body))
+        except ApiConfigConflict as error:
+            return self._send({"error": str(error)}, 409)
+        except ApiConfigError as error:
+            return self._send({"error": str(error)}, 400)
+        except LookupError:
+            return self._send({"error": "配置档案或操作不存在，请重新加载"}, 404)
+        except (ValueError, TypeError) as error:
+            if action in {"models", "test"}:
+                return self._send({"error": "测试失败，请检查地址、密钥、模型及服务状态；媒体任务可能仍在供应商端执行，请勿重复提交"}, 400)
+            return self._send({"error": str(error)}, 400)
+        except Exception as error:
+            status = getattr(error, "status_code", None)
+            suffix = f"（HTTP {status}）" if isinstance(status, int) else ""
+            return self._send({"error": f"API 配置操作失败{suffix}，请检查服务和本地文件权限；未回显敏感响应"}, 502)
 
     def _history_response(self, method):
         from brain.decision_settings import trusted_origin
@@ -4700,6 +4761,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/api-config/"):
+                return self._api_config_response("GET")
             if path.startswith("/api/history/"):
                 return self._history_response("GET")
             if path.startswith("/api/persona/"):
@@ -4983,6 +5046,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/api-config/"):
+                return self._api_config_response("POST")
             if path.startswith("/api/history/"):
                 return self._history_response("POST")
             if path.startswith(("/api/decision/", "/api/persona/growth")):

@@ -499,34 +499,7 @@ class AgentCore:
         self._web_evidence_cache = None
         self._web_evidence_cache_lock = threading.Lock()
 
-        # 每次实例化都从文件读取最新配置，支持热重载
-        cfg = get_api_config()
-        self._provider = cfg.get("provider", "deepseek")  # "deepseek" | "agnes" | "local"
-        self._api_format = cfg.get("api_format", "openai")
-        self._use_local = (self._provider == "local")  # 兼容旧代码引用
-        if self._provider == "agnes":
-            from config import get_agnes_config
-            agnes_cfg = get_agnes_config()
-            self._model      = f"openai/{agnes_cfg['model']}"
-            self._max_tokens = cfg["max_tokens"]
-            self._api_base   = agnes_cfg["base_url"]
-            self._api_key    = agnes_cfg["api_key"]
-        elif self._provider == "local":
-            self._model      = normalize_local_model_for_litellm(
-                cfg.get("local_model_name", "qwen2.5:3b-instruct")
-            )
-            self._max_tokens = min(cfg["max_tokens"], 2048)
-            self._api_base   = normalize_local_base_url(
-                cfg.get("local_base_url", "http://localhost:11434/v1")
-            )
-            self._api_key    = "ollama"
-        else:  # deepseek / 自定义 OpenAI 兼容 API
-            from config import normalize_model_for_litellm
-            base_url = cfg.get("base_url", "https://api.deepseek.com")
-            self._model      = normalize_model_for_litellm(cfg["model"], base_url)
-            self._max_tokens = cfg["max_tokens"]
-            self._api_base   = base_url
-            self._api_key    = cfg["api_key"]
+        self.reload_api_config()
 
         self._disable_tools = disable_tools
         # 工具权限和情感跟踪是两个独立维度。纯聊天可以禁用工具，
@@ -659,6 +632,37 @@ class AgentCore:
             self._system_prompt += f"\n\n{_RESPONSE_FORMAT_POLICY}"
 
     # ── 对外接口 ─────────────────────────────────────────────
+
+    def reload_api_config(self):
+        cfg = get_api_config()
+        previous_local = getattr(self, "_use_local", None)
+        provider = cfg.get("provider", "deepseek")
+        api_format = cfg.get("api_format", "openai")
+        if provider == "agnes":
+            from config import get_agnes_config
+            selected = get_agnes_config()
+            model, base, key = f"openai/{selected['model']}", selected["base_url"], selected["api_key"]
+            tokens = cfg["max_tokens"]
+        elif provider == "local":
+            model = normalize_local_model_for_litellm(cfg.get("local_model_name", "qwen2.5:3b-instruct"))
+            base = normalize_local_base_url(cfg.get("local_base_url", "http://localhost:11434/v1"))
+            key, tokens = "ollama", min(cfg["max_tokens"], 2048)
+        else:
+            from config import normalize_model_for_litellm
+            base, key, tokens = cfg["base_url"], cfg["api_key"], cfg["max_tokens"]
+            model = f"anthropic/{cfg['model'].removeprefix('anthropic/')}" if api_format == "anthropic" else normalize_model_for_litellm(cfg["model"], base)
+            if api_format == "anthropic":
+                from config import normalize_anthropic_base_url
+                base = normalize_anthropic_base_url(base)
+        self._provider, self._api_format, self._use_local = provider, api_format, provider == "local"
+        self._model, self._api_base, self._api_key, self._max_tokens = model, base, key, tokens
+        if previous_local is not None and previous_local != self._use_local and hasattr(self, "_system_prompt"):
+            self._system_prompt = self._build_system_prompt_once()
+            if self._user_desc:
+                self._system_prompt += f"\n\n【当前对话对象】\n{self._user_desc}"
+            if not self._use_local:
+                self._system_prompt += f"\n\n{_RESPONSE_FORMAT_POLICY}"
+            self._last_persona_key = None
 
     @property
     def last_emotion(self) -> str | None:
@@ -798,6 +802,7 @@ class AgentCore:
             on_progress:       callable(text)，报告进度回复的回调。
             response_guard:    callable() -> bool，False 时丢弃已过期回复且不写入历史。
         """
+        self.reload_api_config()
         if on_activity:
             on_activity("request_started")
         # AgentCore 会在桌面端跨请求复用。中途插话的“停止”只应作用于
