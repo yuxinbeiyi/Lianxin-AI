@@ -246,7 +246,7 @@ export type ExecutionTaskState = {
   };
 };
 export type BackgroundState = { enabled: boolean; opacity: number; chatOpacity?: number; fitMode: "cover" | "contain" | "stretch"; fingerprint: string; dataUrl?: string };
-export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterFingerprint?: string; fingerprint: string };
+export type AvatarState = { enabled: boolean; size: number; gap: number; border: boolean; assistantDataUrl?: string; userDataUrl?: string; characterDataUrl?: string; characterPath?: string; uploadedPath?: string; role?: "assistant" | "user" | "character"; sourcePath?: string; characterFingerprint?: string; fingerprint: string };
 export type PersonaPreview = { text: string; estimated_tokens: number; layers: string[]; error?: string };
 export type GrowthEvent = {
   id: number; persona_id: string; title: string; detail: string; evidence: string;
@@ -264,7 +264,30 @@ export type GrowthState = {
     allow_proactive_requests: boolean; allow_photo_invites: boolean };
 };
 export type PersonaState = { snapshot: { profile: Record<string, any>; revision: number; enabled: boolean; activated_at: string }; profiles: Array<Record<string, any>>; preview: PersonaPreview; growth: { summary: Record<string, any>; events: Array<Record<string, any>>; settings: Record<string, any> }; created_id?: string };
-export type SettingsPanelState = { global: { silentMode: boolean; userName: string; emotionProbability: number; backgroundEnabled: boolean; backgroundSource: string; backgroundSourceType: string; backgroundOpacity: number; chatBackgroundOpacity: number; backgroundFitMode: string; segmentPauseChatMin: number; segmentPauseChatMax: number; segmentPauseSemanticMin: number; segmentPauseSemanticMax: number }; sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string } };
+export type SettingsGlobal = {
+  silentMode: boolean; userName: string; emotionProbability: number;
+  showExitConfirmation: boolean; startupCheckEnabled: boolean; startupMode: "fast" | "complete";
+  trayEnabled: boolean; closeBehavior: "ask" | "tray" | "quit"; minimizeToTray: boolean;
+  restoreWindowState: boolean; alwaysOnTop: boolean; reducedMotion: boolean; desktopNotifications: boolean;
+  fontSize: number; noteFilePath: string; backgroundEnabled: boolean; backgroundSource: string;
+  backgroundSourceType: "single" | "folder_random" | "folder_first"; backgroundOpacity: number;
+  chatBackgroundOpacity: number; backgroundFitMode: "cover" | "contain" | "stretch"; defaultBackgroundSource: string;
+  avatarMode: "animated" | "static"; avatarPath: string; avatarSourcePath: string; firstMeetDate: string; autostart: boolean;
+  segmentPauseChatMin: number; segmentPauseChatMax: number;
+  segmentPauseSemanticMin: number; segmentPauseSemanticMax: number;
+};
+export type ChatAvatarSettings = {
+  enabled: boolean; size: number; gap: number; border: boolean; assistant_path: string; user_path: string;
+  interactions_enabled: boolean; dynamic_response: boolean; counter_tap: boolean;
+  animation_enabled: boolean; response_in_chat: boolean; tap_cooldown_seconds: number;
+};
+export type SettingsPanelState = {
+  global: SettingsGlobal;
+  avatar: ChatAvatarSettings;
+  quickLaunch: Array<{ name: string; exe_name: string; path: string }>;
+  performance: { whisper: "auto" | "cpu" | "cuda"; funasr: "auto" | "cpu" | "cuda"; rag: "auto" | "cpu" | "cuda" };
+  sound: { ttsVolume: number; sfxVolume: number; silentMode: boolean; engine: string; speed: number; defaultMood: string; gptSovitsVersion: string; gptSovitsPath: string; refWavOverride: string };
+};
 export type BilibiliSurfTag = {
   keyword: string;
   search_query: string;
@@ -370,6 +393,32 @@ export type VisionEvent = {
   timestamp: number;
 };
 
+export type HistorySession = {
+  id: number;
+  title: string;
+  created_at: string;
+  summary?: string;
+  is_pinned?: number;
+  message_count: number;
+};
+
+export type HistoryDetail = {
+  session: HistorySession;
+  messages: Array<{ role: string; content: string; timestamp: string }>;
+  character_count: number;
+};
+
+export type HistoryJob = {
+  id: string;
+  kind: "summary" | "batch-summary" | "diary";
+  status: "running" | "completed" | "partial" | "failed";
+  total: number;
+  processed: number;
+  succeeded: number;
+  errors: Array<{ id: number | null; message: string }>;
+  date: string;
+};
+
 const API_ROOT = "http://127.0.0.1:8766/api";
 
 export class ApiRequestError extends Error {
@@ -402,6 +451,15 @@ export type DataTideState = {
   user_name?: string;
 };
 export const lianxinApi = {
+  historySessions: (query = "", date = "") => request<{ items: HistorySession[] }>(`/history/sessions?q=${encodeURIComponent(query)}&date=${encodeURIComponent(date)}`),
+  historyDetail: (id: number) => request<HistoryDetail>(`/history/detail?id=${id}`),
+  historyUpdate: (payload: { id: number; title?: string; togglePin?: boolean }) => request<HistorySession>("/history/update", { method: "POST", body: JSON.stringify(payload) }),
+  historyDelete: (ids: number[]) => request<{ deleted: number[]; activeSessionId: number }>("/history/delete", { method: "POST", body: JSON.stringify({ ids, confirmed: true }) }),
+  historyImport: (id: number, targetSessionId: number) => request<{ imported: number; activeSessionId: number }>("/history/import", { method: "POST", body: JSON.stringify({ id, targetSessionId, confirmed: true }) }),
+  historyExport: (payload: { id?: number; format: "txt" | "json"; all?: boolean }) => request<{ saved: boolean; cancelled: boolean; path?: string }>("/history/export-local", { method: "POST", body: JSON.stringify(payload) }),
+  historyDiary: (date: string) => request<{ exists: boolean }>(`/history/diary?date=${encodeURIComponent(date)}`),
+  historyJob: () => request<{ job: HistoryJob | null }>("/history/job"),
+  historyStartJob: (payload: { kind: HistoryJob["kind"]; id?: number; ids?: number[]; date?: string; overwrite?: boolean }) => request<{ job: HistoryJob }>("/history/job", { method: "POST", body: JSON.stringify({ ...payload, confirmed: true }) }),
   executionNotices: (after: number, sessionId?: number) => request<{ items: ExecutionNotice[]; latest: number }>(`/execution-status/events?after=${after}${sessionId ? `&sessionId=${sessionId}` : ""}`),
   status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
   dataTideState: () => request<DataTideState>("/data-tide/state"),
@@ -499,7 +557,8 @@ export const lianxinApi = {
     "/decision/test", { method: "POST", body: "{}" }),
   decisionLocal: (action: "start" | "stop") => request<DecisionSettings["local"]>(
     "/decision/local", { method: "POST", body: JSON.stringify({ action }) }),
-  saveSettingsPanels: (payload: Partial<{ global: Partial<SettingsPanelState["global"]>; sound: Partial<SettingsPanelState["sound"]> }>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
+  saveSettingsPanels: (payload: Partial<{ global: Partial<SettingsPanelState["global"]>; avatar: Partial<SettingsPanelState["avatar"]>; performance: Partial<SettingsPanelState["performance"]>; quickLaunch: SettingsPanelState["quickLaunch"]; sound: Partial<SettingsPanelState["sound"]>; preview: boolean }>) => request<SettingsPanelState>("/settings/panels", { method: "POST", body: JSON.stringify(payload) }),
+  saveAvatarImage: (role: "assistant" | "user" | "character", data: string, sourcePath?: string) => request<AvatarState>("/settings/avatar-image", { method: "POST", body: JSON.stringify({ role, data, sourcePath }) }),
   avatarAction: (action: "tap" | "headpat") => request<{ action: string; accepted?: boolean; sound?: boolean; response?: string; counterAction?: string; message?: string }>(`/avatar/action?action=${action}`),
   openLegacy: (feature: LegacyFeature) => request<{ feature: string; pid: number; mode: string }>("/legacy/open", { method: "POST", body: JSON.stringify({ feature }) }),
   visionState: () => request<VisionState>("/vision/state"),

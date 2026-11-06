@@ -79,6 +79,8 @@ import {
 import type { Message, WorkspaceId } from "./types/ui";
 import { ToolPanel } from "./components/ToolPanel";
 import { PersonaPanel as PersonaPanelView } from "./components/PersonaPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { GlobalSettingsPanel } from "./components/GlobalSettingsPanel";
 import { DecisionPanel } from "./components/DecisionPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ExecutionCard } from "./components/ExecutionCard";
@@ -88,10 +90,12 @@ import { VideoCallPanel } from "./components/VideoCallPanel";
 import { BilibiliMessageLine } from "./components/BilibiliMessageLine";
 import { VisionPanel } from "./components/VisionPanel";
 import { openVisionWindow } from "./utils/visionWindow";
+import { isSettingsWindowId, openSettingsWindow } from "./utils/settingsWindow";
 
 type PanelId =
   | "none"
   | "history"
+  | "settings"
   | "note"
   | "voice"
   | "video-call"
@@ -106,13 +110,6 @@ type PanelId =
   | "study-room"
   | "time-capsule"
   | "vision";
-type Session = {
-  id: number;
-  title?: string;
-  updated_at?: string;
-  summary?: string;
-  is_pinned?: number;
-};
 type MusicState = {
   stateVersion?: number;
   updatedAt?: number;
@@ -461,7 +458,7 @@ function TopBar({
         )}
       </div>
       <nav className="top-actions">
-        <button className="top-action" onClick={() => onLegacy("history")}>
+        <button className="top-action" onClick={() => onPanel("history")}>
           <Clock3 size={16} />
           历史记录
         </button>
@@ -1725,106 +1722,12 @@ function Overlay({
   return (
     <div className="overlay">
       <section className="overlay-panel">
-        <button className="overlay-close" onClick={onClose}>
+        <button data-settings-close className="overlay-close" onClick={onClose}>
           <X size={18} />
         </button>
         {children}
       </section>
     </div>
-  );
-}
-
-function HistoryPanel({
-  onClose,
-  onOpen,
-}: {
-  onClose: () => void;
-  onOpen: (id: number) => void;
-}) {
-  const [items, setItems] = useState<Session[]>([]);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
-  const load = () =>
-    lianxinApi
-      .sessions(query)
-      .then((result) => {
-        setItems(result.items);
-        setError("");
-      })
-      .catch((e) => setError(String(e)));
-  useEffect(() => {
-    void load();
-  }, [query]);
-  const remove = (id: number) =>
-    void lianxinApi
-      .deleteSession(id)
-      .then(load)
-      .catch((e) => setError(String(e)));
-  const pin = (id: number) =>
-    void lianxinApi
-      .updateSession(id, { togglePin: true })
-      .then(load)
-      .catch((e) => setError(String(e)));
-  return (
-    <Overlay onClose={onClose}>
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">莲心记录</span>
-          <h2>历史记录</h2>
-        </div>
-        <button className="secondary-button" onClick={() => void load()}>
-          <Activity size={15} />
-          刷新
-        </button>
-      </div>
-      <input
-        className="panel-search"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="搜索标题、摘要或消息内容"
-      />
-      {error ? (
-        <div className="panel-error">无法连接历史记录：{error}</div>
-      ) : (
-        <div className="session-list">
-          {items.length ? (
-            items.map((item) => (
-              <div className="session-entry" key={item.id}>
-                <button
-                  className="session-open"
-                  onClick={() => {
-                    onOpen(item.id);
-                    onClose();
-                  }}
-                >
-                  <div>
-                    <strong>
-                      {item.is_pinned ? "📌 " : ""}
-                      {item.title || "未命名对话"}
-                    </strong>
-                    <span>{item.summary || item.updated_at || ""}</span>
-                  </div>
-                  <ChevronRight size={16} />
-                </button>
-                <div className="session-actions">
-                  <button title="置顶" onClick={() => pin(item.id)}>
-                    📌
-                  </button>
-                  <button title="删除" onClick={() => remove(item.id)}>
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state">
-              <Clock3 size={26} />
-              <p>暂无历史会话</p>
-            </div>
-          )}
-        </div>
-      )}
-    </Overlay>
   );
 }
 
@@ -2656,6 +2559,7 @@ function ManagementPanel({
         {modules.map((module) => {
           const legacy = legacyFeatureIds.has(module.id as LegacyFeature);
           const embedded = [
+            "settings",
             "memory-constellation",
             "ripple",
             "data-tide",
@@ -2699,11 +2603,11 @@ function ManagementPanel({
   );
 }
 
-function ConstellationPanel({ onClose }: { onClose: () => void }) {
+export function ConstellationPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="constellation-overlay">
       <div className="constellation-frame-wrap">
-        <button className="overlay-close" onClick={onClose}>
+        <button data-settings-close className="overlay-close" onClick={onClose}>
           <X size={18} />
         </button>
         <iframe
@@ -2717,11 +2621,11 @@ function ConstellationPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function RipplePanel({ onClose }: { onClose: () => void }) {
+export function RipplePanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="constellation-overlay">
       <div className="constellation-frame-wrap">
-        <button className="overlay-close" onClick={onClose}>
+        <button data-settings-close className="overlay-close" onClick={onClose}>
           <X size={18} />
         </button>
         <iframe
@@ -2735,11 +2639,11 @@ function RipplePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function DataTidePanel({ onClose }: { onClose: () => void }) {
+export function DataTidePanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="constellation-overlay">
       <div className="constellation-frame-wrap">
-        <button className="overlay-close" onClick={onClose}>
+        <button data-settings-close className="overlay-close" onClick={onClose}>
           <X size={18} />
         </button>
         <iframe
@@ -3338,11 +3242,14 @@ export function App() {
         /* The bundled fallback remains visible while the API is offline. */
       }
     };
+    const refreshBackground = () => void sync(true);
+    window.addEventListener("lianxin-background-refresh", refreshBackground);
     void sync(true);
     const timer = window.setInterval(() => void sync(false), 800);
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      window.removeEventListener("lianxin-background-refresh", refreshBackground);
     };
   }, [background.fingerprint]);
   useEffect(() => {
@@ -3381,14 +3288,14 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [avatar.fingerprint]);
-  const openSession = (id: number) => {
-    if (sessionChangingRef.current) return;
+  const openSession = async (id: number) => {
+    if (sessionChangingRef.current || busy) throw new Error("正在回复或切换会话，请稍后重试");
     sendEpochRef.current += 1;
     setComposerResetKey((value) => value + 1);
     sessionChangingRef.current = true;
     turnGenerationRef.current += 1;
     cancelSegments();
-    return void lianxinApi
+    return lianxinApi
       .selectSession(id)
       .then(() => {
         sessionIdRef.current = id;
@@ -3400,8 +3307,27 @@ export function App() {
         setToolBlocks([]);
         setMessages(result.items.map(restoreMessage));
       })
-      .catch(() => undefined)
       .finally(() => { sessionChangingRef.current = false; });
+  };
+  const refreshHistoryConversation = async () => {
+    if (sessionChangingRef.current) throw new Error("会话已修改，正在切换聊天，请稍后刷新");
+    sessionChangingRef.current = true;
+    try {
+      const status = await lianxinApi.status();
+      const result = await lianxinApi.messages(status.sessionId);
+      sendEpochRef.current += 1;
+      setComposerResetKey(value => value + 1);
+      turnGenerationRef.current += 1;
+      cancelSegments();
+      sessionIdRef.current = status.sessionId;
+      setInteractionMessages([]);
+      setToolBlocks([]);
+      setMessages(result.items.map(restoreMessage));
+    } catch (error) {
+      throw new Error(`历史操作已完成，但聊天刷新失败，请重开面板核对，勿重复导入。${String(error)}`);
+    } finally {
+      sessionChangingRef.current = false;
+    }
   };
   // 分段计划的键：折叠空白后比较，避免落库副本与本地乐观消息因空白差异失配。
   const segmentKeyOf = (content: string) =>
@@ -3678,7 +3604,15 @@ export function App() {
     if (next) cancelSegments();
     void lianxinApi.saveSettingsPanels({ global: { silentMode: next }, sound: { silentMode: next } }).catch(() => setSilentMode(!next));
   };
+  const openPanel = (next: PanelId) => {
+    if (!isSettingsWindowId(next)) { setPanel(next); return; }
+    void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
+  };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "settings") {
+      openPanel("settings");
+      return;
+    }
     if (feature === "vision" || feature === "camera") {
       setPanel("none");
       void openVisionWindow().then((opened) => {
@@ -3691,19 +3625,19 @@ export function App() {
       return;
     }
     if (feature === "memory-constellation") {
-      setPanel("constellation");
+      openPanel("constellation");
       return;
     }
     if (feature === "ripple") {
-      setPanel("ripple");
+      openPanel("ripple");
       return;
     }
     if (feature === "persona") {
-      setPanel("persona");
+      openPanel("persona");
       return;
     }
     if (feature === "data-tide") {
-      setPanel("data-tide");
+      openPanel("data-tide");
       return;
     }
     if (feature === "study-room") {
@@ -3909,7 +3843,7 @@ export function App() {
         <div className="app-surface">
           <TopBar
             onNewChat={handleNewChat}
-            onPanel={setPanel}
+            onPanel={openPanel}
             onLegacy={openLegacy}
             onMinimize={handleMinimize}
             onMaximize={handleMaximize}
@@ -3928,7 +3862,7 @@ export function App() {
               onWorkspaceChange={handleWorkspaceChange}
               managementOpen={managementOpen}
               onManagementToggle={() => setManagementOpen((open) => !open)}
-              onPanel={setPanel}
+              onPanel={openPanel}
               onLegacy={openLegacy}
               avatar={avatar}
             />
@@ -3980,7 +3914,7 @@ export function App() {
       <div className="app-surface">
         <TopBar
           onNewChat={handleNewChat}
-          onPanel={setPanel}
+          onPanel={openPanel}
           onLegacy={openLegacy}
           onMinimize={handleMinimize}
           onMaximize={handleMaximize}
@@ -3999,7 +3933,7 @@ export function App() {
             onWorkspaceChange={handleWorkspaceChange}
             managementOpen={managementOpen}
             onManagementToggle={() => setManagementOpen((open) => !open)}
-            onPanel={setPanel}
+            onPanel={openPanel}
             onLegacy={openLegacy}
             avatar={avatar}
           />
@@ -4067,8 +4001,9 @@ export function App() {
         aria-label="调整窗口大小"
       />
       {panel === "history" && (
-        <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} />
+        <HistoryPanel onClose={() => setPanel("none")} onOpen={openSession} onChanged={refreshHistoryConversation} chatBusy={busy} />
       )}
+      {panel === "settings" && <GlobalSettingsPanel onClose={() => setPanel("none")} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (

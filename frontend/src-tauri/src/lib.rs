@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
+use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,11 +26,38 @@ fn app_shell_status() -> &'static str {
     "frontend-fixture"
 }
 
+#[tauri::command]
+fn read_image_preview(path: String) -> Result<String, String> {
+    let file_path = std::path::PathBuf::from(path);
+    let extension = file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "gif" => "image/gif",
+        _ => return Err("不支持的图片格式".into()),
+    };
+    let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > 12 * 1024 * 1024 {
+        return Err("图片不存在或超过 12MB".into());
+    }
+    let bytes = fs::read(file_path).map_err(|error| error.to_string())?;
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![app_shell_status])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![app_shell_status, read_image_preview])
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;

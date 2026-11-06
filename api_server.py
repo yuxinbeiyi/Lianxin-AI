@@ -917,6 +917,70 @@ class LianxinBridge:
     def sessions(self) -> list[dict]:
         return self.agent().get_history_manager().get_sessions()
 
+    def history_panel(self):
+        from utils.history_panel import HistoryPanelService
+        with self._lock:
+            if getattr(self, "_history_panel_service", None) is None:
+                self._history_panel_service = HistoryPanelService(self.agent().get_history_manager())
+            return self._history_panel_service
+
+    def history_request(self, method, action, query, body):
+        from utils.history_panel import HistoryConflict, confirmed, selected_ids, session_id, valid_date
+
+        service = self.history_panel()
+        if method == "GET":
+            if action == "sessions":
+                return service.listing((query.get("q") or [""])[0], (query.get("date") or [""])[0])
+            if action == "detail":
+                value = (query.get("id") or [""])[0]
+                if not value.isdecimal():
+                    raise ValueError("缺少有效会话 ID")
+                return service.detail(session_id(int(value)))
+            if action == "job":
+                return service.job_state()
+            if action == "diary":
+                target_date = valid_date((query.get("date") or [""])[0])
+                return {"exists": bool(service.has_diary(target_date))}
+        elif method == "POST":
+            if not isinstance(body, dict):
+                raise ValueError("请求必须为 JSON 对象")
+            if action == "update":
+                return service.update(body)
+            if action == "export":
+                return service.export(body)
+            if action == "export-local":
+                return service.export_local(body)
+            if action == "job":
+                return service.start_job(body)
+            if action in ("delete", "import"):
+                confirmed(body)
+                if not self._chat_lock.acquire(blocking=False):
+                    raise HistoryConflict("正在回复或切换会话，请稍后重试")
+                try:
+                    agent = self.agent()
+                    with service.lock:
+                        if action == "delete":
+                            ids = selected_ids(body.get("ids"))
+                            service.delete(ids)
+                            if agent._session_id in ids:
+                                agent.new_session()
+                            return {"deleted": ids, "activeSessionId": agent._session_id}
+                        target = session_id(body.get("targetSessionId"))
+                        if target != agent._session_id:
+                            raise HistoryConflict("当前会话已经改变，请刷新后重新确认导入")
+                        service.require_session(target)
+                        detail = service.detail(session_id(body.get("id")))
+                        if not detail["messages"]:
+                            raise ValueError("所选会话没有消息内容")
+                        recalled = [{"role": message["role"], "content": f"[回顾] {message['content']}"}
+                                    for message in detail["messages"]]
+                        agent.get_history_manager().append_recalled_messages(target, recalled)
+                        agent.history.extend(recalled)
+                        return {"imported": len(recalled), "activeSessionId": target}
+                finally:
+                    self._chat_lock.release()
+        raise LookupError("未知的历史记录接口")
+
     def messages(self, session_id: int, after: int = 0) -> list[dict]:
         items = self.agent().get_history_manager().get_messages_with_ids(session_id)
         if int(after or 0) > 0:
@@ -1479,6 +1543,7 @@ class LianxinBridge:
 
     def settings_panel_state(self) -> dict:
         from utils.settings import SettingsManager
+        from utils.settings import _DEFAULT_BACKGROUND_IMAGE
         from config import get_avatar_config, get_chat_avatar_config, get_device_preference, get_quick_launch_apps
         from utils.autostart import is_autostart_enabled
         from utils.accompany_stats import AccompanyStats
@@ -1503,12 +1568,14 @@ class LianxinBridge:
                 "noteFilePath": settings.note_file_path,
                 "backgroundEnabled": bool(settings.background_enabled),
                 "backgroundSource": str(settings.background_source or ""),
+                "defaultBackgroundSource": _DEFAULT_BACKGROUND_IMAGE,
                 "backgroundSourceType": settings.background_source_type,
                 "backgroundOpacity": float(settings.background_opacity),
                 "chatBackgroundOpacity": float(settings.chat_background_opacity),
                 "backgroundFitMode": settings.background_fit_mode,
                 "avatarMode": get_avatar_config().get("mode", "animated"),
                 "avatarPath": get_avatar_config().get("static_image_path", ""),
+                "avatarSourcePath": get_avatar_config().get("static_source_path", ""),
                 "firstMeetDate": AccompanyStats().get_first_meet_date(),
                 "autostart": bool(is_autostart_enabled()),
                 "segmentPauseChatMin": float(settings.segment_pause_chat_min),
@@ -1538,7 +1605,25 @@ class LianxinBridge:
         from utils.autostart import disable_autostart, enable_autostart, is_autostart_enabled
         from utils.accompany_stats import AccompanyStats
         settings = SettingsManager()
+        was_silent = bool(settings.silent_mode)
         global_values = payload.get("global") or {}
+        is_preview = bool(payload.get("preview"))
+        if not is_preview:
+            from pathlib import Path
+            if global_values.get("avatarMode") == "static":
+                avatar_path = Path(str(global_values.get("avatarPath") or "")).expanduser()
+                if not avatar_path.is_file():
+                    raise ValueError("请先选择有效的静态头像图片")
+            if global_values.get("backgroundEnabled") and global_values.get("backgroundSource"):
+                source = Path(str(global_values["backgroundSource"])).expanduser()
+                source_type = global_values.get("backgroundSourceType", settings.background_source_type)
+                if source_type == "single" and not source.is_file():
+                    raise ValueError("背景图片不存在或不可读取")
+                if source_type != "single" and (not source.is_dir() or not any(
+                    item.is_file() and item.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+                    for item in source.iterdir()
+                )):
+                    raise ValueError("背景文件夹不存在或没有可用图片")
         avatar_values = payload.get("avatar") or {}
         performance_values = payload.get("performance") or {}
         sound_values = payload.get("sound") or {}
@@ -1557,7 +1642,9 @@ class LianxinBridge:
             elif key == "reducedMotion": settings.reduced_motion = bool(value)
             elif key == "desktopNotifications": settings.desktop_notifications = bool(value)
             elif key == "fontSize": settings.font_size = max(10, min(20, int(value)))
-            elif key == "noteFilePath": settings.note_file_path = str(value)
+            elif key == "noteFilePath":
+                path = str(value).strip()
+                settings.note_file_path = path if not path or path.lower().endswith(".txt") else f"{path}.txt"
             elif key == "segmentPauseChatMin": settings.segment_pause_chat_min = max(0.1, float(value))
             elif key == "segmentPauseChatMax": settings.segment_pause_chat_max = max(0.1, float(value))
             elif key == "segmentPauseSemanticMin": settings.segment_pause_semantic_min = max(0.1, float(value))
@@ -1591,14 +1678,55 @@ class LianxinBridge:
             avatar["mode"] = str(global_values["avatarMode"])
             if "avatarPath" in global_values:
                 avatar["static_image_path"] = str(global_values["avatarPath"])
+            if "avatarSourcePath" in global_values:
+                avatar["static_source_path"] = str(global_values["avatarSourcePath"])
             save_avatar_config(avatar)
-        if "firstMeetDate" in global_values and global_values["firstMeetDate"]:
-            AccompanyStats().set_first_meet_date(str(global_values["firstMeetDate"]))
+        if "firstMeetDate" in global_values:
+            date_value = str(global_values["firstMeetDate"] or "")
+            if date_value:
+                from datetime import date
+                try:
+                    date.fromisoformat(date_value)
+                except ValueError as exc:
+                    raise ValueError("初识日期格式无效") from exc
+            AccompanyStats().set_first_meet_date(date_value)
         if "autostart" in global_values and bool(global_values["autostart"]) != bool(is_autostart_enabled()):
-            (enable_autostart if global_values["autostart"] else disable_autostart)()
+            ok, error = (enable_autostart if global_values["autostart"] else disable_autostart)()
+            if not ok:
+                raise RuntimeError(f"自启动设置失败：{error or '系统未能确认设置'}")
         if settings.silent_mode and not was_silent:
             self.stop_speaking()
         return self.settings_panel_state()
+
+    def save_chat_avatar_image(self, payload: dict) -> dict:
+        """Persist a cropped PNG to the app-owned avatar directory."""
+        import base64
+        import binascii
+        from config import get_user_data_dir, get_chat_avatar_config, save_chat_avatar_config
+
+        role = str(payload.get("role", ""))
+        if role not in {"assistant", "user", "character"}:
+            raise ValueError("头像类型无效")
+        encoded = str(payload.get("data", ""))
+        if encoded.startswith("data:"):
+            encoded = encoded.split(",", 1)[-1]
+        if not encoded or len(encoded) > 9_000_000:
+            raise ValueError("头像图片为空或超过大小限制")
+        try:
+            image_data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("头像图片数据无效") from exc
+        if len(image_data) > 6 * 1024 * 1024 or not image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("头像必须是 6MB 以内的 PNG 图片")
+        avatar_dir = get_user_data_dir() / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        destination = avatar_dir / ("lianxin.png" if role == "assistant" else "main-character.png" if role == "character" else "user.png")
+        destination.write_bytes(image_data)
+        state = self.avatar_state(include_data=True)
+        state["uploadedPath"] = str(destination)
+        state["role"] = role
+        state["sourcePath"] = str(payload.get("sourcePath") or "")
+        return state
 
     @staticmethod
     def _image_payload(path_value: str, include_data: bool) -> dict:
@@ -1646,6 +1774,7 @@ class LianxinBridge:
             "assistantDataUrl": assistant["dataUrl"],
             "userDataUrl": user["dataUrl"],
             "characterDataUrl": character["dataUrl"],
+            "characterPath": character_path,
             "characterFingerprint": character["fingerprint"],
             "fingerprint": fingerprint,
         }
@@ -4261,7 +4390,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4275,6 +4404,25 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def _history_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from utils.history_panel import HistoryConflict
+
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_history_origin"}, 403)
+        try:
+            parsed = urlparse(self.path)
+            body = self._body() if method == "POST" else None
+            result = bridge.history_request(method, parsed.path.removeprefix("/api/history/"),
+                                            parse_qs(parsed.query), body)
+            return self._send(result)
+        except (ValueError, TypeError) as error:
+            return self._send({"error": str(error)}, 400)
+        except LookupError as error:
+            return self._send({"error": str(error)}, 404)
+        except HistoryConflict as error:
+            return self._send({"error": str(error)}, 409)
 
     def _stream_vision(self):
         """把运行时缓存的 JPEG 以 MJPEG 流推给 WebView，前端用 <img> 直接显示。"""
@@ -4552,6 +4700,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/history/"):
+                return self._history_response("GET")
             if path.startswith("/api/persona/"):
                 from brain.decision_settings import trusted_origin
                 if not trusted_origin(self.headers.get("Origin", "")):
@@ -4833,11 +4983,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith("/api/history/"):
+                return self._history_response("POST")
             if path.startswith(("/api/decision/", "/api/persona/growth")):
                 from brain.decision_settings import trusted_origin
                 if not trusted_origin(self.headers.get("Origin", "")):
                     return self._send({"error": "untrusted_decision_origin"}, 403)
             body = self._body()
+            if path == "/api/settings/avatar-image":
+                return self._send(bridge.save_chat_avatar_image(body))
             if path == "/api/decision/settings":
                 from brain.decision_settings import save_settings
                 return self._send(save_settings(body))

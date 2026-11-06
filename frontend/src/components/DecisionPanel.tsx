@@ -154,7 +154,7 @@ export function DecisionPanel({ onClose }: { onClose: () => void }) {
   const local = runtime?.local ?? settings?.local;
   const last = runtime?.last_decision;
   return <div className="overlay"><section className="overlay-panel decision-hub" role="dialog" aria-modal="true" aria-labelledby="decision-title">
-    <button className="overlay-close" onClick={onClose} aria-label="关闭决策中枢">×</button>
+    <button data-settings-close className="overlay-close" onClick={onClose} aria-label="关闭决策中枢">×</button>
     <div className="panel-heading"><div><span className="eyebrow"><BrainCircuit size={14} /> 莲心决策层</span><h2 id="decision-title">决策中枢</h2></div></div>
     <p className="decision-help">辅助文本回忆与瞬忆，不替代情感、权限或 Codex 执行。失败时保留既有链路；图片、视频决策尚未接入。</p>
     {!settings ? <p>正在读取配置…</p> : <>

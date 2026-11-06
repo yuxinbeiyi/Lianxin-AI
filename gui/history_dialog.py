@@ -30,33 +30,8 @@ class SummaryWorker(QThread):
 
     def run(self):
         try:
-            from openai import OpenAI
-            from config import get_api_config
-            cfg    = get_api_config()
-            client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
-
-            # 最多取前 60 条，每条内容截取 200 字，控制 token 消耗
-            lines = []
-            for m in self._messages[:60]:
-                role_name = "主人" if m["role"] == "user" else "莲心"
-                lines.append(f"{role_name}：{m['content'][:200]}")
-            conversation = "\n".join(lines)
-
-            resp = client.chat.completions.create(
-                model=cfg["model"],
-                max_tokens=80,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是一个对话摘要助手。"
-                            "请用1~2句简洁的中文概括以下对话的主要内容，不超过50个字。"
-                        ),
-                    },
-                    {"role": "user", "content": f"请总结以下对话：\n{conversation}"},
-                ],
-            )
-            summary = resp.choices[0].message.content.strip()
+            from utils.history_summary import generate_session_summary
+            summary = generate_session_summary(self._messages)
             self.summary_ready.emit(self._session_id, summary)
         except Exception as e:
             self.error_occurred.emit(self._session_id, str(e))

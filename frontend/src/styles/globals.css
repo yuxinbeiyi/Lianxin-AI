@@ -576,6 +576,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .message-viewport,
 .companion-rail,
 .settings-scroll,
+.global-settings-content,
+.global-settings-nav,
+.settings-window-content .overlay-panel,
 .decision-hub,
 .vision-log,
 .vision-side {
@@ -587,6 +590,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .message-viewport::-webkit-scrollbar,
 .companion-rail::-webkit-scrollbar,
 .settings-scroll::-webkit-scrollbar,
+.global-settings-content::-webkit-scrollbar,
+.global-settings-nav::-webkit-scrollbar,
+.settings-window-content .overlay-panel::-webkit-scrollbar,
 .decision-hub::-webkit-scrollbar,
 .vision-log::-webkit-scrollbar,
 .vision-side::-webkit-scrollbar {
@@ -597,6 +603,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .message-viewport::-webkit-scrollbar-track,
 .companion-rail::-webkit-scrollbar-track,
 .settings-scroll::-webkit-scrollbar-track,
+.global-settings-content::-webkit-scrollbar-track,
+.global-settings-nav::-webkit-scrollbar-track,
+.settings-window-content .overlay-panel::-webkit-scrollbar-track,
 .decision-hub::-webkit-scrollbar-track,
 .vision-log::-webkit-scrollbar-track,
 .vision-side::-webkit-scrollbar-track {
@@ -607,6 +616,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .message-viewport::-webkit-scrollbar-thumb,
 .companion-rail::-webkit-scrollbar-thumb,
 .settings-scroll::-webkit-scrollbar-thumb,
+.global-settings-content::-webkit-scrollbar-thumb,
+.global-settings-nav::-webkit-scrollbar-thumb,
+.settings-window-content .overlay-panel::-webkit-scrollbar-thumb,
 .decision-hub::-webkit-scrollbar-thumb,
 .vision-log::-webkit-scrollbar-thumb,
 .vision-side::-webkit-scrollbar-thumb {
@@ -618,6 +630,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .message-viewport::-webkit-scrollbar-thumb:hover,
 .companion-rail::-webkit-scrollbar-thumb:hover,
 .settings-scroll::-webkit-scrollbar-thumb:hover,
+.global-settings-content::-webkit-scrollbar-thumb:hover,
+.global-settings-nav::-webkit-scrollbar-thumb:hover,
+.settings-window-content .overlay-panel::-webkit-scrollbar-thumb:hover,
 .decision-hub::-webkit-scrollbar-thumb:hover,
 .vision-log::-webkit-scrollbar-thumb:hover,
 .vision-side::-webkit-scrollbar-thumb:hover {

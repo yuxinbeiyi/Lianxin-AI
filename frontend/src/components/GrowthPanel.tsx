@@ -123,7 +123,7 @@ export function GrowthPanel({ personaId, profiles, onClose, onChange }: Props) {
       <header className="growth-header">
         <div><span className="eyebrow">同一个莲心 · 经历与改变</span><h2 id="growth-title">成长轨迹</h2>
           <p>共同经历属于记忆；这里保存有证据、可撤销的相处习惯。切换表达模式不会重建一个莲心。</p></div>
-        <button ref={closeButton} className="secondary-button" disabled={busy} onClick={onClose} aria-label="返回人格枢控"><X size={18} />返回</button>
+        <button data-settings-close ref={closeButton} className="secondary-button" disabled={busy} onClick={onClose} aria-label="返回人格枢控"><X size={18} />返回</button>
       </header>
       <div className="growth-scroll">
         <section className="growth-settings" aria-label="成长学习设置">

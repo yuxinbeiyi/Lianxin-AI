@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-windows",
+  "description": "Allow approved settings subwindows to finish closing after their panel cleanup",
+  "windows": ["settings-*"],
+  "permissions": ["core:window:allow-destroy"]
+}

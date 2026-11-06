@@ -427,6 +427,28 @@ class HistoryManager:
             "FROM sessions ORDER BY is_pinned DESC, updated_at DESC, id DESC"
         )
         return [dict(row) for row in cur.fetchall()]
+    def get_session_message_counts(self) -> dict[int, int]:
+        return {row["session_id"]: row["count"] for row in self._conn().execute(
+            "SELECT session_id, COUNT(*) AS count FROM messages GROUP BY session_id"
+        )}
+
+    def append_recalled_messages(self, session_id: int, messages: list[dict]):
+        with self._write_lock:
+            conn = self._conn()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                if not conn.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone():
+                    raise ValueError("目标会话不存在")
+                conn.executemany(
+                    "INSERT INTO messages (session_id, role, content, timestamp, metadata_json) VALUES (?, ?, ?, ?, ?)",
+                    [(session_id, message["role"], message["content"], now, "{}") for message in messages],
+                )
+                conn.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def get_sessions_by_date(self, date_str: str) -> list[dict]:
         """返回指定日期创建的所有会话（按创建时间正序）。"""
         conn = self._conn()

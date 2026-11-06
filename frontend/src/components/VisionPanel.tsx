@@ -256,7 +256,7 @@ export function VisionPanel() {
   );
 }
 
-const RESIZE_DIRECTIONS = {
+export const RESIZE_DIRECTIONS = {
   n: "North",
   s: "South",
   e: "East",

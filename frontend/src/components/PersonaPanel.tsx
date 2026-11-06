@@ -515,7 +515,7 @@ export function PersonaPanel({ onClose }: { onClose: () => void }) {
             >
               {pendingAction === "toggle" ? "处理中…" : systemEnabled ? "停用系统" : "启用系统"}
             </button>
-            <button className="overlay-close" onClick={requestClose} aria-label="关闭人格枢控">
+            <button data-settings-close className="overlay-close" onClick={requestClose} aria-label="关闭人格枢控">
               <X size={18} />
             </button>
           </div>
