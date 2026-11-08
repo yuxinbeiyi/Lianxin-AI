@@ -8,6 +8,8 @@ export const settingsWindows = {
   "voice-stt": { title: "语音转录", width: 1120, height: 900 },
   sound: { title: "声音设置", width: 1120, height: 900 },
   network: { title: "网络设置", width: 1120, height: 900 },
+  qq: { title: "QQ 聊天", width: 1120, height: 860 },
+  wechat: { title: "微信聊天", width: 1120, height: 860 },
   decision: { title: "决策中枢", width: 960, height: 800 },
   persona: { title: "人格枢控", width: 1280, height: 820 },
   constellation: { title: "星图系统", width: 1180, height: 780 },

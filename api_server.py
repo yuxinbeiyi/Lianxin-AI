@@ -756,8 +756,72 @@ class QQBridgeRuntime:
             self._fast_reply_enabled = bool(enabled)
             if self._worker is not None:
                 self._worker.set_fast_reply_enabled(self._fast_reply_enabled)
-            return self.status()
+        return self.status()
 
+
+class WeChatBridgeRuntime:
+    """Headless owner for the WeChat bridge used by native settings panels."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._operation_lock = threading.Lock()
+        self._worker = None
+        self._ready = False
+
+    def _on_connection_changed(self, ready: bool) -> None:
+        with self._lock:
+            self._ready = bool(ready)
+
+    def status(self) -> dict:
+        with self._lock:
+            worker = self._worker
+            running = bool(worker and worker.is_running())
+            error = str(getattr(worker, "last_error", "") or "") if worker else ""
+            state = "error" if error and not running else "listening" if running and self._ready else "starting" if running else "stopped"
+            try:
+                from config import get_wechat_bridge_config
+                port = int(get_wechat_bridge_config().get("listen_port", 8088))
+            except Exception:
+                port = 8088
+            return {"running": running, "connected": bool(running and self._ready), "state": state,
+                    "listenPort": port, "error": error}
+
+    def start(self) -> dict:
+        with self._operation_lock:
+            with self._lock:
+                if self._worker and self._worker.is_running():
+                    return self.status()
+                from workers.wechat_bridge_worker import WeChatBridgeWorker
+                worker = WeChatBridgeWorker()
+                worker.connection_changed.connect(self._on_connection_changed)
+                self._worker = worker
+                self._ready = False
+            worker.start_bridge()
+        return self.status()
+
+    def stop(self) -> dict:
+        with self._operation_lock:
+            with self._lock:
+                worker = self._worker
+                self._worker = None
+                self._ready = False
+            if worker:
+                worker.stop_bridge()
+        return self.status()
+
+    def reload(self) -> dict:
+        with self._operation_lock:
+            with self._lock:
+                worker = self._worker
+            if worker and worker.is_running():
+                previous_port = int(getattr(worker, "_listen_port", 8088))
+                worker.reload_config()
+                if int(getattr(worker, "_listen_port", previous_port)) != previous_port:
+                    with self._lock:
+                        self._ready = False
+                    worker.stop_bridge()
+                    worker.start_bridge()
+        return self.status()
 
 class LianxinBridge:
     def __init__(self) -> None:
@@ -807,6 +871,7 @@ class LianxinBridge:
         self._time_capsule_event_id = 0
         self._diary_workers = set()
         self._qq_runtime = QQBridgeRuntime()
+        self._wechat_runtime = WeChatBridgeRuntime()
         # Reuse the legacy companion counter so the standalone React/Tauri
         # runtime contributes to the same data-tide statistics.
         from utils.accompany_stats import AccompanyStats
@@ -844,6 +909,18 @@ class LianxinBridge:
 
     def set_qq_fast_reply(self, enabled: bool) -> dict:
         return self._qq_runtime.set_fast_reply(enabled)
+
+    def wechat_status(self) -> dict:
+        return self._wechat_runtime.status()
+
+    def start_wechat(self) -> dict:
+        return self._wechat_runtime.start()
+
+    def stop_wechat(self) -> dict:
+        return self._wechat_runtime.stop()
+
+    def reload_wechat(self) -> dict:
+        return self._wechat_runtime.reload()
 
     def status(self) -> dict:
         agent = self.agent()
@@ -4484,7 +4561,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/", "/api/config-panels/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/", "/api/config-panels/", "/api/social-chat/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4545,6 +4622,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": "配置校验未通过或当前正在执行其它动作，请核对字段/版本并稍后重试；未回显敏感数据"}, 400)
         except Exception as error:
             return self._send({"error": f"设置操作未完成（{type(error).__name__}）；请检查本地权限和依赖，不要假定已回滚"}, 502)
+
+    def _social_chat_response(self, method):
+        from brain.decision_settings import trusted_origin
+        from utils.api_config_panel import ApiConfigConflict, ApiConfigError
+        from utils.social_chat_panel import request
+
+        if not trusted_origin(self.headers.get("Origin", "")):
+            return self._send({"error": "untrusted_social_chat_origin"}, 403)
+        parts = urlparse(self.path).path.removeprefix("/api/social-chat/").split("/")
+        allowed = {"qq": {"state", "save", "auto-start", "fast-reply", "connect", "disconnect", "retry"},
+                   "wechat": {"state", "save", "connect", "disconnect"}}
+        if len(parts) != 2 or parts[0] not in allowed or parts[1] not in allowed[parts[0]] or (method == "GET" and parts[1] != "state"):
+            return self._send({"error": "未知聊天设置操作"}, 404)
+        try:
+            return self._send(request(parts[0], parts[1], self._body() if method == "POST" else {}, bridge))
+        except ApiConfigConflict as error:
+            return self._send({"error": str(error)}, 409)
+        except ApiConfigError as error:
+            return self._send({"error": str(error)}, 400)
+        except (ValueError, RuntimeError) as error:
+            return self._send({"error": str(error)}, 400 if isinstance(error, ValueError) else 502)
+        except LookupError:
+            return self._send({"error": "未知聊天设置操作"}, 404)
+        except Exception as error:
+            return self._send({"error": f"聊天设置操作未完成（{type(error).__name__}），请检查本地后端状态"}, 502)
 
     def _capability_panel_response(self, method):
         from brain.decision_settings import trusted_origin
@@ -4888,6 +4990,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._capability_panel_response("GET")
             if path.startswith("/api/config-panels/"):
                 return self._native_config_response("GET")
+            if path.startswith("/api/social-chat/"):
+                return self._social_chat_response("GET")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("GET")
             if path.startswith("/api/history/"):
@@ -5183,6 +5287,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._capability_panel_response("POST")
             if path.startswith("/api/config-panels/"):
                 return self._native_config_response("POST")
+            if path.startswith("/api/social-chat/"):
+                return self._social_chat_response("POST")
             if path.startswith("/api/api-config/"):
                 return self._api_config_response("POST")
             if path.startswith("/api/history/"):
@@ -5635,6 +5741,13 @@ def main():
             bridge_log.log("QQ", "QQ bridge auto-started")
     except Exception as exc:
         bridge_log.log("QQ", f"QQ bridge auto-start failed: {exc}")
+    try:
+        from config import get_wechat_bridge_config
+        if get_wechat_bridge_config().get("auto_start"):
+            bridge.start_wechat()
+            bridge_log.log("微信", "微信桥接自动启动中")
+    except Exception as exc:
+        bridge_log.log("微信", f"微信桥接自动启动失败: {exc}")
     threading.Thread(target=_cover_cleanup_loop, name="cover-cache-cleanup", daemon=True).start()
     threading.Thread(target=_memory_heartbeat_loop, name="memory-heartbeat", daemon=True).start()
     threading.Thread(target=_watchdog_loop, name="bridge-watchdog", daemon=True).start()

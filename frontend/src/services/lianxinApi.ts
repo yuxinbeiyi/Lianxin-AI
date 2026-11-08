@@ -383,6 +383,11 @@ export type BilibiliInteractionState = {
   replyCapability: { ready: boolean; allowOtherReplies: boolean; blockers: string[] };
   records?: Array<{ bvid: string; rpid: string; status: string; diagnostic: string }>;
 };
+export type SocialChatChannel = "qq" | "wechat";
+export type SocialChatValue = string | number | boolean;
+export type SocialChatSettings = { timing: Record<string, SocialChatValue>; bridge: Record<string, SocialChatValue> };
+export type SocialChatStatus = { running: boolean; connected: boolean; state: string; url?: string; error?: string; disconnectReason?: string; fastReplyEnabled?: boolean; listenPort?: number };
+export type SocialChatState = { channel: SocialChatChannel; settings: SocialChatSettings; defaults: SocialChatSettings; revision: string; status: SocialChatStatus };
 export type LegacyFeature =
   | "ripple" | "persona" | "memory-constellation" | "prism-memory"
   | "history" | "note" | "proactive" | "alarm" | "reminder"
@@ -641,6 +646,9 @@ export const lianxinApi = {
   visionEnroll: (name: string) => request<{ ok: boolean; name: string }>("/vision/enroll", { method: "POST", body: JSON.stringify({ name }) }),
   visionEvents: (after: number) => request<{ items: VisionEvent[]; latest: number }>(`/vision/events?after=${after}`),
   visionTracking: (mode: "esp32" | "simulate" | "off") => request<VisionState>("/vision/tracking", { method: "POST", body: JSON.stringify({ mode }) }),
+  socialChatState: (channel: SocialChatChannel) => request<SocialChatState>(`/social-chat/${channel}/state`),
+  saveSocialChat: (channel: SocialChatChannel, payload: { revision: string; settings: SocialChatSettings }) => request<SocialChatState>(`/social-chat/${channel}/save`, { method: "POST", body: JSON.stringify(payload) }),
+  socialChatAction: (channel: SocialChatChannel, action: "auto-start" | "fast-reply" | "connect" | "disconnect" | "retry", payload: Record<string, unknown> = {}) => request<Record<string, unknown>>(`/social-chat/${channel}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   qqStatus: () => request<{ running: boolean; connected: boolean; state: string; url: string; error?: string; disconnectReason?: string; fastReplyEnabled: boolean }>("/qq/status"),
   startQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/start", { method: "POST", body: "{}" }),
   stopQq: () => request<{ running: boolean; connected: boolean; state: string; url: string }>("/qq/stop", { method: "POST", body: "{}" }),

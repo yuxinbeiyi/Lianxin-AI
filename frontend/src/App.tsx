@@ -97,6 +97,7 @@ import { BilibiliMessageLine } from "./components/BilibiliMessageLine";
 import { VisionPanel } from "./components/VisionPanel";
 import { openVisionWindow } from "./utils/visionWindow";
 import { isSettingsWindowId, openSettingsWindow } from "./utils/settingsWindow";
+import { SocialChatPanel } from "./components/SocialChatPanel";
 
 type PanelId =
   | "none"
@@ -111,6 +112,8 @@ type PanelId =
   | "voice-stt"
   | "sound"
   | "network"
+  | "qq"
+  | "wechat"
   | "management"
   | "tools"
   | "decision"
@@ -2949,6 +2952,10 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    if (feature === "qq" || feature === "wechat") {
+      openPanel(feature);
+      return;
+    }
     if (feature === "voice-stt" || feature === "sound" || feature === "network") {
       openPanel(feature);
       return;
@@ -3364,6 +3371,8 @@ export function App() {
       {panel === "voice-stt" && <SttPanel onClose={() => setPanel("none")} />}
       {panel === "sound" && <SoundPanel onClose={() => setPanel("none")} />}
       {panel === "network" && <NetworkPanel onClose={() => setPanel("none")} />}
+      {panel === "qq" && <SocialChatPanel channel="qq" onClose={() => setPanel("none")} />}
+      {panel === "wechat" && <SocialChatPanel channel="wechat" onClose={() => setPanel("none")} />}
       {panel === "capability" && <CapabilityPanel onClose={() => setPanel("none")} onUse={name => { applyPreferredTool(name); setActiveWorkspace("chat"); setPanel("none"); }} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}

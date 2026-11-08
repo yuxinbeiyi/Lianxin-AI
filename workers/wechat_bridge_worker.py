@@ -52,6 +52,8 @@ class WeChatBridgeWorker(QObject):
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._server = None
+        self.last_error = ""
         self._callback = callback_callback
         self._agents: Dict[str, object] = {}
         self._session_map = self._load_session_map()
@@ -111,18 +113,27 @@ class WeChatBridgeWorker(QObject):
         if self._running:
             self._log("[微信桥接] 已经在运行了")
             return
+        self.last_error = ""
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        self._log(f"[微信桥接] 已启动，监听端口 {self._listen_port}")
-        self.connection_changed.emit(True)
 
     def stop_bridge(self):
         """停止微信桥接。"""
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=3.0)
+        with self._lock:
+            self._running = False
+            server = self._server
+            thread = self._thread
+        if server is not None:
+            try:
+                server.shutdown()
+            finally:
+                server.server_close()
+        if thread:
+            thread.join(timeout=3.0)
+        with self._lock:
             self._thread = None
+            self._server = None
         self._log("[微信桥接] 已停止")
         self.connection_changed.emit(False)
 
@@ -362,12 +373,24 @@ class WeChatBridgeWorker(QObject):
                 logger.error(f"[微信桥接] Webhook 错误: {e}")
                 return jsonify({"status": "error", "message": str(e)}), 500
 
+            from werkzeug.serving import make_server
+            server = make_server("0.0.0.0", self._listen_port, app, threaded=True)
+            with self._lock:
+                if not self._running:
+                    server.server_close()
+                    return
+                self._server = server
             self._log(f"[微信桥接] Flask 服务器已启动，监听 0.0.0.0:{self._listen_port}/webhook")
-            app.run(host="0.0.0.0", port=self._listen_port, debug=False, use_reloader=False)
+            self.connection_changed.emit(True)
+            server.serve_forever()
 
         except Exception as e:
             logger.exception(f"[微信桥接] 主循环异常: {e}")
-            self._running = False
+            self.last_error = str(e)
+        finally:
+            with self._lock:
+                self._running = False
+                self._server = None
             self.connection_changed.emit(False)
 
     def _parse_message(self, data: dict) -> Optional[WeChatMessage]:

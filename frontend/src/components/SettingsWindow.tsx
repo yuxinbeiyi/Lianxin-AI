@@ -12,6 +12,7 @@ import { SoundPanel } from "./SoundPanel";
 import { NetworkPanel } from "./NetworkPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
+import { SocialChatPanel } from "./SocialChatPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
 import "../styles/settings-window.css";
 
@@ -82,6 +83,8 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
     "voice-stt": SttPanel,
     sound: SoundPanel,
     network: NetworkPanel,
+    qq: ({ onClose }: { onClose: () => void }) => <SocialChatPanel channel="qq" onClose={onClose} />,
+    wechat: ({ onClose }: { onClose: () => void }) => <SocialChatPanel channel="wechat" onClose={onClose} />,
     decision: DecisionPanel,
     persona: PersonaPanel,
     constellation: ConstellationPanel,
