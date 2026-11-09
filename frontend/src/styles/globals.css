@@ -290,6 +290,9 @@ kbd { padding: 3px 5px; color: #a8c0c1; border: 1px solid rgba(157,214,205,.2); 
 .music-tools { grid-area: tools; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .music-mode { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: var(--lx-text-muted); border: 1px solid var(--lx-border); border-radius: 10px; background: transparent; cursor: pointer; }
 .music-mode.is-active { color: var(--lx-accent); border-color: rgba(105, 215, 195, .45); background: rgba(105, 215, 195, .1); }
+.music-mode:disabled { opacity: .5; cursor: wait; }
+.music-roaming-status { padding: 12px 18px; color: var(--lx-text-muted); font-size: 12px; line-height: 1.6; border-bottom: 1px solid var(--lx-border); overflow-wrap: anywhere; }
+.music-roaming-status[role="alert"] { color: var(--lx-warning, #dc9874); }
 .music-volume { display: inline-flex; align-items: center; gap: 8px; color: var(--lx-text-muted); font-size: 12px; }
 .music-volume input[type="range"] { width: 110px; accent-color: var(--lx-accent); cursor: pointer; }
 .music-volume span { width: 28px; font-variant-numeric: tabular-nums; }

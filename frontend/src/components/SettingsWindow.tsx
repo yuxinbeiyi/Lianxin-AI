@@ -15,6 +15,7 @@ import { PersonaPanel } from "./PersonaPanel";
 import { SocialChatPanel } from "./SocialChatPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
 import "../styles/settings-window.css";
+import { AlarmPanel } from "./AlarmPanel";
 
 export function SettingsWindow({ id }: { id: SettingsWindowId }) {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -76,6 +77,7 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
   }, [desktopWindow, requestClose]);
 
   const panels = {
+    alarm: AlarmPanel,
     settings: GlobalSettingsPanel,
     api: ApiConfigPanel,
     proactive: ProactivePanel,

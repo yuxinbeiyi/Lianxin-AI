@@ -1,6 +1,20 @@
 export type ConfigPanelDomain = "stt" | "sound" | "network";
 export type ConfigPanelValue = string | number | boolean | string[];
 export type ConfigPanelTask = { id: number; status: "idle" | "running" | "done" | "error"; message: string; progress: number | null; committedRevision?: string };
+export type AlarmPanelState = {
+  scheduler: { status: "running" | "stopped" | "unknown"; message?: string };
+  alarms: Array<{ id: string; name: string; time_str: string; repeat: string; enabled: boolean; last_fired_date?: string }>;
+  countdowns: Array<{ id: string; name: string; total_seconds: number; remaining_seconds: number; end_time?: string | null }>;
+  reminders: Array<{ id: string; name: string; rule: string; time: string; interval?: number; weekdays?: number[]; day_of_month?: number | null; advance_minutes?: number; enabled: boolean; smart_reply?: boolean }>;
+  todos: Array<{ id: string; title: string; due_time?: string | null; priority: string; description?: string; completed: boolean }>;
+  autoTasks: Array<{ task_id: string; name: string; description: string; schedule_type: string; schedule_time: string; interval_minutes: number; weekdays?: number[]; day_of_month?: number | null; missed_action: string; enabled: boolean; status: string; next_run?: string; last_result?: string; execution_count?: number }>;
+  runningAutoTaskIds: string[];
+  todoAutoSuggest: boolean;
+  todoAutoConfirm: boolean;
+  smartReminder?: boolean;
+  autoTaskLogs?: Array<Record<string, unknown>>;
+  autoTaskWorkflows?: Record<string, Array<Record<string, unknown>>>;
+};
 export type ConfigNetworkTool = { id: string; name: string; description: string; enabled: boolean; checked: boolean; state: string };
 export type NativeConfigState = {
   sections: Record<string, Record<string, ConfigPanelValue>>; revision: string;
@@ -513,6 +527,7 @@ export type ApiConfigDraft = { revision: string; sections?: Partial<Record<ApiCo
 export type ApiConfigTestResult = { message: string; reply?: string; path?: string };
 
 export const lianxinApi = {
+  alarmPanelEvents: (after: number) => request<{ items: AlarmNotice[]; latest: number }>(`/alarm-panel/events?after=${after}`),
   apiConfig: () => request<ApiConfigState>("/api-config/state"),
   saveApiConfig: (action: "save" | "profile-save" | "profile-apply" | "profile-delete", payload: ApiConfigDraft & { name?: string }) => request<ApiConfigState>(`/api-config/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   revealApiKey: (payload: { revision: string; section: ApiConfigSection; field: string; sourceProfile?: string }) => request<{ value: string }>("/api-config/reveal", { method: "POST", body: JSON.stringify(payload) }),
@@ -610,6 +625,9 @@ export const lianxinApi = {
   createBilibiliCommentDraft: (target: string, text = "") => request<{ ok: boolean; status?: string; error?: string; blockers?: string[]; draft?: BilibiliInteractionState["draft"]; state: BilibiliInteractionState }>("/bilibili-interaction/draft", { method: "POST", body: JSON.stringify({ target, text }) }),
   clearBilibiliCommentDraft: () => request<{ ok: boolean; state: BilibiliInteractionState }>("/bilibili-interaction/draft/clear", { method: "POST", body: "{}" }),
   managementState: () => request<{ modules: Array<{ id: string; label: string; available: boolean; state?: unknown }> }>("/management/state"),
+  alarmPanelState: () => request<AlarmPanelState>("/alarm-panel/state"),
+  alarmPanelAction: (action: string, payload: Record<string, unknown> = {}) =>
+    request<AlarmPanelState>("/alarm-panel/action", { method: "POST", body: JSON.stringify({ action, ...payload }) }),
   personaState: () => request<PersonaState>("/persona/state"),
   personaGrowth: (id: string) => request<GrowthState>(`/persona/growth?id=${encodeURIComponent(id)}`),
   reviewGrowth: (personaId: string, eventId: number, action: "apply" | "revert" | "dismiss") => request<GrowthState>("/persona/growth/review", { method: "POST", body: JSON.stringify({ persona_id: personaId, event_id: eventId, action }) }),
@@ -693,3 +711,4 @@ export const lianxinApi = {
     }
   },
 };
+export type AlarmNotice = { id: number; type: string; created_at: string; message: string; alarm_id?: string; todo_id?: string; task_id?: string };

@@ -269,6 +269,11 @@ class MusicService:
         if not state.get("source") and not state.get("active"):
             return "网易云播放器未连接。"
         status = "播放中" if state.get("active") else ("已暂停" if state.get("paused") else "已停止")
+        roaming = state.get("roaming") or {}
+        if roaming.get("active"):
+            status += "（私人漫游）"
+        elif roaming.get("error"):
+            status += f"（漫游已中断：{roaming['error']}）"
         title = state.get("name") or state.get("title") or "未知歌曲"
         artist = state.get("artist") or "未知歌手"
         progress = float(state.get("progress") or 0)

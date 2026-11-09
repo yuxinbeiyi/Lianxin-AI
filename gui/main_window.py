@@ -237,22 +237,27 @@ class MainWindow(QMainWindow):
         self._qq_settings_dialog = None
         self._vision_panel = None
         # ── 闹钟模块 ──────────────────────────────────────────
+        from utils import alarm_runtime_lock
+        self._alarm_runtime_owner = alarm_runtime_lock.acquire()
         self._alarm_manager = AlarmManager()
         self._alarm_dialog: AlarmDialog | None = None
         self._alarm_timer = QTimer(self)
         self._alarm_timer.timeout.connect(self._check_alarms)
-        self._alarm_timer.start(1000)  # 每秒检查一次
+        if self._alarm_runtime_owner:
+            self._alarm_timer.start(1000)
 
         # ── 倒计时模块（主窗口统一管理）───────────────────────
         self._countdown_timer = QTimer(self)
         self._countdown_timer.timeout.connect(self._check_countdowns)
-        self._countdown_timer.start(1000)
+        if self._alarm_runtime_owner:
+            self._countdown_timer.start(1000)
         # ── 自动化任务调度器 ────────────────────────────────
-        self._auto_task_scheduler = AutoTaskScheduler(self)
-        self._auto_task_scheduler.task_due.connect(self._on_auto_task_due)
-        self._auto_task_scheduler.task_missed.connect(self._on_auto_task_missed)
-        self._auto_task_scheduler.todo_due.connect(self._on_todo_due)
-        self._auto_task_scheduler.start()
+        self._auto_task_scheduler = AutoTaskScheduler(self) if self._alarm_runtime_owner else None
+        if self._auto_task_scheduler:
+            self._auto_task_scheduler.task_due.connect(self._on_auto_task_due)
+            self._auto_task_scheduler.task_missed.connect(self._on_auto_task_missed)
+            self._auto_task_scheduler.todo_due.connect(self._on_todo_due)
+            self._auto_task_scheduler.start()
         self._auto_task_parsed_signal.connect(self._on_auto_task_parsed)
         self._auto_task_done_signal.connect(self._on_auto_task_completed)
         # ── 待办清单模块（数据层，UI 无关部分）──────────────
@@ -391,7 +396,8 @@ class MainWindow(QMainWindow):
         register_duty(self._duty_scheduler, ProactiveDuty())
         register_duty(self._duty_scheduler, BilibiliReplyDuty())
         register_duty(self._duty_scheduler, HeartbeatDuty())
-        register_duty(self._duty_scheduler, SmartReminderDuty())
+        if self._alarm_runtime_owner:
+            register_duty(self._duty_scheduler, SmartReminderDuty())
         register_duty(self._duty_scheduler, TreeHoleReplyDuty())
         register_duty(self._duty_scheduler, MemoryExtractionDuty())
         register_duty(self._duty_scheduler, EmbeddingIndexDuty())
@@ -2830,7 +2836,7 @@ class MainWindow(QMainWindow):
         if success:
             self._chat_widget.add_ai_message(message)
             self._speak("好的，我记下了这个自动化任务 ✨")
-            if hasattr(self, '_auto_task_scheduler'):
+            if self._auto_task_scheduler:
                 self._auto_task_scheduler.status_changed.emit()
         else:
             self._chat_widget.add_system_tip(message)
@@ -3906,7 +3912,7 @@ class MainWindow(QMainWindow):
         if getattr(self, '_music_playback_tracker', None) is not None:
             self._music_playback_tracker.stop()
         self._alarm_timer.stop()
-        if hasattr(self, '_auto_task_scheduler'):
+        if self._auto_task_scheduler:
             self._auto_task_scheduler.stop()
         self._countdown_timer.stop()
         self._stop_autostart_net_poll()
@@ -3938,6 +3944,9 @@ class MainWindow(QMainWindow):
         self._speaker.stop()
 
         self._bridge_controller.shutdown()
+        if self._alarm_runtime_owner:
+            from utils.alarm_runtime_lock import release
+            release()
 
         if hasattr(self, "_window_experience"):
             self._window_experience.shutdown()

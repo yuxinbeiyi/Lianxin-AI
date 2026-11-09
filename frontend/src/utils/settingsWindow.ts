@@ -1,6 +1,7 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 export const settingsWindows = {
+  alarm: { title: "闹钟与提醒 · 新版预览", width: 1120, height: 900 },
   settings: { title: "全局设置", width: 1120, height: 900 },
   api: { title: "API Key", width: 1120, height: 900 },
   proactive: { title: "主动聊天", width: 1120, height: 900 },

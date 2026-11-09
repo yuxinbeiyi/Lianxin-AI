@@ -99,6 +99,9 @@ import { openVisionWindow } from "./utils/visionWindow";
 import { isSettingsWindowId, openSettingsWindow } from "./utils/settingsWindow";
 import { SocialChatPanel } from "./components/SocialChatPanel";
 
+import { AlarmPanel } from "./components/AlarmPanel";
+import { AlarmNotices } from "./components/AlarmNotices";
+
 type PanelId =
   | "none"
   | "history"
@@ -112,6 +115,7 @@ type PanelId =
   | "voice-stt"
   | "sound"
   | "network"
+  | "alarm"
   | "qq"
   | "wechat"
   | "management"
@@ -125,6 +129,7 @@ type PanelId =
   | "time-capsule"
   | "vision";
 type MusicState = {
+  roaming?: { active?: boolean; error?: string };
   stateVersion?: number;
   updatedAt?: number;
   active?: boolean;
@@ -334,9 +339,9 @@ function MessageAvatar({
 }
 
 const managementFeatureMap: Record<string, LegacyFeature> = {
+  闹钟与提醒: "alarm",
   历史记录: "history",
   备忘本: "note",
-  闹钟与提醒: "alarm",
   主动聊天: "proactive",
   涟漪情感系统: "ripple",
   人格枢控: "persona",
@@ -614,6 +619,7 @@ function SideNavigation({
             {managementGroups.map((group) => (
               <div className="management-group" key={group.label}>
                 <div className="management-label">{group.label}</div>
+                {group.label === managementGroups[0].label && <button className="management-item" onClick={() => onPanel("alarm")}><AlarmClock size={15} />闹钟与提醒 · 新版预览</button>}
                 {group.items.map((item) => {
                   const ItemIcon = managementIconMap[item] ?? Settings;
                   const feature = managementFeatureMap[item];
@@ -1860,10 +1866,12 @@ function VoicePanel({
 function ManagementPanel({
   onClose,
   onVoice,
+  onAlarm,
   onLegacy,
 }: {
   onClose: () => void;
   onVoice: () => void;
+  onAlarm: () => void;
   onLegacy: (feature: LegacyFeature) => void;
 }) {
   const [modules, setModules] = useState<
@@ -1884,6 +1892,7 @@ function ManagementPanel({
         </div>
       </div>
       <div className="module-list">
+        <button className="module-entry" onClick={onAlarm}><span>闹钟与提醒 · 新版预览</span><ChevronRight size={15} /></button>
         {modules.map((module) => {
           const legacy = legacyFeatureIds.has(module.id as LegacyFeature);
           const embedded = [
@@ -3371,6 +3380,8 @@ export function App() {
       {panel === "voice-stt" && <SttPanel onClose={() => setPanel("none")} />}
       {panel === "sound" && <SoundPanel onClose={() => setPanel("none")} />}
       {panel === "network" && <NetworkPanel onClose={() => setPanel("none")} />}
+      <AlarmNotices online={backendOnline} />
+      {panel === "alarm" && <AlarmPanel onClose={() => setPanel("none")} />}
       {panel === "qq" && <SocialChatPanel channel="qq" onClose={() => setPanel("none")} />}
       {panel === "wechat" && <SocialChatPanel channel="wechat" onClose={() => setPanel("none")} />}
       {panel === "capability" && <CapabilityPanel onClose={() => setPanel("none")} onUse={name => { applyPreferredTool(name); setActiveWorkspace("chat"); setPanel("none"); }} />}
@@ -3409,6 +3420,7 @@ export function App() {
         <ManagementPanel
           onClose={() => setPanel("none")}
           onVoice={() => setPanel("voice")}
+          onAlarm={() => openPanel("alarm")}
           onLegacy={openLegacy}
         />
       )}

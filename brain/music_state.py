@@ -182,6 +182,8 @@ def build_state(
     queue = queue_payload.get("queue") if isinstance(queue_payload.get("queue"), list) else []
     index = _as_int(queue_payload.get("index", -1), -1)
     mode = str(queue_payload.get("mode") or "sequence")
+    roaming = queue_payload.get("roaming")
+    roaming = roaming if isinstance(roaming, dict) else {}
 
     playing = bool(st.get("playing"))
     paused = bool(st.get("paused"))
@@ -276,6 +278,10 @@ def build_state(
         "volume": volume,
         "volumeRatio": volume_ratio,
         "mode": mode,
+        "roaming": {
+            "active": bool(roaming.get("active")),
+            "error": str(roaming.get("error") or ""),
+        },
         "loop_mode": "random" if mode == "shuffle" else "list",
         "id": current_id,
         "songId": current_id,
@@ -323,6 +329,7 @@ def offline_state(reason: str = "播放器服务离线", *, source: str = "netea
         "volume": 80.0,
         "volumeRatio": 0.8,
         "mode": "sequence",
+        "roaming": {"active": False, "error": ""},
         "loop_mode": "list",
         "id": "",
         "songId": "",

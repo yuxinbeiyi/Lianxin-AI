@@ -10,14 +10,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "control_music",
-            "description": "控制莲心音乐盒的播放状态、切换歌曲、循环模式、音量等。当用户要求播放/暂停音乐、下一首/上一首、切换循环模式、增大/减小音量时，调用此工具。",
+            "description": "控制莲心音乐盒的播放状态、切换歌曲、私人漫游、循环模式、音量等。当用户要求播放/暂停音乐、下一首/上一首、开始或退出漫游、切换循环模式、增大/减小音量时，调用此工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["play", "pause", "next", "prev", "loop", "volume_up", "volume_down"],
-                        "description": "要执行的操作：play（播放音乐），pause（暂停），next（下一首），prev（上一首），loop（切换循环模式），volume_up（增加音量），volume_down（减小音量）"
+                        "enum": ["play", "pause", "next", "prev", "loop", "volume_up", "volume_down", "roam-start", "roam-stop"],
+                        "description": "要执行的操作：play（播放音乐），pause（暂停），next（下一首），prev（上一首），loop（切换循环模式），volume_up（增加音量），volume_down（减小音量），roam-start（开始私人漫游并自动续荐），roam-stop（退出漫游但保留当前歌曲和队列）"
                     }
                 },
                 "required": ["action"]

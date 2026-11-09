@@ -5,6 +5,7 @@ AutoTaskScheduler — 自动化任务调度线程
 """
 
 import logging
+import threading
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from brain.auto_task_manager import get_auto_task_manager
@@ -25,6 +26,7 @@ class AutoTaskScheduler(QThread):
         super().__init__(parent)
         self._manager = get_auto_task_manager()
         self._running = False
+        self._stop_event = threading.Event()
         self._check_interval_ms = 30_000   # 30 秒
         self._missed_check_count = 0
 
@@ -35,7 +37,7 @@ class AutoTaskScheduler(QThread):
 
         self._cleanup_check_count = 0
 
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             try:
                 self._check_due_tasks()
                 self._check_due_todos()
@@ -50,10 +52,11 @@ class AutoTaskScheduler(QThread):
                 logger.error(f"[AutoTaskScheduler] 检查异常: {e}")
                 print(f"[AutoTaskScheduler] 检查异常: {e}")
 
-            self.msleep(self._check_interval_ms)
+            self._stop_event.wait(self._check_interval_ms / 1000)
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
         logger.info("[AutoTaskScheduler] 调度线程已停止")
         print("[AutoTaskScheduler] 调度线程已停止")
 

@@ -869,6 +869,7 @@ class LianxinBridge:
         self._time_capsule_lock = threading.RLock()
         self._time_capsule_events = deque(maxlen=500)
         self._time_capsule_event_id = 0
+        self._alarm_panel_service = None
         self._diary_workers = set()
         self._qq_runtime = QQBridgeRuntime()
         self._wechat_runtime = WeChatBridgeRuntime()
@@ -2229,6 +2230,7 @@ class LianxinBridge:
                 "songId": current_track.get("id") or "",
                 "startedAt": playback.get("startedAt") or "",
                 "playlist": playlist, "current_index": index, "mode": mode,
+                "roaming": queue_info.get("roaming") or {"active": False, "error": ""},
                 "lyrics": lyrics, "style": style, "instrumental": not has_lyric,
             }
         except Exception:
@@ -2294,6 +2296,7 @@ class LianxinBridge:
     # /api/play-track 要等服务端拿到播放地址并让 mpv 接管，正常也可能超过 3s。
     # 旧值 3s 会把"切歌慢"误判成"不可播放"，进而在一次 next 里连跳整条队列。
     NETEASE_PLAY_HTTP_TIMEOUT = 12.0
+    NETEASE_ROAM_HTTP_TIMEOUT = 180.0
     NETEASE_PLAY_SETTLE_SECONDS = 2.0
 
     def _netease_port_listening(self, timeout: float = 0.5) -> bool:
@@ -2961,6 +2964,8 @@ class LianxinBridge:
         payload = payload or {}
         if action != "kill-mpv" and not self.ensure_netease_online():
             raise ValueError(self._netease_unavailable_message())
+        if action in {"roam-start", "roam-stop"}:
+            return self._music_roaming_control(action)
         if action in {"next", "previous"}:
             return self._music_skip_unplayable(action, payload)
         if action in {"queue-append", "queue-insert-next"}:
@@ -3000,6 +3005,10 @@ class LianxinBridge:
             route, body = "/api/play-mode", {"mode": mode}
         elif action == "kill-mpv":
             try:
+                self._music_roaming_control("roam-stop")
+            except Exception as exc:
+                bridge_log.log("网易云", f"关闭漫游失败: {exc}")
+            try:
                 from utils.net_ease_cleanup import stop_netease_mpv
                 stop_netease_mpv()
             except Exception as exc:
@@ -3029,6 +3038,35 @@ class LianxinBridge:
             result["modeSyncPending"] = result.get("mode") != target
             result["modeRequested"] = target
         return result
+
+    def _music_roaming_control(self, action: str) -> dict:
+        import urllib.request
+        base = "http://127.0.0.1:8765"
+        routes = {"roam-start": "/api/roaming/start", "roam-stop": "/api/roaming/stop",
+                  "next": "/api/next", "previous": "/api/prev"}
+        request = urllib.request.Request(
+            base + routes[action], data=b"{}",
+            headers={"Content-Type": "application/json", "X-Lianxin-Bridge": "1"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3 if action == "roam-stop" else self.NETEASE_ROAM_HTTP_TIMEOUT) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            if action != "roam-stop" and self._netease_play_timeout_error(exc):
+                try:
+                    cancel = urllib.request.Request(base + routes["roam-stop"], data=b"{}",
+                        headers={"Content-Type": "application/json", "X-Lianxin-Bridge": "1"}, method="POST")
+                    with urllib.request.urlopen(cancel, timeout=3) as response:
+                        response.read()
+                except Exception:
+                    pass
+            raise ValueError(self._netease_play_error_detail(exc)) from exc
+        if not result.get("success"):
+            raise ValueError(result.get("message") or "漫游操作失败")
+        provider = getattr(self, "_music_state_provider", None)
+        if provider is not None:
+            provider.refresh()
+        return self.music_state()
 
     def _music_queue_operation(self, action: str, payload: dict) -> dict:
         """Append or insert one normalized track without starting playback."""
@@ -3096,6 +3134,10 @@ class LianxinBridge:
         """Run one directional skip while excluding overlapping bridge requests."""
         import urllib.request
         base = "http://127.0.0.1:8765"
+        with urllib.request.urlopen(base + "/api/queue", timeout=1.5) as response:
+            queue_data = json.loads(response.read().decode("utf-8"))
+        if (queue_data.get("roaming") or {}).get("active"):
+            return self._music_roaming_control(action)
         if action == "previous":
             with urllib.request.urlopen(base + "/api/status", timeout=1.5) as response:
                 status = json.loads(response.read().decode("utf-8"))
@@ -3116,8 +3158,6 @@ class LianxinBridge:
                 with urllib.request.urlopen(request, timeout=8) as response:
                     response.read()
                 return self.music_state()
-        with urllib.request.urlopen(base + "/api/queue", timeout=1.5) as response:
-            queue_data = json.loads(response.read().decode("utf-8"))
         queue = queue_data.get("queue") or []
         if not queue:
             raise ValueError("当前播放队列为空")
@@ -3461,6 +3501,29 @@ class LianxinBridge:
         agent = self.agent()
         if agent is not None:
             agent.history.append({"role": "assistant", "content": content})
+
+    def alarm_panel_service(self):
+        with self._lock:
+            if self._alarm_panel_service is None:
+                from utils.alarm_panel_service import AlarmPanelService
+                self._alarm_panel_service = AlarmPanelService(self)
+            return self._alarm_panel_service
+
+    def start_alarm_panel_runtime(self):
+        return self.alarm_panel_service().start()
+
+    def stop_alarm_panel_runtime(self):
+        if self._alarm_panel_service is not None:
+            self._alarm_panel_service.stop()
+
+    def alarm_panel_state(self):
+        return self.alarm_panel_service().state()
+
+    def alarm_panel_action(self, action, payload):
+        return self.alarm_panel_service().action(action, payload)
+
+    def alarm_panel_events(self, after=0):
+        return self.alarm_panel_service().events_after(after)
 
     def _proactive_user_activity(self):
         runtime = getattr(self, "_proactive_runtime", None)
@@ -4561,7 +4624,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/", "/api/config-panels/", "/api/social-chat/")):
+        if urlparse(self.path).path.startswith(("/api/decision/", "/api/persona/", "/api/time-capsule/", "/api/history/", "/api/api-config/", "/api/proactive/", "/api/bilibili-", "/api/capability-panel/", "/api/config-panels/", "/api/social-chat/", "/api/alarm-panel/")):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -4980,6 +5043,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            if path.startswith('/api/alarm-panel/'):
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get('Origin', '')):
+                    return self._send({'error': 'untrusted_alarm_origin'}, 403)
+            if path == '/api/alarm-panel/state':
+                return self._send(bridge.alarm_panel_state())
+            if path == '/api/alarm-panel/events':
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.alarm_panel_events(int((query.get('after') or ['0'])[0])))
             if path.startswith("/api/bilibili-"):
                 from brain.decision_settings import trusted_origin
                 if not trusted_origin(self.headers.get("Origin", "")):
@@ -5298,6 +5370,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not trusted_origin(self.headers.get("Origin", "")):
                     return self._send({"error": "untrusted_decision_origin"}, 403)
             body = self._body()
+            if path == '/api/alarm-panel/action':
+                from brain.decision_settings import trusted_origin
+                if not trusted_origin(self.headers.get('Origin', '')):
+                    return self._send({'error': 'untrusted_alarm_origin'}, 403)
+                if not isinstance(body, dict):
+                    return self._send({'error': '请求必须是 JSON 对象'}, 400)
+                action = str(body.pop('action', ''))
+                try:
+                    return self._send(bridge.alarm_panel_action(action, body))
+                except (ValueError, TypeError) as exc:
+                    return self._send({'error': str(exc)}, 400)
             if path == "/api/settings/avatar-image":
                 return self._send(bridge.save_chat_avatar_image(body))
             if path == "/api/decision/settings":
@@ -5775,7 +5858,7 @@ def main():
         server.server_close()
         for stop in (bridge.stop_proactive_runtime, bridge.cancel_chat, bridge.stop_voice_input,
                      bridge.stop_voice, bridge.stop_call_sound, bridge.vision_stop,
-                     bridge.vision_stop_tracking):
+                     bridge.vision_stop_tracking, bridge.stop_alarm_panel_runtime):
             try:
                 stop()
             except Exception:

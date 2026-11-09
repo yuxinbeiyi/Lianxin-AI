@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { Disc3, ExternalLink, ListMusic, Pause, Play, Power, Repeat, Repeat1, Settings2, Shuffle, SkipBack, SkipForward, Volume2, X } from "lucide-react";
+import { Compass, Disc3, ExternalLink, ListMusic, Pause, Play, Power, Repeat, Repeat1, Settings2, Shuffle, SkipBack, SkipForward, Volume2, X } from "lucide-react";
 import { lianxinApi, type MusicFeedbackSettings } from "../services/lianxinApi";
 
 type MusicTrack = { id?: string; title?: string; artist?: string; duration?: number; index?: number; coverUrl?: string };
@@ -8,6 +8,7 @@ type MusicState = {
   active?: boolean; playing?: boolean; paused?: boolean; name?: string; artist?: string; album?: string;
   coverUrl?: string; progress?: number; duration?: number; volume?: number; mode?: string; current_index?: number;
   playlist?: MusicTrack[]; lyrics?: LyricLine[]; style?: string; instrumental?: boolean; ghostPlayback?: boolean;
+  roaming?: { active?: boolean; error?: string };
 };
 type SpaceWallpaper = { id: string; name: string; url: string };
 type SpaceSettingsData = {
@@ -94,6 +95,8 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const [seekConfirm, setSeekConfirm] = useState<number | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
   const [coverFailed, setCoverFailed] = useState(false);
+  const [roamingBusy, setRoamingBusy] = useState(false);
+  const [roamingError, setRoamingError] = useState("");
   const killTimerRef = useRef<number | undefined>(undefined);
   const lyricBoxRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -106,6 +109,20 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
   const dismissErrorRef = useRef(onDismissError);
 
   const playing = Boolean(music.active);
+  const roaming = Boolean(music.roaming?.active);
+  const toggleRoaming = async () => {
+    if (roamingBusy) return;
+    setRoamingBusy(true);
+    setRoamingError("");
+    try {
+      await lianxinApi.musicControl(roaming ? "roam-stop" : "roam-start");
+    } catch (error) {
+      setRoamingError(String((error as Error)?.message || "漫游操作失败"));
+    } finally {
+      onRefresh?.();
+      setRoamingBusy(false);
+    }
+  };
   const hasTrack = Boolean(music.name);
   const progress = seekDrag ?? (seekConfirm !== null && music.duration ? Math.min(100, (seekConfirm / music.duration) * 100) : (music.duration ? Math.min(100, ((music.progress ?? 0) / music.duration) * 100) : 0));
   const volume = Math.round(music.volume ?? 80);
@@ -508,6 +525,7 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
           </div>
         </div>
         <div className="music-tools">
+          <button className={`music-mode ${roaming ? "is-active" : ""}`} disabled={roamingBusy} aria-pressed={roaming} title={roaming ? "退出漫游，保留当前歌曲和队列" : "播放网易云私人 FM 推荐，自动补充新歌"} onClick={() => { void toggleRoaming(); }}><Compass size={17} /><span>{roamingBusy ? "漫游处理中…" : roaming ? "退出漫游" : "私人漫游"}</span></button>
           <button className={`music-mode ${mode !== "sequence" ? "is-active" : ""}`} title={mode === "shuffle" ? "单曲循环" : mode === "single" ? "顺序播放" : "随机播放"} onClick={toggleMode}>{mode === "shuffle" ? <Shuffle size={17} /> : mode === "single" ? <Repeat1 size={17} /> : <Repeat size={17} />}<span>{mode === "shuffle" ? "随机播放" : mode === "single" ? "单曲循环" : "顺序播放"}</span></button>
           <div className="music-volume" title={"音量"}>
             <Volume2 size={17} />
@@ -521,6 +539,11 @@ export function MusicWorkspace({ music, onControl, onRefresh, errorMsg, onDismis
       </div>
 
       <div className="music-panel">
+        {roaming || roamingBusy || roamingError || music.roaming?.error ? (
+          <div className="music-roaming-status" role={roamingError || music.roaming?.error ? "alert" : "status"}>
+            {roamingError || music.roaming?.error || (roamingBusy ? "正在获取并检查私人推荐，请稍候…" : "私人漫游中 · 下一首和播完后自动续荐 · 退出后保留当前歌曲与队列")}
+          </div>
+        ) : null}
         <div className="music-panel-tabs">
           <button className={`music-panel-tab ${tab === "queue" ? "is-active" : ""}`} onClick={() => setTab("queue")}><ListMusic size={15} />{"播放队列"}</button>
           <button className={`music-panel-tab ${tab === "lyrics" ? "is-active" : ""}`} onClick={() => setTab("lyrics")}><Disc3 size={15} />{"歌词"}</button>
