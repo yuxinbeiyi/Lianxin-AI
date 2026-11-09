@@ -619,7 +619,6 @@ function SideNavigation({
             {managementGroups.map((group) => (
               <div className="management-group" key={group.label}>
                 <div className="management-label">{group.label}</div>
-                {group.label === managementGroups[0].label && <button className="management-item" onClick={() => onPanel("alarm")}><AlarmClock size={15} />闹钟与提醒 · 新版预览</button>}
                 {group.items.map((item) => {
                   const ItemIcon = managementIconMap[item] ?? Settings;
                   const feature = managementFeatureMap[item];
@@ -1866,12 +1865,10 @@ function VoicePanel({
 function ManagementPanel({
   onClose,
   onVoice,
-  onAlarm,
   onLegacy,
 }: {
   onClose: () => void;
   onVoice: () => void;
-  onAlarm: () => void;
   onLegacy: (feature: LegacyFeature) => void;
 }) {
   const [modules, setModules] = useState<
@@ -1892,10 +1889,10 @@ function ManagementPanel({
         </div>
       </div>
       <div className="module-list">
-        <button className="module-entry" onClick={onAlarm}><span>闹钟与提醒 · 新版预览</span><ChevronRight size={15} /></button>
         {modules.map((module) => {
           const legacy = legacyFeatureIds.has(module.id as LegacyFeature);
           const embedded = [
+            "alarm",
             "settings",
             "api",
             "proactive",
@@ -2961,7 +2958,7 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
-    if (feature === "qq" || feature === "wechat") {
+    if (feature === "alarm" || feature === "qq" || feature === "wechat") {
       openPanel(feature);
       return;
     }
@@ -3420,7 +3417,6 @@ export function App() {
         <ManagementPanel
           onClose={() => setPanel("none")}
           onVoice={() => setPanel("voice")}
-          onAlarm={() => openPanel("alarm")}
           onLegacy={openLegacy}
         />
       )}
