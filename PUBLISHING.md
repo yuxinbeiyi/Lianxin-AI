@@ -14,7 +14,7 @@
 - [x] 将核心依赖与语音、视觉、QQ/微信、MCP 等可选依赖拆分。
 - [x] 已筛选离线具身模拟回归测试，并配置 GitHub Actions 执行语法检查、回归、依赖审计和凭据扫描。
 - [x] 已添加 Dependabot 依赖更新检查与发布前检查入口。
-- [x] 已在隔离 Python 3.12 环境与空用户目录中运行 `bootstrap.bat` 验收：基础依赖安装、配置初始化、无 API Key 默认状态和 `main` 导入均通过。首发前仍应在有桌面会话的干净 Windows 环境中手动确认 `run.bat` 的 GUI 首次显示。
+- [x] 已在隔离 Python 3.12 环境与空用户目录中运行 `bootstrap.bat` 验收：基础依赖安装、配置初始化、无 API Key 默认状态和 `main` 导入均通过。首发前仍应在有桌面会话的干净 Windows 环境中手动确认 `python api_server.py` + `frontend\start_ui.cmd` 的首次显示。
 
 ## Git 历史瘦身
 
