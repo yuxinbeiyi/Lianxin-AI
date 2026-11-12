@@ -20,17 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 def load_runtime_config(directory=RUNTIME_DIR):
-    directory = Path(directory).resolve()
-    config_file = directory / "config.json"
-    if not config_file.is_file():
-        raise FileNotFoundError("尚未准备 Live2D 本地资源，请按 docs/莲心Live2D接入说明.md 操作")
-    config = json.loads(config_file.read_text(encoding="utf-8"))
-    files = {key: (directory / config[key]).resolve() for key in ("model", "core")}
-    files.update(pixi=directory / "pixi.min.js", display=directory / "cubism4.min.js")
-    for path in files.values():
-        if not path.is_file():
-            raise FileNotFoundError(f"Live2D 资源不存在：{path}")
-    return files
+    from utils.live2d_assets import load_runtime_config as _load_runtime_config
+    return _load_runtime_config(directory)
 
 
 class Live2DPage(QWebEnginePage):

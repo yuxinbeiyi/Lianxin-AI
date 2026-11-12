@@ -32,6 +32,43 @@ from config import get_tts_config, save_tts_config
 _IMAGE_FLOW_LOG = Path(__file__).resolve().parent / "logs" / "image_flow_diagnostic.log"
 _IMAGE_FLOW_LOG_LOCK = threading.Lock()
 
+# ── 桌宠 / Live2D（新版原生窗口）─────────────────────────────
+_PET_OPEN_LOCK = threading.Lock()
+_PET_OPEN_REQUEST = 0
+_PET_EVENT_LOCK = threading.Lock()
+_PET_EVENT_ID = 0
+_PET_EVENTS: deque = deque(maxlen=100)
+_PET_SETTINGS_FIELDS = {
+    "fontSize": "galgame_font_size",
+    "fontBold": "galgame_font_bold",
+    "typingSpeed": "galgame_typing_speed",
+    "panelWidth": "galgame_panel_width",
+    "panelHeight": "galgame_panel_height",
+    "panelOpacity": "galgame_panel_opacity",
+    "spriteScale": "galgame_sprite_scale",
+    "speakingBounce": "galgame_speaking_bounce",
+    "autoShowDialog": "galgame_auto_show_dialog",
+}
+_PET_SETTINGS_INT_RANGES = {
+    "fontSize": (8, 24), "typingSpeed": (5, 200),
+    "panelWidth": (240, 900), "panelHeight": (200, 900),
+    "panelOpacity": (30, 100), "spriteScale": (50, 300),
+}
+_PET_SETTINGS_BOOLS = ("fontBold", "speakingBounce", "autoShowDialog")
+
+
+def request_pet_open() -> None:
+    global _PET_OPEN_REQUEST
+    with _PET_OPEN_LOCK:
+        _PET_OPEN_REQUEST += 1
+
+
+def _record_pet_expression(emotion: str) -> None:
+    global _PET_EVENT_ID
+    with _PET_EVENT_LOCK:
+        _PET_EVENT_ID += 1
+        _PET_EVENTS.append({"id": _PET_EVENT_ID, "type": "expression", "emotion": str(emotion or "默认")})
+
 
 _IMAGE_FLOW_LOG_READY = False
 _IMAGE_FLOW_POLL_TICK = 0
@@ -925,11 +962,14 @@ class LianxinBridge:
 
     def status(self) -> dict:
         agent = self.agent()
+        with _PET_OPEN_LOCK:
+            pet_open_request = _PET_OPEN_REQUEST
         return {
             "online": True,
             "sessionId": getattr(agent, "_session_id", None),
             "busy": self._busy,
             "source": "python-core",
+            "petOpenRequest": pet_open_request,
         }
 
     # ── 视觉感知（新版界面直接控制常驻运行时）─────────────────
@@ -3714,6 +3754,145 @@ class LianxinBridge:
         get_persona_manager().delete_profile(profile_id)
         return self.persona_state()
 
+    # ── 桌宠 / Live2D（新版原生窗口）─────────────────────────
+
+    def pet_manifest(self) -> dict:
+        from utils.pet_behavior import DEFAULT_TRIGGERS, SELECTABLE_STATES, STATE_INTERVALS, TRIGGER_ITEMS
+
+        root = Path(__file__).resolve().parent / "gui" / "galgame" / "assets" / "animations"
+        labels = dict(SELECTABLE_STATES)
+        states = []
+        for state, interval in STATE_INTERVALS.items():
+            folder = root / state
+            frames = []
+            if folder.is_dir():
+                frames = sorted(
+                    f"{state}/{item.name}" for item in folder.iterdir()
+                    if item.is_file() and item.name.startswith("frame_")
+                    and item.name.endswith(".png") and item.name[6:-4].isdigit()
+                )
+            states.append({
+                "id": state,
+                "interval": interval,
+                "frames": frames,
+                "label": labels.get(state, state),
+                "selectable": state in labels,
+            })
+        return {
+            "frameSize": [95, 150],
+            "states": states,
+            "selectableStates": [{"id": value, "label": label} for value, label in SELECTABLE_STATES],
+            "triggerItems": [{"key": key, "label": label} for key, label in TRIGGER_ITEMS],
+            "defaultTriggers": DEFAULT_TRIGGERS,
+        }
+
+    def pet_settings_state(self) -> dict:
+        from utils.pet_behavior import DEFAULT_TRIGGERS, SELECTABLE_STATES, STATE_INTERVALS, TRIGGER_ITEMS
+        from utils.settings import get_settings
+
+        settings = get_settings()
+        triggers = dict(DEFAULT_TRIGGERS)
+        allowed_states = {value for value, _ in SELECTABLE_STATES}
+        saved = settings.galgame_action_triggers or {}
+        if isinstance(saved, dict):
+            for key, value in saved.items():
+                if key in triggers and isinstance(value, str) and value in allowed_states:
+                    triggers[key] = value
+        return {
+            "values": {name: getattr(settings, attribute) for name, attribute in _PET_SETTINGS_FIELDS.items()},
+            "triggers": triggers,
+            "defaults": dict(DEFAULT_TRIGGERS),
+            "triggerItems": [{"key": key, "label": label} for key, label in TRIGGER_ITEMS],
+            "selectableStates": [{"id": value, "label": label} for value, label in SELECTABLE_STATES],
+        }
+
+    def save_pet_settings(self, payload: dict) -> dict:
+        from utils.pet_behavior import DEFAULT_TRIGGERS, SELECTABLE_STATES
+        from utils.settings import get_settings
+
+        if not isinstance(payload, dict):
+            raise ValueError("桌宠设置格式错误")
+        values = payload.get("values") or {}
+        triggers = payload.get("triggers") or {}
+        if not isinstance(values, dict) or not isinstance(triggers, dict):
+            raise ValueError("桌宠设置格式错误")
+        validated: dict[str, object] = {}
+        for name, value in values.items():
+            if name in _PET_SETTINGS_INT_RANGES:
+                low, high = _PET_SETTINGS_INT_RANGES[name]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"桌宠设置项 {name} 需要整数")
+                if not low <= int(value) <= high:
+                    raise ValueError(f"桌宠设置项 {name} 超出范围 {low}-{high}")
+                validated[name] = int(value)
+            elif name in _PET_SETTINGS_BOOLS:
+                if not isinstance(value, bool):
+                    raise ValueError(f"桌宠设置项 {name} 需要布尔值")
+                validated[name] = value
+            else:
+                raise ValueError(f"不支持的桌宠设置项：{name}")
+        allowed_states = {value for value, _ in SELECTABLE_STATES}
+        validated_triggers: dict[str, str] = {}
+        for key, value in triggers.items():
+            if key not in DEFAULT_TRIGGERS:
+                raise ValueError(f"不支持的桌宠触发项：{key}")
+            if not isinstance(value, str) or value not in allowed_states:
+                raise ValueError(f"桌宠触发项 {key} 的动作无效")
+            validated_triggers[key] = value
+        settings = get_settings()
+        for name, value in validated.items():
+            setattr(settings, _PET_SETTINGS_FIELDS[name], value)
+        if validated_triggers:
+            merged = {**(settings.galgame_action_triggers or {}), **validated_triggers}
+            settings.galgame_action_triggers = {
+                key: value for key, value in merged.items()
+                if key in DEFAULT_TRIGGERS and isinstance(value, str) and value in allowed_states
+            }
+        return self.pet_settings_state()
+
+    def pet_behavior(self, payload: dict) -> dict:
+        from utils.pet_behavior import (
+            DEFAULT_TRIGGERS, EMOTION_TRIGGER_KEYS, STATE_INTERVALS,
+            emotion_for_text, state_for_emotion, state_for_event,
+        )
+        from utils.settings import get_settings
+
+        if not isinstance(payload, dict):
+            raise ValueError("桌宠行为请求格式错误")
+        triggers = dict(DEFAULT_TRIGGERS)
+        saved = get_settings().galgame_action_triggers or {}
+        if isinstance(saved, dict):
+            for key, value in saved.items():
+                if key in triggers and isinstance(value, str) and value in STATE_INTERVALS:
+                    triggers[key] = value
+        event = str(payload.get("event") or "")
+        if event == "emotion":
+            emotion = emotion_for_text(str(payload.get("text") or ""))
+            return {"emotion": emotion, "state": state_for_emotion(emotion, triggers)}
+        if event in ("thinking", "speaking"):
+            return {"emotion": "", "state": state_for_event(event, triggers)}
+        if event == "expression":
+            emotion = str(payload.get("emotion") or "默认")
+            if emotion not in EMOTION_TRIGGER_KEYS:
+                raise ValueError("无效的情绪")
+            return {"emotion": emotion, "state": state_for_emotion(emotion, triggers)}
+        if event == "manual":
+            state = str(payload.get("state") or "")
+            if state not in STATE_INTERVALS:
+                raise ValueError("无效的动作状态")
+            return {"emotion": "", "state": state}
+        raise ValueError("无效的桌宠行为事件")
+
+    def pet_events(self, after=0) -> dict:
+        try:
+            after_value = int(after)
+        except (TypeError, ValueError):
+            after_value = 0
+        with _PET_EVENT_LOCK:
+            items = [dict(event) for event in _PET_EVENTS if event["id"] > after_value]
+            latest = _PET_EVENT_ID
+        return {"items": items, "latest": latest}
+
     # ── 棱镜记忆系统（新版原生面板）─────────────────────────
 
     def memory_panel_state(self) -> dict:
@@ -5076,6 +5255,94 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         return
 
+    def _send_file(self, path: Path, content_type: str, cache: str = "no-store"):
+        raw = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", cache)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _pet_asset(self, rel: str):
+        from utils.pet_behavior import STATE_INTERVALS
+
+        parts = [part for part in str(rel or "").split("/") if part]
+        if len(parts) != 2:
+            return self._send({"error": "pet asset not found"}, 404)
+        state, name = parts
+        if state not in STATE_INTERVALS or not (
+            name.startswith("frame_") and name.endswith(".png") and name[6:-4].isdigit()
+        ):
+            return self._send({"error": "pet asset not found"}, 404)
+        root = (Path(__file__).resolve().parent / "gui" / "galgame" / "assets" / "animations" / state).resolve()
+        target = (root / name).resolve()
+        if root not in target.parents or not target.is_file():
+            return self._send({"error": "pet asset not found"}, 404)
+        self._send_file(target, "image/png")
+
+    def _live2d_page(self):
+        from utils.live2d_assets import PLAYER_DIR, load_runtime_config
+
+        try:
+            files = load_runtime_config()
+        except FileNotFoundError as exc:
+            return self._send({"error": str(exc)}, 503)
+        try:
+            template = (PLAYER_DIR / "index.html").read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._send({"error": f"Live2D 播放器页面缺失：{exc}"}, 500)
+        model_url = "/api/live2d/model/" + quote(files["model"].name, safe="")
+        document = template.replace("__CORE__", "/api/live2d/core.js")
+        document = document.replace("__PIXI__", "/api/live2d/pixi.js")
+        document = document.replace("__DISPLAY__", "/api/live2d/cubism4.js")
+        document = document.replace("__MODEL_URL__", json.dumps(model_url, ensure_ascii=True))
+        body = document.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _live2d_asset(self, name: str):
+        from utils.live2d_assets import PLAYER_DIR, load_runtime_config
+
+        try:
+            files = load_runtime_config()
+        except FileNotFoundError as exc:
+            return self._send({"error": str(exc)}, 503)
+        paths = {
+            "app.js": PLAYER_DIR / "app.js",
+            "core.js": files["core"],
+            "pixi.js": files["pixi"],
+            "cubism4.js": files["display"],
+        }
+        target = paths.get(name)
+        if target is None or not target.is_file():
+            return self._send({"error": "Live2D asset not found"}, 404)
+        self._send_file(target, "text/javascript; charset=utf-8")
+
+    def _live2d_model_asset(self, rel: str):
+        from utils.live2d_assets import load_runtime_config, model_root
+
+        try:
+            files = load_runtime_config()
+        except FileNotFoundError as exc:
+            return self._send({"error": str(exc)}, 503)
+        root = model_root(files).resolve()
+        target = (root / unquote(str(rel or ""))).resolve()
+        if root not in target.parents or not target.is_file():
+            return self._send({"error": "Live2D model asset not found"}, 404)
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if target.suffix.lower() == ".moc3":
+            content_type = "application/octet-stream"
+        elif target.suffix.lower() == ".json":
+            content_type = "application/json"
+        self._send_file(target, content_type)
+
     def _ripple_page(self):
         asset_dir = Path(__file__).resolve().parent / "assets" / "ripple_constellation"
         try:
@@ -5536,6 +5803,21 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlparse(self.path).query)
                 ids = (query.get("ids") or [""])[0]
                 return self._send(bridge.memory_constellation_messages(ids))
+            if path == "/api/pet/manifest":
+                return self._send(bridge.pet_manifest())
+            if path == "/api/pet/settings":
+                return self._send(bridge.pet_settings_state())
+            if path == "/api/pet/events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.pet_events((query.get("after") or ["0"])[0]))
+            if path.startswith("/api/pet/assets/animations/"):
+                return self._pet_asset(path[len("/api/pet/assets/animations/"):])
+            if path == "/api/live2d/html":
+                return self._live2d_page()
+            if path in ("/api/live2d/app.js", "/api/live2d/core.js", "/api/live2d/pixi.js", "/api/live2d/cubism4.js"):
+                return self._live2d_asset(path.rsplit("/", 1)[-1])
+            if path.startswith("/api/live2d/model/"):
+                return self._live2d_model_asset(path[len("/api/live2d/model/"):])
             if path == "/api/memory-panel/state":
                 return self._send(bridge.memory_panel_state())
             if path == "/api/memory-panel/facts":
@@ -5871,6 +6153,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_rpc(str(body.get("method", "")), body.get("args", [])))
 
 
+            if path == "/api/pet/settings":
+                return self._send(bridge.save_pet_settings(body))
+            if path == "/api/pet/behavior":
+                return self._send(bridge.pet_behavior(body))
             if path == "/api/memory-panel/save":
                 return self._send(bridge.save_memory_panel(body))
             if path.startswith("/api/memory-panel/facts/"):
@@ -5882,7 +6168,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
         except ValueError as exc:
-            return self._send({"error": str(exc)}, 400 if path.startswith(("/api/persona/growth", "/api/memory-panel")) else 500)
+            return self._send({"error": str(exc)}, 400 if path.startswith(("/api/persona/growth", "/api/memory-panel", "/api/pet")) else 500)
         except Exception as exc:
             return self._send({"error": str(exc)}, 500)
 
@@ -5915,11 +6201,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _desktop_hotkey_trigger():
-    """Toggle the desktop pet mode at bottom-right; launch it if not running."""
+    """Toggle the desktop pet mode at bottom-right; ask the new UI to open it if not running."""
     try:
         import ctypes
         from ctypes import wintypes
-        import subprocess
         user32 = ctypes.windll.user32
         title = "\u83b2\u5fc3 - \u684c\u5ba0\u6a21\u5f0f"
         hwnd = user32.FindWindowW(None, title)
@@ -5943,8 +6228,8 @@ def _desktop_hotkey_trigger():
                 y = max(0, sh - h - 60)
                 user32.SetWindowPos(hwnd, -1, x, y, 0, 0, 0x0001 | 0x0010 | 0x0040)
         else:
-            launcher = Path(__file__).resolve().parent / "legacy_ui_launcher.py"
-            subprocess.Popen([sys.executable, str(launcher), "galgame"])
+            # 新版 Tauri 界面在运行：由主窗口轮询 petOpenRequest 打开/切换桌宠。
+            request_pet_open()
     except Exception as exc:
         bridge_log.log("热键", f"热键触发错误: {exc}")
 
@@ -6029,6 +6314,12 @@ def main():
         bridge_log.log("启动", "技能已激活")
     except Exception as exc:
         bridge_log.log("启动", f"技能激活失败: {exc}")
+    try:
+        from brain.tools import set_expression_callback
+        set_expression_callback(_record_pet_expression)
+        bridge_log.log("桌宠", "set_expression 工具事件已接入")
+    except Exception as exc:
+        bridge_log.log("桌宠", f"表情工具事件接入失败: {exc}")
     try:
         from brain.mcp.mcp_manager import get_mcp_manager
         _mcp_mgr = get_mcp_manager()

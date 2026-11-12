@@ -97,6 +97,7 @@ import { BilibiliMessageLine } from "./components/BilibiliMessageLine";
 import { VisionPanel } from "./components/VisionPanel";
 import { openVisionWindow } from "./utils/visionWindow";
 import { isSettingsWindowId, openSettingsWindow } from "./utils/settingsWindow";
+import { openPetMode, toggleActivePetMode } from "./utils/petWindows";
 import { SocialChatPanel } from "./components/SocialChatPanel";
 
 import { AlarmPanel } from "./components/AlarmPanel";
@@ -2088,6 +2089,7 @@ export function App() {
   }, []);
   const [interactionMessages, setInteractionMessages] = useState<Message[]>([]);
   const [backendOnline, setBackendOnline] = useState(false);
+  const petOpenRequestRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [interactionThinking, setInteractionThinking] = useState(false);
   const [proactiveThinking, setProactiveThinking] = useState(false);
@@ -2256,6 +2258,18 @@ export function App() {
     };
     check();
     const timer = window.setInterval(check, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void lianxinApi.status().then((status) => {
+        const request = Number(status.petOpenRequest || 0);
+        if (request > petOpenRequestRef.current) {
+          petOpenRequestRef.current = request;
+          void toggleActivePetMode();
+        }
+      }).catch(() => undefined);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
@@ -2924,6 +2938,19 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    // 桌宠与 Live2D 已迁移为原生 Tauri 窗口，不再调用旧版启动器。
+    if (feature === "galgame") {
+      void openPetMode("sprite").then((opened) => {
+        if (!opened) window.alert("请在桌面版莲心中使用桌宠模式");
+      });
+      return;
+    }
+    if (feature === "live2d") {
+      void openPetMode("live2d").then((opened) => {
+        if (!opened) window.alert("请在桌面版莲心中使用莲心 Live2D");
+      });
+      return;
+    }
     // 历史记录、备忘本与棱镜记忆已由 React 原生面板接管，旧版 Qt 窗口仅保留后端回退实现。
     if (feature === "history") {
       openPanel("history");

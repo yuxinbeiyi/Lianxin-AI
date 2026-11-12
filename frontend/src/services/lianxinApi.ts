@@ -550,7 +550,37 @@ export type MemoryDiagnostics = {
   health: MemoryPanelState["health"];
 };
 
-const API_ROOT = "http://127.0.0.1:8766/api";
+export type PetStateDef = { id: string; label: string; interval: number; frames: string[]; selectable: boolean };
+export type PetManifest = {
+  frameSize: [number, number];
+  states: PetStateDef[];
+  selectableStates: Array<{ id: string; label: string }>;
+  triggerItems: Array<{ key: string; label: string }>;
+  defaultTriggers: Record<string, string>;
+};
+export type PetSettingsValues = {
+  fontSize: number; fontBold: boolean; typingSpeed: number;
+  panelWidth: number; panelHeight: number; panelOpacity: number;
+  spriteScale: number; speakingBounce: boolean; autoShowDialog: boolean;
+};
+export type PetSettingsState = {
+  values: PetSettingsValues;
+  triggers: Record<string, string>;
+  defaults: Record<string, string>;
+  triggerItems: Array<{ key: string; label: string }>;
+  selectableStates: Array<{ id: string; label: string }>;
+};
+export type PetBehaviorEvent = {
+  event: "emotion" | "thinking" | "speaking" | "expression" | "manual";
+  text?: string;
+  emotion?: string;
+  state?: string;
+};
+export type PetBehaviorResult = { emotion: string; state: string };
+export type PetEvent = { id: number; type: string; emotion?: string };
+export type PetChatResult = { sessionId: number; message: { role: string; content: string } };
+
+export const API_ROOT = "http://127.0.0.1:8766/api";
 
 export class ApiRequestError extends Error {
   constructor(public status: number, message: string) {
@@ -619,8 +649,14 @@ export const lianxinApi = {
   memoryPanelStateEvents: (id: number) => request<{ events: MemoryStateEvent[] }>(`/memory-panel/state-events?id=${id}`),
   memoryPanelDiagnostics: (params: { limit?: number; persona?: string; channel?: string } = {}) => request<MemoryDiagnostics>(`/memory-panel/diagnostics?limit=${params.limit ?? 150}&persona=${encodeURIComponent(params.persona ?? "")}&channel=${encodeURIComponent(params.channel ?? "")}`),
   memoryPanelTrace: (id: string) => request<{ events: Array<Record<string, unknown>> }>(`/memory-panel/trace?id=${encodeURIComponent(id)}`),
+  petManifest: () => request<PetManifest>("/pet/manifest"),
+  petSettings: () => request<PetSettingsState>("/pet/settings"),
+  savePetSettings: (payload: { values?: Partial<PetSettingsValues>; triggers?: Record<string, string> }) => request<PetSettingsState>("/pet/settings", { method: "POST", body: JSON.stringify(payload) }),
+  petBehavior: (payload: PetBehaviorEvent) => request<PetBehaviorResult>("/pet/behavior", { method: "POST", body: JSON.stringify(payload) }),
+  petEvents: (after = 0) => request<{ items: PetEvent[]; latest: number }>(`/pet/events?after=${after}`),
+  petChat: (message: string) => request<PetChatResult>("/chat/message", { method: "POST", body: JSON.stringify({ message }) }),
   executionNotices: (after: number, sessionId?: number) => request<{ items: ExecutionNotice[]; latest: number }>(`/execution-status/events?after=${after}${sessionId ? `&sessionId=${sessionId}` : ""}`),
-  status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
+  status: () => request<{ online: boolean; sessionId: number; busy: boolean; petOpenRequest?: number }>("/app/status"),
   dataTideState: () => request<DataTideState>("/data-tide/state"),
   cancelChat: () => request<{ cancelled: boolean }>("/chat/cancel", { method: "POST", body: "{}" }),
   sessions: (keyword = "") => request<{ items: Array<{ id: number; title?: string; updated_at?: string; summary?: string; is_pinned?: number }> }>(`/conversations${keyword ? `?q=${encodeURIComponent(keyword)}` : ""}`),

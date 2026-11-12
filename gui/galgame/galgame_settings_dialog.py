@@ -11,40 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .expression_manager import EMOTION_TRIGGER_KEYS
-from .sprite_animation import SELECTABLE_STATES
-
-# 触发事件（设置键 → 显示名），不含情绪（情绪单独列出）
-GENERAL_TRIGGERS: list[tuple[str, str]] = [
-    ("thinking", "思考中"),
-    ("speaking", "说话中"),
-]
-
-# 情绪触发（复用表达管理器的触发键顺序）
-EMOTION_TRIGGERS: list[tuple[str, str]] = [
-    ("emotion_happy", "开心"),
-    ("emotion_angry", "生气"),
-    ("emotion_sad", "伤心"),
-    ("emotion_surprised", "惊讶"),
-    ("emotion_confused", "疑惑"),
-    ("emotion_shy", "害羞"),
-    ("emotion_coquettish", "撒娇"),
-    ("emotion_tired", "疲惫"),
-    ("emotion_default", "默认"),
-]
-
-DEFAULT_TRIGGERS: dict[str, str] = {
-    "thinking": "think",
-    "speaking": "happy",
-    "emotion_happy": "happy",
-    "emotion_angry": "think",
-    "emotion_sad": "sit",
-    "emotion_surprised": "happy",
-    "emotion_confused": "think",
-    "emotion_shy": "sit",
-    "emotion_coquettish": "happy",
-    "emotion_tired": "sleep",
-    "emotion_default": "idle",
-}
+from utils.pet_behavior import DEFAULT_TRIGGERS, EMOTION_TRIGGERS, GENERAL_TRIGGERS, SELECTABLE_STATES
 
 
 class GalgameSettingsDialog(QDialog):

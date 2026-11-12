@@ -1,5 +1,12 @@
 (async function () {
   "use strict";
+  const host = (window.parent && window.parent !== window) ? window.parent : null;
+  function postToHost(message) {
+    if (!host) return;
+    try { host.postMessage(Object.assign({ source: "lianxin-live2d" }, message), "*"); } catch (_) { /* ignore */ }
+  }
+  let maskTimer = null;
+  let maskDebounce = null;
   let app;
   let model;
   let state = "idle";
@@ -108,6 +115,7 @@
   function fail(error) {
     document.getElementById("error").textContent = "Live2D 加载失败：" + String(error);
     console.error("LIANXIN_LIVE2D_ERROR:" + String(error));
+    postToHost({ type: "error", message: String(error) });
   }
 
   function readSettings(url) {
@@ -132,6 +140,7 @@
     model.scale.set(Math.min(window.innerWidth / model.internalModel.width, window.innerHeight / model.internalModel.height) * 0.98);
     model.position.set(window.innerWidth / 2, window.innerHeight / 2);
     app.renderer.resize(window.innerWidth, window.innerHeight);
+    if (ready) scheduleMaskSampling();
   }
 
   function playState() {
@@ -148,6 +157,50 @@
       currentMotion = undefined;
       if (!disposed) fail(error);
     });
+  }
+
+  function sampleMaskOnce() {
+    if (disposed || !ready || !app || !model) return;
+    try {
+      const width = 64;
+      const height = 96;
+      const source = app.renderer.extract.canvas(app.stage);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return;
+      context.clearRect(0, 0, width, height);
+      context.drawImage(source, 0, 0, width, height);
+      const pixels = context.getImageData(0, 0, width, height).data;
+      const values = [];
+      for (let index = 0; index < width * height; index += 1) {
+        values.push(pixels[index * 4 + 3] > 24 ? 1 : 0);
+      }
+      postToHost({ type: "mask", width: width, height: height, values: values });
+    } catch (error) {
+      console.warn("LIANXIN_LIVE2D_MASK_ERROR:" + String(error));
+    }
+  }
+
+  function startMaskSampling() {
+    if (!host || disposed || !ready || !app || !model) return;
+    if (maskTimer) { clearInterval(maskTimer); maskTimer = null; }
+    postToHost({ type: "mask-reset" });
+    let samples = 0;
+    const sample = function () {
+      sampleMaskOnce();
+      samples += 1;
+      if (samples >= 5 && maskTimer) { clearInterval(maskTimer); maskTimer = null; }
+    };
+    sample();
+    maskTimer = setInterval(sample, 250);
+  }
+
+  function scheduleMaskSampling() {
+    if (!host) return;
+    if (maskDebounce) clearTimeout(maskDebounce);
+    maskDebounce = setTimeout(function () { maskDebounce = null; startMaskSampling(); }, 320);
   }
 
   window.lianxinLive2D = {
@@ -186,12 +239,33 @@
     dispose: function () {
       if (disposed) return;
       disposed = true;
+      if (maskTimer) { clearInterval(maskTimer); maskTimer = null; }
+      if (maskDebounce) { clearTimeout(maskDebounce); maskDebounce = null; }
       window.removeEventListener("resize", fit);
       if (app) app.stop();
       if (model) model.destroy({ texture: true, baseTexture: true });
       if (app) app.destroy(false);
     },
   };
+
+  if (host) {
+    window.addEventListener("message", function (event) {
+      if (event.source !== host) return;
+      const data = event.data || {};
+      if (data.source !== "lianxin-live2d-host") return;
+      const api = window.lianxinLive2D;
+      if (!api) return;
+      try {
+        if (data.type === "react") api.react(String(data.name || ""));
+        else if (data.type === "tracking") api.setTracking(Number(data.x) || 0, Number(data.y) || 0);
+        else if (data.type === "thinking") api.setThinking(Boolean(data.active));
+        else if (data.type === "state") api.setState(String(data.state || "idle"), Boolean(data.visible));
+        else if (data.type === "dispose") api.dispose();
+      } catch (error) {
+        console.warn("LIANXIN_LIVE2D_HOST_ERROR:" + String(error));
+      }
+    });
+  }
 
   try {
     if (!window.Live2DCubismCore || !window.PIXI || !PIXI.live2d) throw new Error("Cubism 播放器依赖未加载");
@@ -257,6 +331,8 @@
     ready = true;
     window.lianxinLive2D.setState(state, visible);
     console.info("LIANXIN_LIVE2D_READY");
+    postToHost({ type: "ready" });
+    startMaskSampling();
   } catch (error) {
     if (app) app.stop();
     fail(error);

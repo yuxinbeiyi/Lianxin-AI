@@ -4,28 +4,7 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 from PyQt5.QtGui import QPixmap
 
-
-# 动画状态 → 帧间隔（毫秒），与桌宠保持一致
-STATE_INTERVALS: dict[str, int] = {
-    "idle": 220,
-    "sit": 300,
-    "sleep": 420,
-    "happy": 180,
-    "study": 260,
-    "think": 260,
-    "walk_left": 120,
-    "walk_right": 120,
-}
-
-# 可在设置面板里选择的动作状态（不含左右移动，移动由菜单单独控制）
-SELECTABLE_STATES: tuple[tuple[str, str], ...] = (
-    ("idle", "待机"),
-    ("sit", "坐下"),
-    ("sleep", "睡眠"),
-    ("happy", "开心"),
-    ("study", "学习"),
-    ("think", "思考"),
-)
+from utils.pet_behavior import SELECTABLE_STATES, STATE_INTERVALS  # noqa: F401  (兼容旧导入)
 
 
 class SpriteLoader:

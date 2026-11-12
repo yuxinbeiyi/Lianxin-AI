@@ -5,6 +5,7 @@ export const NOTE_GEOMETRY_STORAGE_KEY = "lianxin.note.geometry";
 
 export const settingsWindows = {
   note: { title: "备忘本", width: 640, height: 620, minWidth: 500, minHeight: 420 },
+  pet: { title: "桌宠与 Live2D 设置", width: 620, height: 640, minWidth: 520, minHeight: 480 },
   "prism-memory": { title: "棱镜记忆系统", width: 1180, height: 860 },
   alarm: { title: "闹钟与提醒", width: 1120, height: 900 },
   settings: { title: "全局设置", width: 1120, height: 900 },
