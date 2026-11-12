@@ -101,6 +101,7 @@ import { SocialChatPanel } from "./components/SocialChatPanel";
 
 import { AlarmPanel } from "./components/AlarmPanel";
 import { AlarmNotices } from "./components/AlarmNotices";
+import { NotePanel } from "./components/NotePanel";
 
 type PanelId =
   | "none"
@@ -1750,46 +1751,6 @@ function Overlay({
   );
 }
 
-function NotePanel({ onClose }: { onClose: () => void }) {
-  const [content, setContent] = useState("");
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    void lianxinApi
-      .note()
-      .then((result) => setContent(result.content))
-      .catch(() => undefined);
-  }, []);
-  const save = () =>
-    void lianxinApi
-      .saveNote(content)
-      .then(() => setSaved(true))
-      .catch(() => setSaved(false));
-  return (
-    <Overlay onClose={onClose}>
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">莲心记录</span>
-          <h2>备忘本</h2>
-        </div>
-        <button className="secondary-button" onClick={save}>
-          <Check size={15} />
-          {saved ? "已保存" : "保存"}
-        </button>
-      </div>
-      <textarea
-        className="note-editor"
-        value={content}
-        onChange={(event) => {
-          setContent(event.target.value);
-          setSaved(false);
-        }}
-        placeholder="写下想交给莲心记住的内容…"
-      />
-    </Overlay>
-  );
-}
-
-
 function VoicePanel({
   active,
   onClose,
@@ -1892,6 +1853,8 @@ function ManagementPanel({
         {modules.map((module) => {
           const legacy = legacyFeatureIds.has(module.id as LegacyFeature);
           const embedded = [
+            "history",
+            "note",
             "alarm",
             "settings",
             "api",
@@ -2958,6 +2921,15 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
+    // 历史记录与备忘本已由 React 原生面板接管，旧版 Qt 窗口仅保留后端回退实现。
+    if (feature === "history") {
+      openPanel("history");
+      return;
+    }
+    if (feature === "note") {
+      openPanel("note");
+      return;
+    }
     if (feature === "alarm" || feature === "qq" || feature === "wechat") {
       openPanel(feature);
       return;

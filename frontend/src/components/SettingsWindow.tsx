@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import { ConstellationPanel, DataTidePanel, RipplePanel } from "../App";
-import { settingsWindows, type SettingsWindowId } from "../utils/settingsWindow";
+import { NOTE_GEOMETRY_STORAGE_KEY, settingsWindows, type SettingsWindowId } from "../utils/settingsWindow";
 import { GlobalSettingsPanel } from "./GlobalSettingsPanel";
 import { ApiConfigPanel } from "./ApiConfigPanel";
 import { ProactivePanel } from "./ProactivePanel";
@@ -13,6 +13,7 @@ import { NetworkPanel } from "./NetworkPanel";
 import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
 import { SocialChatPanel } from "./SocialChatPanel";
+import { NotePanel } from "./NotePanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
 import "../styles/settings-window.css";
 import { AlarmPanel } from "./AlarmPanel";
@@ -22,16 +23,37 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
   const closing = useRef(false);
   const [closeError, setCloseError] = useState("");
   const desktopWindow = useMemo(() => "__TAURI_INTERNALS__" in window ? getCurrentWindow() : null, []);
+  const persistGeometry = useCallback(async () => {
+    if (id !== "note" || !desktopWindow) return;
+    try {
+      const [position, size, scale] = await Promise.all([
+        desktopWindow.outerPosition(),
+        desktopWindow.outerSize(),
+        desktopWindow.scaleFactor(),
+      ]);
+      const logicalPosition = position.toLogical(scale);
+      const logicalSize = size.toLogical(scale);
+      localStorage.setItem(NOTE_GEOMETRY_STORAGE_KEY, JSON.stringify({
+        x: logicalPosition.x, y: logicalPosition.y, width: logicalSize.width, height: logicalSize.height,
+      }));
+    } catch {
+      // 几何恢复是尽力而为，不阻塞关窗。
+    }
+  }, [desktopWindow, id]);
   const close = useCallback(() => {
     if (!desktopWindow) { window.close(); return; }
     if (closing.current) return;
     closing.current = true;
     setCloseError("");
-    void desktopWindow.destroy().catch((error) => {
-      closing.current = false;
-      setCloseError(`关闭窗口失败，请重启莲心后重试：${String(error)}`);
-    });
-  }, [desktopWindow]);
+    const destroy = () => {
+      void desktopWindow.destroy().catch((error) => {
+        closing.current = false;
+        setCloseError(`关闭窗口失败，请重启莲心后重试：${String(error)}`);
+      });
+    };
+    if (id === "note") void persistGeometry().finally(destroy);
+    else destroy();
+  }, [desktopWindow, id, persistGeometry]);
   const requestClose = useCallback(() => {
     const button = contentRef.current?.querySelector<HTMLButtonElement>("[data-settings-close]");
     if (button) button.click();
@@ -77,6 +99,7 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
   }, [desktopWindow, requestClose]);
 
   const panels = {
+    note: NotePanel,
     alarm: AlarmPanel,
     settings: GlobalSettingsPanel,
     api: ApiConfigPanel,

@@ -1,6 +1,10 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { availableMonitors } from "@tauri-apps/api/window";
+
+export const NOTE_GEOMETRY_STORAGE_KEY = "lianxin.note.geometry";
 
 export const settingsWindows = {
+  note: { title: "备忘本", width: 640, height: 620, minWidth: 500, minHeight: 420 },
   alarm: { title: "闹钟与提醒", width: 1120, height: 900 },
   settings: { title: "全局设置", width: 1120, height: 900 },
   api: { title: "API Key", width: 1120, height: 900 },
@@ -26,6 +30,30 @@ export function isSettingsWindowId(value: string): value is SettingsWindowId {
 
 const pendingWindows = new Map<SettingsWindowId, Promise<boolean>>();
 
+/** 备忘本窗口上次的位置/大小（逻辑像素）；其它窗口不恢复几何。 */
+async function readNoteGeometry(): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  try {
+    const raw = localStorage.getItem(NOTE_GEOMETRY_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const [x, y, width, height] = [value.x, value.y, value.width, value.height].map(Number);
+    if (![x, y, width, height].every((item) => Number.isFinite(item)) || width < 300 || height < 240) return null;
+    const monitors = await availableMonitors().catch(() => []);
+    // 显示器变更后旧坐标可能落在屏幕外，此时回到居中，避免窗口不可见。
+    const visible = monitors.some((monitor) => {
+      const scale = monitor.scaleFactor;
+      const left = monitor.position.toLogical(scale).x;
+      const top = monitor.position.toLogical(scale).y;
+      const right = left + monitor.size.toLogical(scale).width;
+      const bottom = top + monitor.size.toLogical(scale).height;
+      return x + 40 > left && x < right - 40 && y + 40 > top && y < bottom - 40;
+    });
+    return monitors.length && !visible ? null : { x, y, width, height };
+  } catch {
+    return null;
+  }
+}
+
 export function openSettingsWindow(id: SettingsWindowId): Promise<boolean> {
   if (!("__TAURI_INTERNALS__" in window)) return Promise.resolve(false);
   const pending = pendingWindows.get(id);
@@ -45,18 +73,22 @@ async function createSettingsWindow(id: SettingsWindowId): Promise<boolean> {
       await existing.setFocus().catch(() => undefined);
       return true;
     }
-    const { title, width, height } = settingsWindows[id];
+    const spec = settingsWindows[id];
+    const minWidth = "minWidth" in spec ? spec.minWidth : 760;
+    const minHeight = "minHeight" in spec ? spec.minHeight : 560;
+    const geometry = id === "note" ? await readNoteGeometry() : null;
     const opened = new WebviewWindow(label, {
       url: `index.html#settings/${id}`,
-      title: `莲心 · ${title}`,
-      width,
-      height,
-      minWidth: 760,
-      minHeight: 560,
+      title: `莲心 · ${spec.title}`,
+      width: geometry?.width ?? spec.width,
+      height: geometry?.height ?? spec.height,
+      ...(geometry ? { x: geometry.x, y: geometry.y } : {}),
+      minWidth,
+      minHeight,
       resizable: true,
       decorations: false,
       dragDropEnabled: id !== "network",
-      center: true,
+      center: !geometry,
     });
     return await new Promise<boolean>((resolve) => {
       void opened.once("tauri://created", () => resolve(true)).catch(() => resolve(false));

@@ -3,5 +3,5 @@
   "identifier": "settings-windows",
   "description": "Allow approved settings subwindows to finish closing after their panel cleanup",
   "windows": ["settings-*"],
-  "permissions": ["core:window:allow-destroy"]
+  "permissions": ["core:window:allow-destroy", "core:window:allow-set-always-on-top"]
 }
