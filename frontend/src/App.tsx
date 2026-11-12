@@ -102,6 +102,7 @@ import { SocialChatPanel } from "./components/SocialChatPanel";
 import { AlarmPanel } from "./components/AlarmPanel";
 import { AlarmNotices } from "./components/AlarmNotices";
 import { NotePanel } from "./components/NotePanel";
+import { MemoryPanel } from "./components/MemoryPanel";
 
 type PanelId =
   | "none"
@@ -126,6 +127,7 @@ type PanelId =
   | "ripple"
   | "persona"
   | "data-tide"
+  | "prism-memory"
   | "study-room"
   | "time-capsule"
   | "vision";
@@ -1855,6 +1857,7 @@ function ManagementPanel({
           const embedded = [
             "history",
             "note",
+            "prism-memory",
             "alarm",
             "settings",
             "api",
@@ -2921,13 +2924,17 @@ export function App() {
     void openSettingsWindow(next).then((opened) => setPanel(opened ? "none" : next));
   };
   const openLegacy = (feature: LegacyFeature) => {
-    // 历史记录与备忘本已由 React 原生面板接管，旧版 Qt 窗口仅保留后端回退实现。
+    // 历史记录、备忘本与棱镜记忆已由 React 原生面板接管，旧版 Qt 窗口仅保留后端回退实现。
     if (feature === "history") {
       openPanel("history");
       return;
     }
     if (feature === "note") {
       openPanel("note");
+      return;
+    }
+    if (feature === "prism-memory") {
+      openPanel("prism-memory");
       return;
     }
     if (feature === "alarm" || feature === "qq" || feature === "wechat") {
@@ -3355,6 +3362,7 @@ export function App() {
       {panel === "wechat" && <SocialChatPanel channel="wechat" onClose={() => setPanel("none")} />}
       {panel === "capability" && <CapabilityPanel onClose={() => setPanel("none")} onUse={name => { applyPreferredTool(name); setActiveWorkspace("chat"); setPanel("none"); }} />}
       {panel === "note" && <NotePanel onClose={() => setPanel("none")} />}
+      {panel === "prism-memory" && <MemoryPanel onClose={() => setPanel("none")} />}
       {panel === "decision" && <DecisionPanel onClose={() => setPanel("none")} />}
       {panel === "voice" && (
         <VoicePanel

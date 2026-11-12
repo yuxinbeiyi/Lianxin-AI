@@ -3714,6 +3714,240 @@ class LianxinBridge:
         get_persona_manager().delete_profile(profile_id)
         return self.persona_state()
 
+    # ── 棱镜记忆系统（新版原生面板）─────────────────────────
+
+    def memory_panel_state(self) -> dict:
+        from config import get_graph_config, get_memory_config
+        from brain.memory_diagnostics import get_memory_diagnostic_stats
+        from brain.memory_maintenance import get_last_maintenance_run
+        from brain.memory_narrative import get_narrative_statistics
+        from brain.memory_quality import get_memory_statistics
+
+        try:
+            maintenance = get_last_maintenance_run()
+        except Exception:
+            maintenance = None
+        try:
+            health = get_memory_statistics()
+        except Exception:
+            health = {}
+        try:
+            narrative = get_narrative_statistics()
+        except Exception:
+            narrative = {"entities": 0, "episodes": 0, "sagas": 0}
+        try:
+            diagnostics = get_memory_diagnostic_stats()
+        except Exception:
+            diagnostics = {}
+        return {
+            "memory": get_memory_config(),
+            "graph": get_graph_config(),
+            "maintenance": maintenance or {},
+            "health": health,
+            "narrative": narrative,
+            "diagnostics": diagnostics,
+        }
+
+    def save_memory_panel(self, payload: dict) -> dict:
+        from config import get_graph_config, get_memory_config, save_graph_config, save_memory_config
+        from brain.graph_memory import ALL_MEMORY_CATEGORIES
+
+        if not isinstance(payload, dict):
+            raise ValueError("记忆配置格式错误")
+        if not isinstance(payload.get("memory") or {}, dict) or not isinstance(payload.get("graph") or {}, dict):
+            raise ValueError("记忆配置格式错误")
+        memory_patch = dict(payload.get("memory") or {})
+        graph_patch = dict(payload.get("graph") or {})
+        int_ranges = {
+            "extraction_idle_seconds": (30, 1800),
+            "extraction_backlog_messages": (3, 100),
+            "extraction_retry_base_minutes": (1, 60),
+            "extraction_failure_pause_threshold": (2, 20),
+            "extract_message_count": (5, 100),
+            "max_items_per_category": (50, 500),
+            "maintenance_interval_hours": (1, 168),
+            "maintenance_conflict_scan_batch": (1, 50),
+            "narrative_interval_hours": (1, 168),
+            "narrative_candidate_batch": (4, 100),
+            "context_window_size": (4, 40),
+            "summary_trigger_threshold": (0, 100),
+        }
+        bool_fields = {
+            "auto_extract", "conversation_auto_save", "maintenance_enabled",
+            "narrative_enabled", "enable_conversation_summary",
+        }
+        allowed = set(int_ranges) | bool_fields | {"default_save_category", "semantic_retrieval_mode"}
+        for key, value in memory_patch.items():
+            if key not in allowed:
+                raise ValueError(f"不支持的记忆配置项：{key}")
+            if key in bool_fields:
+                if not isinstance(value, bool):
+                    raise ValueError(f"记忆配置项 {key} 需要布尔值")
+            elif key in int_ranges:
+                low, high = int_ranges[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"记忆配置项 {key} 需要整数")
+                if not low <= int(value) <= high:
+                    raise ValueError(f"记忆配置项 {key} 超出范围 {low}-{high}")
+                memory_patch[key] = int(value)
+            elif key == "default_save_category":
+                if value not in ALL_MEMORY_CATEGORIES:
+                    raise ValueError("无效的默认记忆分类")
+            elif key == "semantic_retrieval_mode":
+                if value not in ("on_demand", "always", "off"):
+                    raise ValueError("无效的语义检索模式")
+        for key, value in graph_patch.items():
+            if key not in {"graph_enabled", "auto_extract_quintuples"}:
+                raise ValueError(f"不支持的知识图谱配置项：{key}")
+            if not isinstance(value, bool):
+                raise ValueError(f"知识图谱配置项 {key} 需要布尔值")
+        if memory_patch:
+            save_memory_config({**get_memory_config(), **memory_patch})
+        if graph_patch:
+            save_graph_config({**get_graph_config(), **graph_patch})
+        return self.memory_panel_state()
+
+    def memory_panel_facts(self) -> dict:
+        from brain.graph_memory import ALL_MEMORY_CATEGORIES, list_all_facts
+
+        items = list_all_facts()
+        return {
+            "items": items,
+            "total": sum(len(rows) for rows in items.values()),
+            "categories": list(ALL_MEMORY_CATEGORIES),
+        }
+
+    def memory_panel_fact_action(self, action: str, payload: dict) -> dict:
+        from brain.graph_memory import ALL_MEMORY_CATEGORIES, add_fact, delete_facts, update_facts
+
+        if not isinstance(payload, dict):
+            raise ValueError("记忆请求格式错误")
+        category = str(payload.get("category") or "knowledge")
+        if category not in ALL_MEMORY_CATEGORIES:
+            raise ValueError("无效的记忆分类")
+        content = str(payload.get("content") or "").strip()
+        if action == "add":
+            if not content:
+                raise ValueError("记忆内容不能为空")
+            add_fact(content, category, source="user_saved")
+        elif action == "update":
+            old_content = str(payload.get("oldContent") or "").strip()
+            if not old_content or not content:
+                raise ValueError("记忆内容不能为空")
+            update_facts(old_content, content, category)
+        elif action == "delete":
+            if not content:
+                raise ValueError("缺少要删除的记忆内容")
+            delete_facts(content, category)
+        else:
+            raise ValueError("无效的记忆操作")
+        return self.memory_panel_facts()
+
+    def memory_panel_states(self) -> dict:
+        from brain.current_state import list_current_states
+
+        return {"items": list_current_states(include_inactive=True)}
+
+    def memory_panel_state_events(self, state_id) -> dict:
+        from brain.current_state import get_state_events
+
+        try:
+            value = int(state_id)
+        except (TypeError, ValueError):
+            raise ValueError("无效的状态 ID")
+        return {"events": get_state_events(value)}
+
+    def memory_panel_state_action(self, action: str, payload: dict) -> dict:
+        from brain.current_state import (
+            STATE_TYPES, resolve_current_state, set_current_state, update_current_state,
+        )
+
+        if not isinstance(payload, dict):
+            raise ValueError("状态请求格式错误")
+        if action == "resolve":
+            try:
+                state_id = int(payload.get("id"))
+            except (TypeError, ValueError):
+                raise ValueError("无效的状态 ID")
+            reason = str(payload.get("reason") or "状态已不再适用").strip()[:200]
+            resolve_current_state(state_id, reason, source_channel="desktop_manual")
+            return self.memory_panel_states()
+        content = str(payload.get("content") or "").strip()
+        state_type = str(payload.get("stateType") or "other")
+        if state_type not in STATE_TYPES:
+            raise ValueError("无效的状态类型")
+        try:
+            confidence = float(payload.get("confidence", 0.95))
+        except (TypeError, ValueError):
+            raise ValueError("无效的置信度")
+        if not 0 <= confidence <= 1:
+            raise ValueError("置信度需在 0-1 之间")
+        expires_at = str(payload.get("expiresAt") or "").strip()
+        if action == "add":
+            if not content:
+                raise ValueError("状态内容不能为空")
+            set_current_state(
+                content, state_type, expires_at=expires_at, confidence=confidence,
+                source_quality="user_confirmed", source_channel="desktop_manual",
+            )
+        elif action == "update":
+            try:
+                state_id = int(payload.get("id"))
+            except (TypeError, ValueError):
+                raise ValueError("无效的状态 ID")
+            if not content:
+                raise ValueError("状态内容不能为空")
+            update_current_state(
+                state_id, content=content, state_type=state_type,
+                expires_at=expires_at, confidence=confidence,
+                source_quality="user_confirmed", source_channel="desktop_manual",
+            )
+        else:
+            raise ValueError("无效的状态操作")
+        return self.memory_panel_states()
+
+    def memory_panel_diagnostics(self, limit=150, persona="", channel="") -> dict:
+        from brain.memory_diagnostics import get_memory_diagnostic_stats, get_memory_traces
+        from brain.memory_narrative import get_narrative_statistics
+        from brain.memory_quality import get_memory_statistics
+
+        try:
+            limit_value = max(1, min(300, int(limit or 150)))
+        except (TypeError, ValueError):
+            limit_value = 150
+        channel = str(channel or "")
+        if channel not in ("desktop", "qq", "wechat"):
+            channel = ""
+        traces = get_memory_traces(limit_value, channel=channel)
+        personas = sorted({str(t.get("persona_id") or "") for t in traces if t.get("persona_id")})
+        persona = str(persona or "")
+        if persona:
+            traces = [t for t in traces if str(t.get("persona_id") or "") == persona]
+        try:
+            stats = get_memory_diagnostic_stats()
+        except Exception:
+            stats = {}
+        try:
+            narrative = get_narrative_statistics()
+        except Exception:
+            narrative = {"entities": 0, "episodes": 0, "sagas": 0}
+        try:
+            health = get_memory_statistics()
+        except Exception:
+            health = {}
+        return {
+            "traces": traces, "personas": personas, "stats": stats,
+            "narrative": narrative, "health": health,
+        }
+
+    def memory_panel_trace(self, trace_id) -> dict:
+        from brain.memory_diagnostics import get_trace_events
+
+        value = str(trace_id or "").strip()
+        if not value:
+            raise ValueError("缺少 Trace ID")
+        return {"events": get_trace_events(value)}
+
     def memory_constellation_snapshot(self) -> dict:
         from brain.memory_narrative import list_entity_profiles, list_episodes, list_sagas, list_narrative_events, get_last_narrative_run
         from config import get_user_name
@@ -5302,6 +5536,25 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlparse(self.path).query)
                 ids = (query.get("ids") or [""])[0]
                 return self._send(bridge.memory_constellation_messages(ids))
+            if path == "/api/memory-panel/state":
+                return self._send(bridge.memory_panel_state())
+            if path == "/api/memory-panel/facts":
+                return self._send(bridge.memory_panel_facts())
+            if path == "/api/memory-panel/states":
+                return self._send(bridge.memory_panel_states())
+            if path == "/api/memory-panel/state-events":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.memory_panel_state_events((query.get("id") or [""])[0]))
+            if path == "/api/memory-panel/diagnostics":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.memory_panel_diagnostics(
+                    (query.get("limit") or ["150"])[0],
+                    (query.get("persona") or [""])[0],
+                    (query.get("channel") or [""])[0],
+                ))
+            if path == "/api/memory-panel/trace":
+                query = parse_qs(urlparse(self.path).query)
+                return self._send(bridge.memory_panel_trace((query.get("id") or [""])[0]))
             if path == "/api/memory-constellation/html":
                 return self._memory_constellation_page()
             if path.startswith("/api/memory-constellation/"):
@@ -5618,11 +5871,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(bridge.time_capsule_rpc(str(body.get("method", "")), body.get("args", [])))
 
 
+            if path == "/api/memory-panel/save":
+                return self._send(bridge.save_memory_panel(body))
+            if path.startswith("/api/memory-panel/facts/"):
+                return self._send(bridge.memory_panel_fact_action(path.rsplit("/", 1)[-1], body))
+            if path.startswith("/api/memory-panel/states/"):
+                return self._send(bridge.memory_panel_state_action(path.rsplit("/", 1)[-1], body))
+
             if path == "/api/legacy/open":
                 return self._send(bridge.open_legacy_window(str(body.get("feature", ""))), 201)
             return self._send({"error": "Not found"}, 404)
         except ValueError as exc:
-            return self._send({"error": str(exc)}, 400 if path.startswith("/api/persona/growth") else 500)
+            return self._send({"error": str(exc)}, 400 if path.startswith(("/api/persona/growth", "/api/memory-panel")) else 500)
         except Exception as exc:
             return self._send({"error": str(exc)}, 500)
 

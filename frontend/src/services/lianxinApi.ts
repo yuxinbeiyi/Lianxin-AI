@@ -482,6 +482,74 @@ export type HistoryJob = {
   date: string;
 };
 
+export type MemoryFact = {
+  id: number;
+  content: string;
+  source?: string;
+  strength?: number;
+  created_at?: string;
+  quality_score?: number;
+  review_status?: string;
+};
+export type MemoryFacts = {
+  items: Record<string, MemoryFact[]>;
+  total: number;
+  categories: string[];
+};
+export type MemoryPanelConfig = Record<string, unknown>;
+export type MemoryPanelState = {
+  memory: MemoryPanelConfig;
+  graph: MemoryPanelConfig;
+  maintenance: { status?: string; started_at?: string; finished_at?: string; duration_ms?: number } | null;
+  health: {
+    total_facts?: number; active_facts?: number; average_quality?: number;
+    pending_conflicts?: number; review_status_counts?: Record<string, number>;
+  };
+  narrative: { entities: number; episodes: number; sagas: number };
+  diagnostics: {
+    requests?: { total?: number; success?: number; failed?: number };
+    persona_recall_mismatches?: number;
+  };
+};
+export type MemoryCurrentState = {
+  id: number;
+  content: string;
+  state_type: string;
+  status: string;
+  expires_at: string;
+  confidence: number;
+  source_channel?: string;
+  source_message_ids?: number[];
+};
+export type MemoryStateEvent = {
+  id: number;
+  state_id: number;
+  action: string;
+  content?: string;
+  reason?: string;
+  source_channel?: string;
+  source_message_ids?: number[];
+  created_at?: string;
+};
+export type MemoryTrace = {
+  trace_id: string;
+  started_at?: string;
+  channel?: string;
+  persona_id?: string;
+  persona_revision?: number;
+  user_message?: string;
+  response_preview?: string;
+  status?: string;
+  duration_ms?: number;
+};
+export type MemoryDiagnostics = {
+  traces: MemoryTrace[];
+  personas: string[];
+  stats: MemoryPanelState["diagnostics"];
+  narrative: MemoryPanelState["narrative"];
+  health: MemoryPanelState["health"];
+};
+
 const API_ROOT = "http://127.0.0.1:8766/api";
 
 export class ApiRequestError extends Error {
@@ -542,6 +610,15 @@ export const lianxinApi = {
   historyDiary: (date: string) => request<{ exists: boolean }>(`/history/diary?date=${encodeURIComponent(date)}`),
   historyJob: () => request<{ job: HistoryJob | null }>("/history/job"),
   historyStartJob: (payload: { kind: HistoryJob["kind"]; id?: number; ids?: number[]; date?: string; overwrite?: boolean }) => request<{ job: HistoryJob }>("/history/job", { method: "POST", body: JSON.stringify({ ...payload, confirmed: true }) }),
+  memoryPanelState: () => request<MemoryPanelState>("/memory-panel/state"),
+  memoryPanelSave: (payload: { memory: Record<string, unknown>; graph: Record<string, unknown> }) => request<MemoryPanelState>("/memory-panel/save", { method: "POST", body: JSON.stringify(payload) }),
+  memoryPanelFacts: () => request<MemoryFacts>("/memory-panel/facts"),
+  memoryPanelFact: (action: "add" | "update" | "delete", payload: Record<string, unknown>) => request<MemoryFacts>(`/memory-panel/facts/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  memoryPanelStates: () => request<{ items: MemoryCurrentState[] }>("/memory-panel/states"),
+  memoryPanelStateAction: (action: "add" | "update" | "resolve", payload: Record<string, unknown>) => request<{ items: MemoryCurrentState[] }>(`/memory-panel/states/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  memoryPanelStateEvents: (id: number) => request<{ events: MemoryStateEvent[] }>(`/memory-panel/state-events?id=${id}`),
+  memoryPanelDiagnostics: (params: { limit?: number; persona?: string; channel?: string } = {}) => request<MemoryDiagnostics>(`/memory-panel/diagnostics?limit=${params.limit ?? 150}&persona=${encodeURIComponent(params.persona ?? "")}&channel=${encodeURIComponent(params.channel ?? "")}`),
+  memoryPanelTrace: (id: string) => request<{ events: Array<Record<string, unknown>> }>(`/memory-panel/trace?id=${encodeURIComponent(id)}`),
   executionNotices: (after: number, sessionId?: number) => request<{ items: ExecutionNotice[]; latest: number }>(`/execution-status/events?after=${after}${sessionId ? `&sessionId=${sessionId}` : ""}`),
   status: () => request<{ online: boolean; sessionId: number; busy: boolean }>("/app/status"),
   dataTideState: () => request<DataTideState>("/data-tide/state"),

@@ -14,6 +14,7 @@ import { DecisionPanel } from "./DecisionPanel";
 import { PersonaPanel } from "./PersonaPanel";
 import { SocialChatPanel } from "./SocialChatPanel";
 import { NotePanel } from "./NotePanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { RESIZE_DIRECTIONS } from "./VisionPanel";
 import "../styles/settings-window.css";
 import { AlarmPanel } from "./AlarmPanel";
@@ -100,6 +101,7 @@ export function SettingsWindow({ id }: { id: SettingsWindowId }) {
 
   const panels = {
     note: NotePanel,
+    "prism-memory": MemoryPanel,
     alarm: AlarmPanel,
     settings: GlobalSettingsPanel,
     api: ApiConfigPanel,
