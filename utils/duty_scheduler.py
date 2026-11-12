@@ -523,6 +523,9 @@ class BilibiliReplyDuty(Duty):
         super().__init__("bilibili_reply", "B站主号评论续聊", 120)
 
     def _check_enabled(self, state):
+        proactive = state.proactive_scheduler
+        if proactive is None or not proactive.bilibili_enabled:
+            return False
         from config import get_bilibili_interaction_config
         settings = get_bilibili_interaction_config()
         return bool((settings.get("auto_reply_enabled") or settings.get("mention_reply_enabled")) and not settings.get("paused"))
